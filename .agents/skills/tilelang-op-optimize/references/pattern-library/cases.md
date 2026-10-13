@@ -22,7 +22,7 @@ repro: none
 
 **durable 载体**：本文件无自包含池化条目时见 layout.md PL-1.1/1.2/1.4（模式与实测数字自包含）；集成包结构形态见已上库的 mish/logsumexp 同构目录。
 
-TileOPs 集成包形态：kernel + `{func}_DESIGN.md` 快照 + 聚合 `__init__.py` + integration_log。适用触发条件：migration-harness 集成结构参考；Stage 5 集成问题排查。
+TileOPs 集成包形态：kernel + `{func}_DESIGN.md` 快照 + 聚合 `__init__.py` + integration_log。适用触发条件：migration-harness 集成结构参考；Stage 5 集成问题排查。**（2026-10-13 复核，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：该工作区路径已不在库——`examples/TileOPs/tileops/kernels/pool/` 下现仅 `adaptive_avg_pool2d`；预注入命中该路径时以本条 durable 载体（layout.md PL-1.1/1.2/1.4）为准，工作区路径不作证据。）**
 
 ---
 id: CASE-elementwise-mish-opt
@@ -356,3 +356,23 @@ repro: repro-missing
 ### TileOPs reduce 族集成契约参考（argmax 首集成的胶水修复档案）
 
 `examples/TileOPs/tileops/kernels/reduction/argmax/argmax_kernel/`（任务级溯源，允许失效——集成包为任务交付件，未随知识库演进存活；integration_log.md + wrapper `argmax.py` + history_version/argmax_s5_attempt1.py 修复前备份）。触发条件：任一 reduce 族算子接入 TileOPs（ArgminFwdOp 等共享 ArgreduceKernel 的迁移单元前置阅读）。要点：① Op 层 `_ReduceOpBase._prepare_input` 在 `_kernel_handles_padding=False` 时 pad 到 align_up(N,256)——kernel jit 声明宽度须取 N_padded（raw-N 契约与 Op 层 F.pad 冲突的症状：行 0 正确、行 ≥1 全错且不报错，初次 report 17 failed 与 N_padded≠N 用例 100% 重合）；② wrapper `default_config` 转调 kernel 模块 `_select_config`（GPU 时代 smem 启发式选出的 block_m 在新 kernel 上直接 `ub overflow, requires 2097408 bits while 1572864 bits available`）；③ argmax 语义 -inf pad 与首现索引兼容（全 -inf 行 kernel 与 torch 同返 0），argmin 共享 kernel 时 `_pad_value` 须为 +inf；④ 修复后 42/42 + benchmark 5 case 全有效（run.json 20260928_030100_974855）。
+
+---
+
+id: CASE-pool-adaptiveavgpool2d-migration
+kind: case
+family: [pool, pooling]
+mode: [developer]
+dtype: [fp16, bf16]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: none
+---
+
+### `examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/` + `examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/`（任务工作区/集成包，未上库）
+
+**durable 载体**：C 轴向量轴模式自包含于 layout.md PL-1.2/PL-1.4 + PL-1.21（纯 Vector persistent 分核模板）+ PL-1.5（runtime let-bound 标量倒数 / 3D reduce_sum 链）；`T.vcast` 与 `range` 两条陷阱自包含于 traps-compiler.md TRAP-vcast-shape-and-gm-source / TRAP-tir-range-loop-not-unrolled（含知识域 repro）。
+
+pool 家族首个 TileOPs 迁移算子（AdaptiveAvgPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过）。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴累加；W 轴 bin 宽 9–10 非 8 倍数 + 变长段归约不可向量化而弃选，§1.6.3 决策）；②**几何特化四路径**（一般网格 / C4 全局 `out=1×1` → 3D `T.reduce_sum` 链 / C4b 恒等 `out==in` → 纯拷贝 / persistent 分核），退化路径以编译期容量判据 `identity_fits`/`global_fits` 决定是否走特化、否则回退一般路径（纯优化，语义与精度不变）；③**C4b 恒等路径的 `num_logical` 口径**为整平面单元 `N*num_cblk`（`(1,8,9,11)`=1，非通用式 9——设计修订 2 轮的阻塞根因，见 queue VP-2026-0147）；④**设计修订链 3 轮**（Stage 2 检视两轮不通过：v0 漏盘 `acc` 零初始化 + 候选 #1 倒数乘采纳结论跨 5 节矛盾 → v1 C4b 恒等 `num_logical`/单元粒度/解码三要素不自洽 → v2 通过），Stage 3 首轮即 `[PRECISION_PASS]`（零精度重试）。**实测**：L0 10/10、L1 13/13、L2 7/7、Boundary 6/6 全过；worst `max_diff` fp16 = 1.221e-04（resnet-global，C1 倒数乘 ≤1 ulp）、bf16 = 0.0；TileOPs 集成 7/7 正确性（avg max abs err 0.00e+00），msprof 有效 bench 3 例——resnet-global `[8,2048,7,7]→(1,1)` fp16 169.26µs / Ratio 2.30%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 16.60µs / 3.81%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 14.50µs / 2.35%（smoke 3.70µs）。适用触发条件：adaptive/窗口池化类迁移设计（变长 bin 的整数边界差口径 + 向量轴选型）；退化路径容量判据与回退设计参考；纯 Vector 多单元 persistent 分核形态；单算子 TileOPs 集成（两层 wrapper 类继承 → gate `S5-ASCEND-MODE`，见 queue VP-2026-0150/0151）。

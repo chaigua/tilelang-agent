@@ -87,13 +87,13 @@ repro: repro-missing
 id: PL-1.5-quickref
 kind: pattern
 family: [elementwise, pooling, general]
-apis: [T.vmul, T.ceildiv, T.Pipelined]
+apis: [T.vmul, T.ceildiv, T.Pipelined, T.serial, T.reduce_sum]
 dtype: [fp16, fp32, bf16]
-device: 910B2C
+device: 910B2C, 910B3
 status: verified
-origin_task: mixed（AvgPool2d 2026-08 / lerp_tensor 2026-09-07）
-toolchain: 2026-08 build；lerp 行为 tilelang-mlir-dev dev root build 2026-09-07
-repro: repro-missing
+origin_task: mixed（AvgPool2d 2026-08 / lerp_tensor 2026-09-07 / adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z）
+toolchain: 2026-08 build；lerp 行为 tilelang-mlir-dev dev root build 2026-09-07；adaptive_avg_pool2d tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: repro/TRAP-vcast-shape-and-gm-source.py
 ---
 
 ### 1.5 其他已验证模式速查
@@ -101,10 +101,37 @@ repro: repro-missing
 | 模式                  | 一句话                                                                                                                                                                                               | 实测参考                                                                                                           |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | 乘编译期常数倒数      | divisor 恒定时`T.vmul(acc, 1/d, acc)`，省逐元素除法                                                                                                                                                                                                                | AvgPool2d fast path                                                                                                |
+| 乘运行时 let-bound 标量倒数 | divisor 在 `T.Kernel` 内由运行时表达式 let 绑定（逐 bin 计算，非编译期常数）时 `T.vmul(acc, inv, acc)` 同样合法且数值正确——文档「标量须在 `T.Kernel` 内、`T.Scope` 外定义」≠「须为编译期常数」；fp32 倒数+乘对 `sum/d` 为容差内等价（adaptive_avg_pool2d 实测 ≤1 ulp of target dtype，spp fp16 10/9216 元素差 1 ulp；量化数据见 queue VP-2026-0142） | adaptive_avg_pool2d 迁移 2026-10-13（repro: `repro/TRAP-vcast-shape-and-gm-source.py` FIX 段；origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z） |
+| 3D `T.reduce_sum` 链 | `T.reduce_sum(x, mid, dim=2)` → `T.reduce_sum(mid, acc, dim=1)` 两级归约 = 整平面均值，是 `out=1×1` 全局池化特化的原语；免 `T.reshape`+transpose 链（后者有 mis-compile 风险，PL-1.1） | adaptive_avg_pool2d 迁移 2026-10-13（resnet-global C4 max_diff 1.221e-04；同上 repro FIX 段） |
 | H-collapse            | 把 kH 折叠进向量管道，消除一层 serial 累加                                                                                                                                                                                                                           | AvgPool2d v2（对 sW 跨步问题的 W 轴解法）                                                                          |
 | fp32 求和序匹配       | kernel 累加序与 golden（F.avg_pool2d 等）一致时解锁高精度快路径                                                                                                                                                                                                      | AvgPool2d fp32 13.2x                                                                                               |
 | launch 开销主导判定   | 小 shape 与大 shape 耗时同量级 → 固定开销主导；拆 pad-only/padded-in 定位                                                                                                                                                                                           | bench_runner`--decompose`                                                                                        |
 | host 层编译期常量折叠 | `@T.prim_func` 外的 `T.ceildiv(int,int)`/`min(IntImm,int)` 对 Python int 常量折叠为 IntImm（复现：`T.ceildiv(4097,4096)`→`2 <IntImm>`）——persistent 设计的 num_logical/num_kernels/num_local_tasks 可在工厂层直接求编译期常量，无需改写 Python 整数算术 | lerp_tensor 迁移 2026-09-07（REVIEW.md 附#29；origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z） |
+
+---
+
+id: PL-1.21-vector-persistent-split
+kind: pattern
+family: [general, pooling, elementwise]
+apis: [T.Kernel, T.serial]
+dtype: []
+device: 910B2C, 910B3
+status: verified
+origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z（首证，第 1 证据）/ adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z（第二证，第 2 证据）
+toolchain: 首证 tilelang-mlir-dev dev root build 2026-09-07（纯 Vector 核数翻倍 48）；第二证 tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b + CANN 9.0.0 + Ascend910B3（实查 20×2=40）/ 2026-10-13
+repro: repro-missing
+---
+
+### 1.21 纯 Vector persistent 分核模板（静态界 + 尾任务守卫）
+
+> 由 queue VP-2026-0003 在两任务独立证据（lerp_tensor 一维逐元素 2026-09-07 / adaptive_avg_pool2d 迁移 2026-10-13）后合入。知识域最小 repro 待同族任务回填（原任务内复现命令见下方 provenance 项）。
+
+- **模板**：`vector_cores = NPUUtils.get().get_aicore_num() * 2`（纯 Vector 核数翻倍）；`num_kernels = min(num_logical, vector_cores)`；核内 `for t in T.serial(num_local)`（`num_local = ceil(num_logical / num_kernels)`，Python int **编译期常量** → 静态界成立）；`uid = t * num_kernels + cid`；`if uid < num_logical` 守卫尾任务。
+- **逻辑单元（`num_logical`）粒度**：一维逐元素时 `num_logical = ceil(N/block_size)`；多维 unit 形态（如池化 `(n, o_h, c_block)`）时取该 unit 总数——同一模板，unit 粒度由算子决定（adaptive_avg_pool2d 第二证）。
+- **不产生空核**：因 `num_kernels ≤ num_logical`，每核首任务 `uid = cid < num_logical` 恒有效——与 TRAP `T.ceildiv` 负数域 empty-core 越界（queue VP-2026-0058）的形态不同（此处 `num_local` 为 Python int 常量、核数不超过逻辑核数）。
+- **尾块（一维 elementwise 形态，首证）**：`tail = T.min(block_size, N - t0)` + UB 零起点切片 `T.copy(x[t0:t0+tail], x_ub[0:tail])`——v-prefix 整 buffer 操作对 UB 陈旧段一并计算、只拷出 `[0:tail]`，正确性无碍。
+- **提取期注意**：TileOPs wrapper 的 E3/E4 适配注释（如 `threads=` 取代）是提取期笼统预估，核数/grid 取值以 DESIGN.md 分核三要素为准（冲突时设计文档优先）。
+- **provenance（允许失效）**：首证见 queue VP-2026-0003（`examples/lerp_tensor/_make_lerp_tensor_kernel/DESIGN.md#5.5`）；第二证见 `examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md#5.5` 与 `_adaptive_avg_pool2d_kernel.py` L211-234（任务工作区，未上库）。
 
 ---
 id: PL-1.15-broadcast-perf-tax

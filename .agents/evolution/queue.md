@@ -35,29 +35,7 @@ decided_by: evolver / human / -   # 裁决者
 
 ### Tier 1（P 类，2 次独立证据后合入）
 
-## VP-2026-0003
-
-- type: P
-- title: 纯 Vector 一维逐元素 persistent 模板：num_kernels=min(ceil(N/block), aicore×2) + T.serial 静态边界 grid-stride + 动态尾块零起点切片
-- evidence:
-  - examples/lerp_tensor/_make_lerp_tensor_kernel/DESIGN.md#5.5（分核三要素）
-  - examples/lerp_tensor/_make_lerp_tensor_kernel/RETROSPECTIVE.md（Stage 1 提案 + Transferable Lessons）
-  - examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/opt_log.md（persistent nc=48 全档贴 copy 地板；grid-stride 实测最优访问模式）
-  - examples/elementwise/vec_add_1d.py L31–L38（尾块处理官方先例）
-- repro: repro-missing（知识域最小 repro 待同族任务回填；原任务内复现命令见 evidence 末行 provenance 项）
-  - 〔provenance，允许失效〕任务内复现命令：python examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/_make_lerp_tensor_kernel.py --level all
-- toolchain_stamp: tilelang-mlir-dev dev root build（2026-09-07）；本机 Ascend aicore=24（纯 Vector 翻倍 48 vector cores）
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library.md
-- delta: |
-    add §1 新小节「纯 Vector 一维逐元素 persistent 模板」（核数实查/纯 Vector 翻倍规则已有 ascend-constraints.md「物理核数限制」行，仅交叉引用不重复）：
-    模板：num_kernels = min(ceil(N/block_size), aicore×2)；核内 T.serial(ceil(num_logical/num_kernels)) 静态边界（N 工厂特化保证编译期常量，可直接用 T.ceildiv+min 求值，见 §1.5 host 层常量折叠行）+ block_id = i×num_kernels + cid + if block_id < num_logical 屏蔽越界。
-    尾块：tail = T.min(block_size, N−t0) + UB 零起点切片 T.copy(x[t0:t0+tail], x_ub[0:tail])——v-prefix 整 buffer 操作对 UB 陈旧段一并计算、只拷出 [0:tail]，正确性无碍。
-    提取期注意：TileOPs wrapper 的 E3/E4 适配注释（如 threads= 取代）是提取期笼统预估，核数/grid 取值以 DESIGN.md 分核三要素为准，冲突时设计文档优先。
-- status: pending
-- confirmations: 1/2
-- created_by: task lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z 2026-09-07
-- decided_by: -
-- decided_note: -
+> **条目迁移（2026-10-13 蒸馏）**：VP-2026-0003 第二证达标（adaptive_avg_pool2d 迁移），已合入 `pattern-library/layout.md` PL-1.21-vector-persistent-split，完整记录移至下方 `## Decided` 归档区。
 
 ## VP-2026-0004
 
@@ -912,6 +890,89 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0061（lse 恒值指纹）同「错误指纹速查」族——合入时互链。
 
+## VP-2026-0142
+- type: D
+- title: avg-pool 倒数乘（`sum/d` → `sum·fl(1/d)`，倒数 fp32 计算一次）的容差内等价实测数据与判据分档（≤1 ulp of target dtype）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/verify_equiv.py（C1 行 + 45 用例表：spp (2,128,56,56)→6×6 fp16 bitdiff=15 / viol=0 / max_ulp=1.00、max_abs_diff 1.22e-04；其余形状与 bf16 全 0 差——与 atol/rtol 1e-3/1.6e-2 完全相容）（任务工作区，未上库，provenance 允许失效）
+  - 同目录 DESIGN.md §1.6.1 C1 行 + Stage 2 复检复盘 Value Point Proposals 第二行；交叉引用 layout.md PL-1.5（乘倒数行）
+- repro: repro-missing（verify_equiv.py 为任务过程文件；知识域最小 repro 待同族任务回填——逐元素 `sum/d` vs `sum·fl(1/d)` 取舍入对照仅需数行 torch CPU 脚本）
+- toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b + CANN 9.0.0 + Ascend910B3 / 2026-10-13；verify_equiv 为 torch CPU（fp64 参照）
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    update 条目 PL-1.5-quickref 的「乘编译期常数倒数」行（原文保留，追加定量与判据分档）：倒数在 fp32 计算一次的 `sum·fl(1/d)` 对 `sum/d` 为**容差内等价**——adaptive_avg_pool2d 2026-10-13 实测（45 用例，torch CPU fp64 参照，双式均按目标 dtype 舍入）：spp (2,128,56,56)→6×6 fp16 有 15/9216 元素位级差（10 元素差 1 ulp，max_abs_diff 1.22e-04）、viol=0、max_ulp=1.00；其余形状与 bf16 全 0 差；与 atol/rtol 1e-3/1.6e-2 完全相容。**判据分档纪律**：等价性判据须按优化项的等价强度分档——逐位等价项用 `viol==0`，容差内等价项用「舍入到目标 dtype 后 ≤1 ulp」并与逐位判据分列（同任务 verify_equiv `_ULP_TOL={C4:0,C4b:0,C1:1}` 实现）；单一 `viol==0` 判据会把容差内等价项误判为 FAIL。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: 缺知识域 repro 降级 Tier 1（merge-policy §1 ED-A）；目标 PL-1.5 为既有 verified 条目，合入时用 update。
+
+## VP-2026-0143
+- type: P
+- title: 自适应池化的几何特化路径模式集——`out=1×1` 退化为单次 3D `T.reduce_sum` 链（整平面 flatten）；`out==in` 恒等退化为纯拷贝；退化路径容量随 H·W 缩放需编译期判据否则回退一般路径
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md §1.6.1 C4/C4b + §0.6（NPU 重设计特化路径）；_adaptive_avg_pool2d_kernel.py `_func_global`（`T.reduce_sum(flat32, mid, dim=2)` + `T.reduce_sum(mid, gacc, dim=1)`）/ `_func_identity` / `identity_fits`/`global_fits` 编译期容量判据；verify_equiv.py C4/C4b 逐位等价 45/45；Stage 3 L2 `(1,8,32,32)→(1,1)`、`(1,8,64,64)→None` 两例走回退路径仍 0 差（任务工作区，未上库）
+  - 3D reduce 链的可执行伴随行为见知识域 repro/TRAP-vcast-shape-and-gm-source.py FIX 段第 3 项
+- repro: none（设计期/实现期结构形态；3D reduce_sum 链伴随行为由 repro/TRAP-vcast-shape-and-gm-source.py 覆盖）
+- toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md（ALG-pooling）
+- delta: |
+    update ALG-pooling（R1/R4 行）追加几何特化模式集：① `out=1×1` 全局自适应池化 = 整平面均值 → 单次 3D `T.reduce_sum` 链（`dim=2` → `dim=1`，整平面 flatten，比一般 bin 双循环少 ≈H·W 倍向量 op；免 `T.reshape`+transpose 链，后者有 mis-compile 风险见 PL-1.1）；② `out==in` 恒等 = 纯拷贝（bins 全为单元）；③ 退化路径的驻留缓冲随 `H·W` 线性放大 → 以编译期容量判据决定是否走特化，否则回退一般路径（纯优化，语义与精度不变）；④ 与一般网格的区分以编译期常量分支实现，特化路径的单元粒度须为整平面（`NUM_LOGICAL` 单一定义源，见 queue VP-2026-0147）。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0144
+- type: D
+- title: 池化可分离 2D→1D / 前缀和差分不降低运算量（四口径复算：spp 56→6 每平面 3720/3892 > 直接法 3600；nondiv 55→7、57→7 3892/3918 > 3843）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md §1.6.1 C2/C3 行（四口径复算：FLOPs / 访存 / 扫描遍数 / 中间缓冲；可分离 + 前缀和差分两候选均因 bin 重叠与逐输出差分点数 ≥ 直接法而否决）（任务工作区，未上库，provenance 允许失效）
+- repro: none（算术推导，无需运行）
+- toolchain_stamp: 分析型（无工具链依赖）；核对环境 tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md（ALG-pooling R3）
+- delta: |
+    update ALG-pooling R3 行追加实测/复算结论：自适应池化的 bin 宽为 `floor`/`ceil(in/out)` 两值且相邻 bin 重叠 ≤1，**可分离 2D→1D 与前缀和差分均不降低运算量**——spp(56→6) 每平面可分离 3720 / 前缀和差分 3892 vs 直接法 3600；nondiv(55→7, 57→7) 3892/3918 vs 3843（四口径复算，两候选均否决）。⇒ R3 的候选枚举中「窗口重叠数据的重复读」类结构优化对变长 bin 的自适应池化不成立，直接 bin 累加（C 轴向量化）为默认候选。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0145
+- type: P
+- title: 设计盘点两漏点与核对项——① 累加器零初始化（`for o_w: for c: acc=0`）常被排除在「循环/标量点盘点」外、可整块 `T.clear` 消除；② `ceil(C/CH)>1` 的通道块尾须 GM/UB 两侧动态切片仅写回有效通道
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/REVIEW.md 问题 1（v0 §1.6.2/§6.1 均无 `acc` 零初始化行，§3.3 行 605-607 有）；DESIGN.md v1 §1.6.2 #0 / §6.1 / §3.3 `T.clear(acc)`；docs/Tilelang.language/内存操作/T.clear.md；Stage 3 L1 bf16 `(1,96,28,30)→(7,5)` 与 `(1,96,5,7)` 恒等两例（`real_c = T.min(CH, C - cb*CH)` + `[0:real_c]`）0 差（任务工作区，未上库）
+- repro: none（文档级/实现级证据）
+- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-op-design/references/quality-checklist.md
+- delta: |
+    add/update quality-checklist 分块与向量化盘点段两级核对项：① **累加器零初始化**（`for o_w: for c: acc[..]=0` 类标量写）常被排除在「循环/标量点盘点」之外——可整块 `T.clear(acc)` 消除（降级为 vbrc 类整 buffer 操作），盘点时以 §3.3 伪代码逐 `for`/元素级赋值与 §1.6.2/§6.1 建立一一映射；② **通道块尾**：`CH = min(C, 64)` 且 `ceil(C/CH)>1` 时须 GM↔UB 两侧动态切片 `real_c = T.min(CH, C - cb*CH)` 且仅写回 `[0:real_c]`（UB 未初始化尾 lane 只要不写回即不影响结果）——设计 checklist 的分块章节增该核对项与 L0/L1 用例形态。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: ①的目标亦被 queue VP-2026-0147（design-review 维度 8 可操作清单）覆盖——本条落在设计 skill 的 references（P 类 Tier 1），VP-2026-0147 落在检视 SKILL（R 类 Tier 2），合入时互链。
+
+## VP-2026-0146
+- type: D
+- title: 退化（几何特化）路径的 UB 缓冲随 H·W 线性放大——代表 shape 的容量结论不覆盖退化路径；编译期容量判据决定特化或回退（`(1,8,32,32)→1×1` 需 ≈393KB ≫ 192KB）；UB 膨胀系数双口径须设计期并列
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md §4.5（仅两行代表 shape：spp CH=64 = 41KB / resnet C4 = 19KB）/ §9.2；_adaptive_avg_pool2d_kernel.py `identity_fits`/`global_fits` 编译期判据 + 回退一般路径；Stage 3 L2 `(1,8,32,32)→(1,1)`（C4 的 `(CH,H,W)` flat 缓冲 `64·1024·(2+4)·2 ≈ 393KB`）与 `(1,8,64,64)→None` 两例回退且 0 差（任务工作区，未上库）
+  - 同任务 Stage 2：REVIEW.md 问题 5 + design_calc_check.py `UB_INFLATION = 1.7` 单档展示 vs constants.md CONST-capacity-910B2C 双口径（默认 auto-multi-buffer ~1.7x / 关闭档 1.10–1.12）
+- repro: none（设计期容量核算 + 编译期判据形态）
+- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/_shared/standards/hardware-cost-model.md
+- delta: |
+    add 两节：① **退化/几何特化路径的容量缩放**——退化路径（全局池化整平面、恒等整平面）的驻留缓冲随 `H·W` 线性放大，设计期以代表 shape 的容量结论不覆盖退化路径；实现层以编译期容量判据（`H·W·CH·(elem+4)·2 ≤ 192KB` 类）决定是否走特化，否则回退一般路径（纯优化，语义不变）。实测：adaptive_avg_pool2d `(1,8,32,32)→1×1` 的 C4 flat 缓冲 ≈393KB ≫ 192KB UB → 回退，回退路径 max_diff 仍 0。② **UB 膨胀系数双口径并列**——`constants.md` CONST-capacity-910B2C 的双口径（默认 auto-multi-buffer 开 ~1.7x；`--enable-auto-multi-buffer=false` 下 1.10–1.12）在设计期须并列给出：设计未显式关闭 auto-multi-buffer 却只引 1.10–1.12 会低估上界（`design_calc_check.py` 的 `UB_INFLATION` 当前只展示 1.7 一档，检视者需自行判断设计引用的是哪一档）。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: -
+
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
 ## VP-2026-0008
@@ -1234,6 +1295,7 @@ decided_by: evolver / human / -   # 裁决者
   - examples/multi_head_attention/_gqa_prefill_fwd_kernel/history_version/design_v1.md（diff 比对基准）
   - 〔2026-09-17 第二证（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕RETROSPECTIVE.md re_review 章节——section-diff 复用形态独立复现：v0↔v1 按章节字节 diff 得 10 节 SAME / 9 节 CHG，SAME 节沿用首轮结论（同时证明修订无附带损伤）、CHG 节全量复核；**「修订残留只能靠全文 grep 抓、changelog 不可信作覆盖面依据」再证实**：v1 changelog 自称清理 6 处残留，复检仍独立发现 7 处未同步（§5.3/§9.1/§9.2 旧 UB 数字与 v1 直接矛盾等）——补充机械步骤见 VP-2026-0092（grep 关键词扫描 + 验证脚本 md5 比对）
   - 〔2026-09-20 第三任务独立复现，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕复检三段式：§0.1–§0.4 与 v0 逐字一致（diff 确认）→ 首轮源码行号级核对结论安全沿用；§0.5–§0.7 与 v1 逐字一致 → 上轮修复保留；变更半径审计（v1→v2 diff 28删/40增全落修复域，无越界改动/决策翻案）+ 决定性探针复跑（band 直载形态编译复证）——section-diff 复用 + diff 锁定深查范围第三任务实证；建议合入时把「变更半径审计 / 决定性探针复跑」两步骤并入本提案 new 文本的重审工作流
+  - 〔2026-10-13 第四任务独立复现 + 补充「v_prev 问题闭合表」证据，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z〕Stage 2 两次复检均以人工「v_prev 问题逐项闭合表」完成：v0 的 2 阻塞 + 4 建议在 v1 被逐项核对闭合（CH/膨胀系数/收益分母/PL-1.4 四处口径），据此才把注意力放到新问题（v1 新发现 C4b 恒等路径 1 阻塞为 v0/v1 通用 Tiling 核对均未触及）；第二轮复检确认 v1 遗留 1 阻塞 + 1 建议闭合、v0 六项回归保持闭合。**补充证据**：只重跑机械检查会漏掉「旧问题改了一半」的情形（本任务复检靠闭合表拦截）。建议把「复检模式强制产出 v_prev 问题逐项闭合表（阻塞必列 + 建议列，每项给本版证据句，未闭合照常 fail）」并入本提案的重审工作流（与既有复用白名单/diff 锁定/三态判定并列）
 - repro: 复现条件——Stage 2 第 N 轮（N≥2）修订版重审（本任务 R2/R3 两轮实证）
 - toolchain_stamp: 证据环境 tilelang 0.1.2 + 910B2C（2026-09-07）
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -1664,6 +1726,7 @@ decided_by: evolver / human / -   # 裁决者
   - 〔2026-09-17 第二证（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕design_calc_check 对该 DESIGN.md **两轮（v0/v1）均 skip 3/4**（ub_budget / l0c_budget / core_split），且 v1 §4.5 已含逐行 Bytes 列与「稳态峰值合计」行、§5.2 有 bl/bs/bp/bn 代码块、§5.5 有 w1–w4 逻辑核数列表仍全部无法解析——与 ada_layer_norm（N 分行驻留表形态）构成**两类表格形态的独立第二证**；REVIEW 只能人工复算（UB 115.25KB 逐项加和、L0C 16KB、逻辑核数 8/768/2560/16384）。机械拦截位（VP-2026-0009 类）连续两任务不生效，建议审批时把本条的 §5.5 workload 分核表解析与 ssd 的 w1–w4 列表形态并入 new 文本 2 的识别范围
   - 〔2026-09-20 第三现 + 新子缺陷，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕4 项检查 3 skip（ub_budget/l0c_budget/core_split——该任务 §4.3 多张 buffer 表 + §5.2 block 常量代码块 + §5.5 分核三要素列表均无法解析，仅 r3_metrics 生效，全靠人工复算兜底）；**新子缺陷**：l0c_budget 解析取 "block 64x128"（bn=128 被当 block_N），与真实 L0C acc [bl,bp]=[64,64] 不符（结论 pass 侥幸同向）——GEMM 类多 block 参数文档的维度取用需语义识别而非首个数值对，建议并入 new 文本 2 识别范围（优先匹配 alloc_L0C/L0C 容量句上下文中的 [bl,bp] 组合）
   - 〔2026-09-28 第四现（不同任务，reduction 族）+ 两类新表形态，task argmax-_argreduce_kernel-20260924T031005Z〕design_calc_check 对该 DESIGN v0/v1 两轮检视 + v1 复审（同一任务三轮）ub_budget/core_split 全 skip，仅 r3_metrics 生效；人工复算 ~20 组数字（含 12 组分核算术）是发现膨胀系数数据点混用与 C1 缓冲区间漏 fp32 bm=1 的唯一途径。**两类新表形态**（建议并入识别范围）：① §4.5「B/elem 表 + 逐配置预算表」（列名含 手工预算/×2 双缓冲/结论）；② §5.5「逐 workload 分核表」（列名含 num_row_blocks/num_kernels/核内任务数）。REVIEW.md v0/v1 机械复核表（skip 三行 + 人工复算结论）。**合入优先级建议上调**：四任务（ada/ssd×2/argmax）连续命中，reduction 族最严重的阻塞项（workload (M,N) 差 1024×）正落在 skip 的 core_split 域——与 VP-2026-0136（--manifest 真值推导模式）互补：本条修「表解析」，该条补「真值来源」
+  - 〔2026-10-13 第五现（不同任务，pool 族首个迁移）+ 新子缺陷，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z〕纯 Vector、**任务维 Tiling**的设计几乎必然全部 skip：`design_calc_check.py` 四项中三项 skip（`ub_budget`/`l0c_budget`/`core_split`），仅 `r3_metrics=pass`；`core_split` 按 GEMM 形状（`M/bm`、`N/bn`）解析，对任务维命名（`(n, o_H, c_block)`）恒 skip。**新子缺陷**：`core_split` 的 skip detail 把 §5.5 的小节编号「5」误当 declared logical cores（输出 `"insufficient parsed dims {}; declared logical cores = 5"`）——识别器对小节编号与逻辑核数不做语义区分。`ub_budget` 因 §4.5 表用「**总计（spp CH=64）**」粗体行 + 纯文本层级描述而 skip（第三种未覆盖表形态：单行总量行 + 文本层级）。检视侧后果：纯 Vector 设计的 UB 逐 buffer 求和、`num_logical` 逐 workload 复算、物理核数实查全部落人工；「skip 不得当 pass」已由检视者手工写「机械跳过，人工已核」。建议识别范围并入：① 任务维（非 M/bm）分核表；② §5.5 编号与逻辑核数区分；③ 单行总量 UB 表形态
 - repro: 复现条件——DESIGN.md 采用「按 N 分行的驻留预算表」（§4.5）或「workload 表格式分核表」（§5.5）形态时跑 design_calc_check 两个检查项（当前均 skip）
   - 〔provenance，允许失效〕任务内复现命令：python3 .agents/tools/design_calc_check.py check --design examples/ada_layer_norm/_ada_layer_norm_kernel/DESIGN.md
 - toolchain_stamp: design_calc_check.py 现行版本；失效环境 tilelang 0.1.2+a83118285a / 2026-09-10
@@ -3224,7 +3287,150 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 清理动作的实际执行方若不在 scaffolder（如 conductor Stage 0 编排或脚本），apply 时改路由至实际 owner；与 VP-2026-0117（终态产物保全）/ VP-2026-0102（迁移重做 git-show 核对）互补三件。
 
+## VP-2026-0147
+- type: R
+- title: design-review 维度 3/7/8 检视缺口增补——几何特化路径「单元粒度 ↔ num_logical ↔ §3.3 解码」三要素自洽 + num_logical 全文 grep 唯一性 + §3.3 逐 for 对齐 §1.6.2 + 候选采纳结论跨节唯一 + 伪代码切片 rank vs buffer 形状
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：Stage 2 检视三轮复盘（examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/RETROSPECTIVE.md Stage 2 / recheck-1 / recheck-2 的 Skill Flow Issues 与 Value Point Proposals）——本轮 v0/v1 两版检视的通用 Tiling 核对均绕过了 C4b 恒等路径（`(1,8,9,11)` 整平面单元应配 `num_logical=N*num_cblk`，通用式 9 会产生 `n=uid//num_cblk∈0..8` 越界）；`acc` 零初始化漏点靠逐行人工交叉阅读发现；C4/C4b 示意切片与 §4.3 声明 buffer rank 不符（记附注级）；修复面跨 11 处章节靠人工 grep 对齐（REVIEW.md 问题 1/2 + 机械复核段）（任务工作区，未上库，provenance 允许失效）
+- repro: repro-missing（检视流程规则；复现条件 = 任一含几何特化/退化路径或候选跨节结论的设计文档走维度 3/7/8 核对）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 3 一处 + 维度 7 一处 + 维度 8 两处）
+    定位锚 1（维度 3）: "| 分核策略（物理核数适配） |"
+    new 文本 1: 在该行之后插入新行：
+      | 几何特化/退化路径分核自洽 | 凡设计含几何特化或退化路径（全局池化、恒等、恒等轴、几何条件分支），须逐路径核对「单元粒度 ↔ `num_logical` 公式 ↔ §3.3 任务解码 `n = uid // …`」三者一致（整平面单元应配 `N*num_cblk` 而非通用式 `N*out_H*num_cblk`——`N=1` 时后者产生越界 `n`）；并对 `num_logical`/`NUM_LOGICAL` 做全文 `grep` 逐处核对取值口径唯一（修复面常跨 §3.3/§4.3/§4.4/§5.2/§5.5/§6.x/§9.2 等 10+ 处） | 特化路径沿用通用 `num_logical` 公式而与整平面单元粒度不符（越界索引风险）；同一分核变量全文出现两种取值口径 |
+    定位锚 2（维度 7）: "| 内部一致 | API 映射、内存规划、Tiling 三处描述相互一致，无矛盾 |"
+    new 文本 2: 在该行末追加子项：
+      | 伪代码切片一致性 | §3.3 伪代码声明的 buffer 形状与其内 `T.copy`/归约切片 rank 须一致（示例：4D 输入切片超 `H_in`、3D 切片喂 2D buffer）；设计显式声明「伪代码为决策示意、局部次序交 Stage 3」时记附注级并在 REVIEW.md 提示 Stage 3，不阻塞 |
+    定位锚 3（维度 8，向量化替代完整性行）: "| 向量化替代完整性 | §1.6.2 覆盖方案中**全部**循环 / 标量计算点（与 §3.3 伪代码、§6 循环结构交叉核对，无遗漏）"
+    new 文本 3: 在通过标准中追加可操作判据：
+      「盘点对象 = §3.3 伪代码逐 `for`/`range`/元素级赋值」——逐条与 §1.6.2 行名、§6.1 表一一对齐，缺失即 fail（高频漏点：累加器零初始化 `for o_w: for c: acc=0`，可整块 `T.clear` 消除）；另核对 §1.6.2 表内标记列与结论段文字/保留计数逐点一致（表/文同点符号相左记建议级）。
+    定位锚 4（维度 8，调研→设计一致性行）: "| **调研→设计一致性** |"
+    new 文本 4: 在该行末追加子项：
+      「候选采纳结论跨节唯一性」——逐候选建立采纳结论表，跨 §1.6.0 R4 行 / §1.6.0 调研结论 / §1.6.1 / §0.6 / §3.3 五处取值须一致（任何分歧即 fail）；采纳与否以 §1.6.1 为唯一决定源，其余章节只引用不重判。
+    动机: 本任务两轮修订回退（Stage 2 复检两次不通过、合计 ~1460s 设计修订往返，占会话 33%）的根因即上述四类检视缺口——几何特化路径不在通用 Tiling 核对范围、`num_logical` 跨 11 处人工枚举、候选采纳结论跨 5 节矛盾、`acc` 零初始化不在盘点范围；四项均无机械化支持，靠检视者逐行交叉阅读。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: 与 VP-2026-0145（设计侧 checklist，P 类）/ VP-2026-0092（复检 grep+md5）/ VP-2026-0028（修订版重审工作流）互补；定位锚为唯一子串，apply 时按锚后插入执行。
+
+## VP-2026-0148
+- type: R
+- title: op-design Phase 2 补「候选采纳结论单一决定源」+ D-1 等价性判据分档 + §1.6.2 盘点对象可操作判据
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：Stage 1 revision 复盘（examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/RETROSPECTIVE.md Stage 1 design-revision Skill Flow Issues 三行 + Value Point Proposals 第一行）——v0 同一候选（倒数乘 C1）在 §1.6.0 R4（「✅ 采纳」）/ 调研结论 / §1.6.1 C1（「未采纳」）/ §3.3（实际使用）各写不同结论；`acc` 零初始化盘点漏点修复须同步 §1.6.2/§6.1/§3.3/§1.4 四处；C1 采纳后暴露 D-1 判据缺口（`viol==0` 无法覆盖容差内等价，v1 引入 ≤1 ulp 分档）（任务工作区，未上库）
+- repro: repro-missing（设计流程规则；复现条件 = 同一候选在多节各写不同采纳结论、或容差内等价项沿用单一 viol==0 判据的设计文档）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 三处）
+    定位锚 1（Phase 2 第 2 步）: "2. **向量化替代分析（循环 / 标量消除 → §1.6.2）**：盘点实现方案中**全部**循环与标量计算点，逐项判定能否用向量操作等价替代："
+    new 文本 1: 在该行「盘点实现方案中**全部**循环与标量计算点」后追加可操作判据：
+      「（盘点对象 = §3.3 伪代码逐 `for`/`range`/元素级赋值，逐条与 §1.6.2 建立一对一映射，并同步 §6.1 表与 §1.4 步骤；累加器零初始化 `for o_w: for c: acc=0` 类标量写属高频漏点，可整块 `T.clear` 消除。）」
+    定位锚 2（Phase 2 第 4 步产出与下游约束）: "4. **产出与下游约束**："
+    new 文本 2: 在该列表末追加一条：
+      - **候选采纳结论的单一决定源**：候选采纳与否以 §1.6.1 为唯一判定处；§1.6.0 R4 行、§1.6.0 调研结论、§0.6、§3.1、§3.3 一律引用（标注「→ §1.6.1 Cx」）而非重判——同一候选跨节结论矛盾会使 D-1 等价性验证范围与「已采纳优化项」不匹配（逐位 vs 容差内）。
+    定位锚 3（Phase 2 第 5 步 D-1）: "   - **内容**：每个采纳项的候选式 vs 基线式数值对照——随机张量 + 角点值（±inf/NaN/subnormal/边界 shape）上以 **fp64 参照**比对（torch CPU 实现，两式均以 fp64 计算后按目标 dtype 舍入对照）；SymPy 符号化简可选（仅限可符号化公式）；"
+    new 文本 3: 在该 bullet 后插入新 bullet：
+      - **判据分档（按采纳项等价强度）**：逐位等价项用 `viol==0`；容差内等价项（如 `sum/d` → `sum·fl(1/d)`）须显式声明判据「舍入到目标 dtype 后 ≤N ulp」并与逐位判据分列（脚本以每 case `kind` 分判据，NaN/finite 不一致恒判失败）——单一 `viol==0` 判据会把容差内等价项误判为 FAIL（adaptive_avg_pool2d 2026-10-13 实证：C1 spp fp16 viol=0 但 bitdiff=15 / max_ulp=1.00）。
+    动机: 本任务 v0 的跨节矛盾与盘点漏点各消耗一轮 Stage 2 检视 + Stage 1 修订；容差内等价判据缺口在 v1 采纳 C1 后立即暴露——三处均为设计 skill Phase 2 缺少可操作判据/单一决定源条款所致。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: 与 VP-2026-0142（判据分档的数据侧）/ VP-2026-0145 / VP-2026-0147 互链。
+
+## VP-2026-0149
+- type: R
+- title: op-develop Phase 2 补三条实现前置核对——`range` 是 serial TIR 循环（非编译期展开）/ `ceil(C/CH)>1` 通道块尾动态切片 / 退化路径容量判据与回退
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：Stage 3 复盘（examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/RETROSPECTIVE.md Stage 3 Skill Flow Issues 四行）——首轮按 DESIGN §1.6.2 #8/§6.1「`range` 编译期展开」字面实现即 trace 期失败（`list indices must be integers or slices, not Var`，走静态界+守卫修复）；DESIGN §5.2/§5.3 声明「本算子不存在 GEMM 式整除问题」未覆盖通道块尾（C=96 → 64+32，整块搬运即越界）；§4.5 UB 预算只对代表 workload 核算，未覆盖退化路径 `(1,8,32,32)→1×1` 的 ≈393KB（任务工作区，未上库）
+- repro: repro-missing（开发流程规则；复现条件 = 源/伪代码含「Python `range` 编译期展开」声明或 `ceil(C/CH)>1` / 几何特化路径的迁移 kernel）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 1 步前追加前置核对）
+    定位锚: "1. 按 DESIGN.md §3 API 映射 + §6 循环结构生成 `@tilelang.jit(target="npuir")` kernel。"
+    new 文本: 在该条前插入三条前置核对（生成前执行）：
+      ① **`range` 语义核对**：DESIGN/伪代码中凡出现 Python `range`/预计算表索引并声明「编译期展开」，先确认前端语义——本工具链将 `for i in range(n)` 解析为 serial TIR 循环（loop var 为 `tir.Var`），Python 列表索引在 trace 期报 `list indices must be integers or slices, not Var`；等价实现 = 静态上界 `T.serial(max_extent)` + 运行时 `if k < extent` 守卫（见 pattern-library TRAP-tir-range-loop-not-unrolled）。
+      ② **通道/维度块尾核对**：凡 `ceil(C/CH)>1`（或任何非整除分块），GM↔UB 两侧用动态 extent（`real_c = T.min(CH, C - cb*CH)`）且仅写回 `[0:real_c]`——UB 未初始化尾 lane 只要不写回即不影响结果。
+      ③ **退化路径容量核对**：几何特化/退化路径的驻留缓冲随空间规模放大，实现须带编译期容量判据（容量够才走特化、否则回退一般路径），回退作为纯优化（语义与精度不变）。
+    动机: 本任务三条均为「实现层才发现」的形态——首次实现 `range` 字面即失败、块尾与退化容量均为设计文档未覆盖项；前置核对把成本从 Stage 3 现场试错前移到生成前。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: ①的知识侧数据条目已 Tier 0 合入 traps-compiler.md TRAP-tir-range-loop-not-unrolled（含 repro）；本条为开发 skill 的前置核对流程侧。
+
+## VP-2026-0150
+- type: R
+- title: integrate_kernel.py 两缺陷——① 聚合 `__init__.py` 生成非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢掉 helper re-export）；② `sync_wrapper_ascend_mode` 在两层类继承时把 `ascend_mode` 写到子类而非直接继承 `Kernel` 的基类
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/RETROSPECTIVE.md Stage 5 attempt 1/2（Skill Flow Issues + Value Point Proposals）——attempt 1 二次运行 `integrate_kernel.py` 后 `ImportError: cannot import name 'adaptive_bin' from ...adaptive_avg_pool2d_kernel`（修复链见 `examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/integration_log.md` Debug history + `history_version/__init___s5_attempt1.py`）；attempt 2 gate `S5-ASCEND-MODE` 失败（两层类 `AdaptivePool2dKernelBase(Kernel)` + `AdaptiveAvgPool2dKernel(Base)`，`meta.kernel_class_name` 指子类 → 直接 `Kernel` 基类无字面量 → `len(class_modes)!=1`），gate_lint 只看直接基类为 `Kernel` 的类（任务工作区/集成包，未上库）
+  - 交叉引用：queue VP-2026-0055（同文件 gen_init_py 静默降级）/ VP-2026-0064（幂等剥离注释行）/ VP-2026-0012（幂等重跑覆盖集成侧补丁）——同缺陷集群
+- repro: repro-missing（集成脚本规则；复现条件 = 已重写 wrapper 后重跑 integrate_kernel.py 观察 __init__.py 丢失 helper re-export；或对两层 Kernel 继承 wrapper 跑 `statectl gate 5` 观察 S5-ASCEND-MODE）
+- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
+- delta: |
+    动作: update（两处）
+    定位锚 1: "def parse_wrapper_imports(wrapper_path: Path, extracted_module: str) -> list[str]:"
+    new 文本 1: 在 `gen_init_py` 调用侧（main 流程）持久化 wrapper 契约名：首次运行把 `parse_wrapper_imports` 得到的名字清单写入 `.migration_meta.json`（如 `wrapper_import_names`）；重跑时该字段非空则以其为 `gen_init_py` 的输入（不再从已重写的 wrapper 重新解析），或在 `rewrite_wrapper_import` 报「already integrated」时跳过 `__init__.py` 重生成——消除「wrapper 已重写 → 解析为空 → `__init__.py` 只剩 `integrated_files` keys → helper re-export 丢失 → import smoke ImportError」。
+    定位锚 2: "def sync_wrapper_ascend_mode(wrapper_path: Path, kernel_class: str | None, mode: str) -> bool:"
+    new 文本 2: `kernel_class` 给出时把目标类的选择从「名字等于 `kernel_class` 的类」改为「`meta.kernel_class_name` 的 MRO 中直接继承 `Kernel` 的类」（或在无 `kernel_class` 时对全部 bases 含 `Kernel` 的 wrapper 类写值）——两层 wrapper（`Base(Kernel)` + `Subclass(Base)`）场景下 gate_lint `S5-ASCEND-MODE` 只度量直接继承 `Kernel` 的类，把字面量写到子类会留下 direct-`Kernel` 基类无字面量而门禁失败。
+    动机: 两缺陷在本任务各消耗一次 Stage 5 返工（attempt 1 幂等重跑破坏 import、attempt 2 gate 失败 + 行为中性修复的时间戳对账 164.9s）；同一脚本内两处，独立于既有 VP-2026-0055（产物侧校验）的根因。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: 与 VP-2026-0055/0064/0012 同缺陷集群，审批简报时建议同批；②的另一可行解在 gate_lint 侧（解析 `meta.kernel_class_name` 的 MRO），审批时可选路由。
+
+## VP-2026-0151
+- type: R
+- title: add-npu-op Stage 5 前置与 report 时效性口径——`integrate_kernel.py`/report CLI 须先 `source /workspace/env.sh`；`S5-REPORT-STALE` 为 mtime 口径，行为中性 gate 修复的时间戳对账须显式披露
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/RETROSPECTIVE.md Stage 5 attempt 1/2（Skill Flow Issues 两行 + 第二行 Value Point Proposal）——未 `source /workspace/env.sh` 时 smoke `ModuleNotFoundError: No module named 'tilelang'`（integration 本身已成功）；`S5-REPORT-STALE` 纯 mtime 检查使 report 后任何 wrapper/kernel/`__init__.py` 编辑都判 stale，与 conductor「修 gate 但不重跑正确性/benchmark」冲突；行为中性 edit（加类级字面量）+ 时间戳对账后 report 保持 `status=passed`（任务工作区，未上库）
+- repro: repro-missing（集成流程规则；复现条件 = 不 source env.sh 跑 integrate_kernel.py 观察 smoke ModuleNotFoundError；report 后编辑 wrapper 再 `statectl gate 5` 观察 S5-REPORT-STALE）
+- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
+- delta: |
+    动作: update（Tier 2 段两处）
+    定位锚 1: "#### Tier 2 — Runtime verification (after NPU kernel component rewrites kernels for NPUIR)"
+    new 文本 1: 在该小节标题后追加前置条件：
+      > **Prerequisite**: `source /workspace/env.sh`（或等效把仓库根加入 `PYTHONPATH`）再运行 `integrate_kernel.py` 与 report CLI——集成 smoke（`cwd=examples/TileOPs`、`sys.executable`）与 report CLI 均需 `tilelang` 可 import；缺少该前置时 smoke 报 `ModuleNotFoundError: No module named 'tilelang'`（环境缺口，非 kernel/胶水缺陷）。
+    定位锚 2: "Use the PascalCase manifest key `{op_name}`, not `{op_slug}`."
+    new 文本 2: 在该段追加 report 时效性口径：
+      **`S5-REPORT-STALE` 口径**：gate 5 以 `run.json` 的 mtime 对比 wrapper / `pkg/__init__.py` / kernel `.py`（`getmtime(run.json) < max(...)` 即 stale）——report 之后对上述文件的任何编辑都会机械地使 report 失效，故 report 宜作为 Stage 5 最后一步；当修复须在 report 之后落地且不允许重跑时，只有行为中性的编辑（如 gate 要求的声明式字面量）能保持 report 有效——此时对账文件时间戳并**显式披露**（不编辑 report、不重跑正确性/benchmark）。
+    动机: 两条均为本任务 Stage 5 实际消耗（attempt 1 env 缺口 + attempt 2 gate/时间戳往返 164.9s）；skill 原文只在别处提 `PYTHONPATH`，未给 Stage 5 运行前置与 stale 语义。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: -
+- decided_note: 与 VP-2026-0150 同属本任务 Stage 5 门禁/集成缺陷集群（涉及文件不同：脚本 vs skill 文档），审批简报时建议同批。
+
 ## Decided（merged / rejected / expired / conflict 归档）
+
+## VP-2026-0003
+- type: P
+- title: 纯 Vector 一维逐元素 persistent 模板：num_kernels=min(ceil(N/block), aicore×2) + T.serial 静态边界 grid-stride + 动态尾块零起点切片
+- evidence:
+  - 〔第 1 证据，首证〕examples/lerp_tensor/_make_lerp_tensor_kernel/DESIGN.md#5.5（分核三要素）；examples/lerp_tensor/_make_lerp_tensor_kernel/RETROSPECTIVE.md（Stage 1 提案 + Transferable Lessons）；examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/opt_log.md（persistent nc=48 全档贴 copy 地板；grid-stride 实测最优访问模式）；examples/elementwise/vec_add_1d.py L31–L38（尾块处理官方先例）
+  - 〔第 2 证据，不同任务，2026-10-13 蒸馏合入〕task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md#§5.5 + _adaptive_avg_pool2d_kernel.py L211-234（`vector_cores = NPUUtils.get().get_aicore_num() * 2` → `num_kernels = min(num_logical, vector_cores)` + `T.serial(num_local)` 静态界 + `uid = t*num_kernels + cid` + `if uid < NUM_LOGICAL` 守卫；多维 unit 形态推广）+ Stage 3 全量门禁绿（任务工作区，未上库，provenance 允许失效）
+- repro: repro-missing（知识域最小 repro 待同族任务回填；原任务内复现命令见 evidence 末行 provenance 项）
+  - 〔provenance，允许失效〕任务内复现命令：python examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/_make_lerp_tensor_kernel.py --level all
+- toolchain_stamp: 首证 tilelang-mlir-dev dev root build（2026-09-07）；本机 Ascend aicore=24（纯 Vector 翻倍 48 vector cores）；第二证 tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b + CANN 9.0.0 + Ascend910B3（实查 20×2=40）
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library.md（历史单文件；按 INDEX 映射 §1 → layout.md）
+- delta: |
+    add §1 新小节「纯 Vector 一维逐元素 persistent 模板」（核数实查/纯 Vector 翻倍规则已有 ascend-constraints.md「物理核数限制」行，仅交叉引用不重复）：
+    模板：num_kernels = min(ceil(N/block_size), aicore×2)；核内 T.serial(ceil(num_logical/num_kernels)) 静态边界（N 工厂特化保证编译期常量，可直接用 T.ceildiv+min 求值，见 §1.5 host 层常量折叠行）+ block_id = i×num_kernels + cid + if block_id < num_logical 屏蔽越界。
+    尾块：tail = T.min(block_size, N−t0) + UB 零起点切片 T.copy(x[t0:t0+tail], x_ub[0:tail])——v-prefix 整 buffer 操作对 UB 陈旧段一并计算、只拷出 [0:tail]，正确性无碍。
+    提取期注意：TileOPs wrapper 的 E3/E4 适配注释（如 threads= 取代）是提取期笼统预估，核数/grid 取值以 DESIGN.md 分核三要素为准，冲突时设计文档优先。
+- status: merged
+- confirmations: 2/2
+- created_by: task lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z 2026-09-07
+- decided_by: evolver
+- decided_note: 2026-10-13 蒸馏合入 layout.md PL-1.21-vector-persistent-split（第二证 = adaptive_avg_pool2d 迁移，不同任务/不同算子族/跨工具链 417dae99）；合入形态含多维 unit 粒度推广（unit 总数即 num_logical）与「不产生空核」对照（与 VP-2026-0058 的 T.ceildiv 负数域 empty-core 陷阱形态相区分）；尾块动态切片形态按首证保留并标注为一维 elementwise 形态。
 
 ## VP-2026-0002
 - type: P

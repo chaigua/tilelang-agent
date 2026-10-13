@@ -261,3 +261,43 @@ repro: repro/TRAP-vselect-inplace-carried-state.py
 ### 原位 T.vselect(cond, A, B, B) 在多迭代 T.serial 循环丢失 loop-carried 状态
 
 在线递推（running (max, idx) 类）跨 tile 级联时，`T.vselect(cond, chunk, running, running)`（false 操作数同时是输出）在多迭代 `T.serial` 循环中静默丢失状态——最终输出停留在 tile-0 局部值。触发边界：单迭代（num_full==2）不受影响，num_full ≥ 3（≥2 次更新迭代）才暴露。实测（argmax (4,102400) tn=5120、num_full=20，fp16）：inplace 得 `[4779,3248,2345,1833]`（全为 tile-0 局部索引，真值 `[31919,3248,44964,44710]`）；同 kernel 无别名形态 bit-exact 与 torch.argmax 一致。绕法 = select 到独立 scratch + `T.copy` 回写（多一对 (bm,1) 微缓冲的可忽略代价）。诊断指纹：输出全落 tile-0 局部索引 ⟹ loop-carried 状态未携带。
+
+---
+id: TRAP-tir-range-loop-not-unrolled
+kind: trap
+family: [general, migration]
+apis: [T.prim_func, T.serial]
+dtype: []
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: repro/TRAP-tir-range-loop-not-unrolled.py
+---
+
+### `@T.prim_func` 内的 `for i in range(n)` 是串行 TIR 循环，不是 Python 编译期展开
+
+- **现象**：`@T.prim_func` 内的 `for o in range(n)` 被前端解析为 **serial TIR 循环**，循环变量是 `tir.Var`（不是 Python int）——trace 期即报 `list indices must be integers or slices, not Var`（对编译期 Python 列表/预计算表的索引、`int()`/`float()` 转换同样失败）；由循环变量构造的 slice 偏移保持为运行时表达式。实测（adaptive_avg_pool2d 迁移 Stage 3 首轮，2026-10-13，417dae99 + CANN 9.0.0 + 910B3）：按 DESIGN §1.6.2 #8/§6.1「Python `range` 编译期展开为向量 op 序列」的字面形态实现（`range` + 预计算 bin 表索引）在 trace 期失败。
+- **本工具链可行形态**（与源 GPU kernel 同形）：静态上界 `T.serial(max_extent)` + 运行时 `if k < extent` 守卫 + 边界表达式内联计算（`adaptive_bin(o, ...)`）。repro 实测该形态编译通过且 `max_diff=0`（exit 0 证明 trap 与绕法两侧）。
+- **适用**：迁移任务把 GPU 端「Python 预计算表 + `range` 索引」当作编译期展开的形状假设（设计文档声明某 `range` 循环「编译期展开」时，该结论依赖具体前端行为，本工具链下不成立）。与 TRAP-tvm-parser-rules（`if` 折叠/条件 alloc 等解析器规则）同族；前者管条件与作用域，本条管 `range` 循环的 trace 语义。
+- **证明**：`python repro/TRAP-tir-range-loop-not-unrolled.py`（exit 0：`range` trap 复现 + 静态界+守卫形态数值通过）。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`。
+
+---
+id: TRAP-vcast-shape-and-gm-source
+kind: trap
+family: [general, elementwise]
+apis: [T.vcast, T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: repro/TRAP-vcast-shape-and-gm-source.py
+---
+
+### `T.vcast` 的两条 lowering 约束：形状须一致（无 broadcast/reshape）+ 源须为 UB buffer
+
+- **约束一（形状）**：`T.vcast` 的 src/dst 形状须一致（broadcast 兼容），**不承担 reshape**。把 `(out_W, CH)` fp32 累加器按 NCHW 顺序舍回输出 dtype 时，写成 `T.vcast(acc_(out_W,CH)_fp32, acc_t_(CH,out_W)_dtype)` 报 `The input and output shapes do not match for broadcast`；可行路径 = 先分配同形 buffer 完成 `T.vcast`（UB→UB），再以 `T.transpose([1,0])` 换布局。
+- **约束二（源位置）**：`T.vcast` 的源**不能是 GM memref region**（`T.vcast(x[...], ub_fp32)`）——该形态降级为 `hivm.hir.vcast` + `tensor.empty` 目标，在 BiShengHIR 阶段报 `NPU IR opt failed: ... Failed to run BiShengHIR pipeline`（与后续 transpose/copy 无关）。可行路径 = 同 dtype `T.copy` GM→UB 之后再做 `T.vcast` UB→UB。
+- **伴随行为（同 repro 验证）**：① `T.vmul` 的 `src2` 可以是 `T.Kernel` 内由运行时表达式 let 绑定出的 fp32 标量（文档「标量须在 `T.Kernel` 内、`T.Scope` 外定义」不等于「须为编译期常数」）；② 3D `T.reduce_sum` 链（`dim=2` → `dim=1`）可用，是 `out=1×1` 全局池化特化的原语，无需 `T.reshape`+transpose 链（后者有 mis-compile 风险，PL-1.1）。
+- **证明**：`python repro/TRAP-vcast-shape-and-gm-source.py`（exit 0：两条 trap 报文匹配 + 合法形态 `max_diff<1e-3` + 3D reduce 链通过）。文档侧：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` §2.3/§2.4 未覆盖这两条约束。与 TRAP-C12-copy-dtype-cast（`T.copy` 跨 dtype 静默 cast）构成 `T.copy`/`T.vcast` 的互补边界：copy 管搬运（跨 dtype 静默转换），vcast 管转换（形状/源位置受限）。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`。
