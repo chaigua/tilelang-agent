@@ -538,7 +538,7 @@ python -m tileops.reporting.cli run --op {op_name} --prof-mode msprof
 
 Use the PascalCase manifest key `{op_name}`, not `{op_slug}`. The report
 runs the full correctness suite, then the operator benchmark if correctness
-passes. Read this run's `run.json` and `report.md`; a `partial` report
+passes. **共享测试/bench 文件的 `--op` 语义**：report CLI 的 `--op X` 选择的是 `tests/ops/test_{op_slug}.py` / `benchmarks/ops/bench_{op_slug}.py` **整个文件**（非单算子参数化过滤）——同族多算子共存于一个文件时（如 pool 的 avg + max），兄弟算子的正确性/benchmark 用例一并执行并计入 `summary.correctness_tests`；被测算子的判定读 `run.json` 的 per-operator rollup（`operators` / `performance.cases[].operator`），不数 `summary.correctness_tests`。 Read this run's `run.json` and `report.md`; a `partial` report
 means correctness passed but benchmark data failed or was invalid, and the CLI
 may return nonzero for that reason. Correctness must pass; benchmark issues
 are reported without repairing the kernel for performance alone. Common
