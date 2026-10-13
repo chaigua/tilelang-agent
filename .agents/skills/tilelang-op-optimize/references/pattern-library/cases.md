@@ -376,3 +376,23 @@ repro: none
 **durable 载体**：C 轴向量轴模式自包含于 layout.md PL-1.2/PL-1.4 + PL-1.21（纯 Vector persistent 分核模板）+ PL-1.5（runtime let-bound 标量倒数 / 3D reduce_sum 链）；`T.vcast` 与 `range` 两条陷阱自包含于 traps-compiler.md TRAP-vcast-shape-and-gm-source / TRAP-tir-range-loop-not-unrolled（含知识域 repro）。
 
 pool 家族首个 TileOPs 迁移算子（AdaptiveAvgPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过）。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴累加；W 轴 bin 宽 9–10 非 8 倍数 + 变长段归约不可向量化而弃选，§1.6.3 决策）；②**几何特化四路径**（一般网格 / C4 全局 `out=1×1` → 3D `T.reduce_sum` 链 / C4b 恒等 `out==in` → 纯拷贝 / persistent 分核），退化路径以编译期容量判据 `identity_fits`/`global_fits` 决定是否走特化、否则回退一般路径（纯优化，语义与精度不变）；③**C4b 恒等路径的 `num_logical` 口径**为整平面单元 `N*num_cblk`（`(1,8,9,11)`=1，非通用式 9——设计修订 2 轮的阻塞根因，见 queue VP-2026-0147）；④**设计修订链 3 轮**（Stage 2 检视两轮不通过：v0 漏盘 `acc` 零初始化 + 候选 #1 倒数乘采纳结论跨 5 节矛盾 → v1 C4b 恒等 `num_logical`/单元粒度/解码三要素不自洽 → v2 通过），Stage 3 首轮即 `[PRECISION_PASS]`（零精度重试）。**实测**：L0 10/10、L1 13/13、L2 7/7、Boundary 6/6 全过；worst `max_diff` fp16 = 1.221e-04（resnet-global，C1 倒数乘 ≤1 ulp）、bf16 = 0.0；TileOPs 集成 7/7 正确性（avg max abs err 0.00e+00），msprof 有效 bench 3 例——resnet-global `[8,2048,7,7]→(1,1)` fp16 169.26µs / Ratio 2.30%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 16.60µs / 3.81%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 14.50µs / 2.35%（smoke 3.70µs）。适用触发条件：adaptive/窗口池化类迁移设计（变长 bin 的整数边界差口径 + 向量轴选型）；退化路径容量判据与回退设计参考；纯 Vector 多单元 persistent 分核形态；单算子 TileOPs 集成（两层 wrapper 类继承 → gate `S5-ASCEND-MODE`，见 queue VP-2026-0150/0151）。
+
+---
+
+id: CASE-pool-adaptivemaxpool2d-migration
+kind: case
+family: [pool, pooling]
+mode: [developer]
+dtype: [fp16, bf16]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z
+toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: none
+---
+
+### `examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/` + `examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/`（任务工作区/集成包，未上库）
+
+**durable 载体**：max 归约的 NaN 探测陷阱与其合法绕法自包含于 traps-compiler.md TRAP-vcmp-ne-ordered-nan（含知识域 repro）；C 轴向量轴 / 纯 Vector persistent 分核模板见 layout.md PL-1.2/PL-1.4/PL-1.21；几何特化路径模式见 queue VP-2026-0143。本任务函数级 `RETROSPECTIVE.md` 与 `SESSION_TIMING_ANALYSIS.md` 为 provenance（允许失效）。
+
+pool 家族第二个 TileOPs 迁移算子（AdaptiveMaxPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过；同族追加——结构骨架直接对照前作 `examples/adaptive_avg_pool2d/`（同族前作任务工作区，未上库，允许失效））。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴 `T.vmax` 归约），与 avg 同构，差异仅在归约算子（max vs sum）与 NaN 追踪；②**max 无代数化简**（非线性 → 常数权重卷积/GEMM 不等价；无逆元 → 前缀差分不可用），"数学等价优化"只余结构特化（C4 全局整平面 `reduce_max` / C4b 恒等纯拷贝）与归约融合；③**NaN 语义显式追踪**（"窗口内任一 NaN → 输出 NaN" + `{+inf,-inf}` 同窗输出 `+inf` 非 NaN）——不能用求和类探测，改用 `eq` 掩码乘性累积（详情见 TRAP-vcmp-ne-ordered-nan）；max 累加器单位元为 `-inf`（`T.clear` 置 0 在全负窗口出错）；④**Stage 3 near-miss**：首版按 DESIGN 字面用 `vcmp(...,"ne")` 做 NaN 探测，L0-10 语义门禁**假阳性通过**（靠 `vmax`/`reduce_max` 的 NaN 传播兜底），5 组最小探针定位后改 `eq` 取反，全部用例复跑仍全过且 `max_diff=0`；⑤**Stage 1 gate-1 重试 1 次**（`S1-REF-PATHS`：ASCII `:行号`/`:函数名` 紧贴路径 + `…` 缩写 token——见 queue VP-2026-0020 证据链追加）；⑥**Stage 5 integrate 一次成功**（`integrate_kernel.py` 对生成 `__init__.py` 仍非幂等，单次运行规避——同 VP-2026-0150）。**实测**：L0 10/10、L1 17 项、L2 7/7、Boundary 8/8 全过；worst `max_diff` fp16 = bf16 = **0.0**（max 是选择、无累加，`atol=rtol=0` 判据成立；同族 avg 为 1.221e-04）；TileOPs 集成 correctness 5/5（max abs err 0.00e+00），msprof 有效 bench 3 例——global-1x1 `[8,2048,7,7]→(1,1)` fp16 322.11µs / Ratio 5.38%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 20.42µs / 7.77%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 17.98µs / 4.69%（smoke 4.02µs）。Session 墙钟 ≈55min：Stage 3 40.3%（含 NaN 陷阱探针）+ Stage 1 20.9%。适用触发条件：max/归约类算子迁移（NaN 语义追踪 + 单位元 + 无化简边界）；同族追加以对照前作降风险的设计路径；池化族集成（共享 `tests/ops/test_pool.py` → 单算子 report 计兄弟算子用例，见 queue VP-2026-0152）。

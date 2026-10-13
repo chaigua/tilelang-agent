@@ -301,3 +301,23 @@ repro: repro/TRAP-vcast-shape-and-gm-source.py
 - **约束二（源位置）**：`T.vcast` 的源**不能是 GM memref region**（`T.vcast(x[...], ub_fp32)`）——该形态降级为 `hivm.hir.vcast` + `tensor.empty` 目标，在 BiShengHIR 阶段报 `NPU IR opt failed: ... Failed to run BiShengHIR pipeline`（与后续 transpose/copy 无关）。可行路径 = 同 dtype `T.copy` GM→UB 之后再做 `T.vcast` UB→UB。
 - **伴随行为（同 repro 验证）**：① `T.vmul` 的 `src2` 可以是 `T.Kernel` 内由运行时表达式 let 绑定出的 fp32 标量（文档「标量须在 `T.Kernel` 内、`T.Scope` 外定义」不等于「须为编译期常数」）；② 3D `T.reduce_sum` 链（`dim=2` → `dim=1`）可用，是 `out=1×1` 全局池化特化的原语，无需 `T.reshape`+transpose 链（后者有 mis-compile 风险，PL-1.1）。
 - **证明**：`python repro/TRAP-vcast-shape-and-gm-source.py`（exit 0：两条 trap 报文匹配 + 合法形态 `max_diff<1e-3` + 3D reduce 链通过）。文档侧：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` §2.3/§2.4 未覆盖这两条约束。与 TRAP-C12-copy-dtype-cast（`T.copy` 跨 dtype 静默 cast）构成 `T.copy`/`T.vcast` 的互补边界：copy 管搬运（跨 dtype 静默转换），vcast 管转换（形状/源位置受限）。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`。
+
+---
+id: TRAP-vcmp-ne-ordered-nan
+kind: trap
+family: [general, pooling, reduction]
+apis: [T.vcmp, T.vcast, T.vmul, T.vselect, T.reduce_min, T.vmax, T.reduce_max]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z
+toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+repro: repro/TRAP-vcmp-ne-ordered-nan.py
+---
+
+### `T.vcmp(..., "ne")` 是 ordered 不等——NaN 操作数下恒假，不能用作 NaN 探测
+
+- **现象**：`T.vcmp(x, x, "ne")` 在含 NaN 的行返回全 0（NaN 所在 lane 亦为 0）——即 ordered not-equal（等价 `lt | gt`）语义；IEEE 的 `!=`（NaN 操作数为真）在本工具链不可得。合法枚举 `eq/ne/lt/gt/le/ge` 的 NaN 行为实测：`eq` / `le` / `ge` 与 IEEE 一致（NaN lane 上 `eq` 为 0、`le`/`ge` 为 0，是 IEEE 的正确比较），`ne` 为 ordered-NE（NaN 恒假），`lt`/`gt` 与 IEEE 一致（NaN 恒假）。对不含 NaN 的操作数对 `ne` 行为正常（并非坏 op）——陷阱只在意图为 NaN 探测时触发（6 种 `cmp_mod` × 2 种构造逐模式实测表见 repro 头部 provenance）。
+- **后果（静默失效加假阳性通过）**：以 `v != v` 作 NaN 掩码时掩码恒假（标志位永不触发），而端到端 NaN 用例仍可能"通过"——因为 `T.vmax` / `T.reduce_max` 在本工具链会传播 NaN，"窗口内任一 NaN 胜出"被该未文档化行为顺带修对。adaptive_max_pool2d 迁移 Stage 3 首版即此形态（`vcmp(...,"ne")` + `vmax` 累积），L0-10 NaN/±inf 语义门禁首轮假阳性通过；经 5 组最小探针逐层剥离定位，改用 `eq` 取反后语义判定变为确定性路径、全部用例复跑仍全过且 `max_diff=0`。
+- **合法绕法（本工具链实测，逐位正确）**：NaN 探测走 IEEE 正确的 `"eq"`（或 `"le"`/`"ge"`）取反——行级 `cond = T.vcmp(x, x, "eq")` → `T.vcast(cond, f32)` 得 {0,1} 掩码 → 逐元素 **in-place `T.vmul(flag, mask, flag)`**（`flag` 初值 1：0 吸收、1 中性）→ 末尾 `vcmp(flag, 0, "eq")` 即 `has_nan`（整平面 C4 路径以 `T.reduce_min` 收尾）。全程只用 IEEE 正确的比较模式，不依赖 `T.vmax`/`T.reduce_max` 的 NaN 行为。文档侧：`docs/Tilelang.language/比较操作/T.vcmp.md` §2.3 只列合法枚举，未说明 NaN 行为。
+- **证明**：`python repro/TRAP-vcmp-ne-ordered-nan.py`（exit 0：`ne` 自比 NaN 行全 0 复现 + `eq` 为 `isnan` 的 IEEE 补集断言 + eq-mask 乘性累积 `flag==0 ⟺ 列含 NaN` 断言 + NaN-free 操作数对 `ne` 正常）。与 TRAP-expert-v-operands（vcmp 操作数形态与 int16 标量化）互补：前者管操作数形态与执行代价，本条管比较模式的 NaN 语义。溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcmp-ne-ordered-nan.py}`。

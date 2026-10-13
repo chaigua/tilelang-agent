@@ -58,6 +58,8 @@ kb_links: [PL-1.2-caxis-accum, PL-1.3-host-permute, PL-1.4-tiling-heuristic]
 
 R1：avg pool = 常数权重卷积；sum pool × 常数 = avg pool。R2：滑窗天然流式。R3：窗口重叠数据的重复读。R4：C 轴向量轴；跨步系数（见 §1.6.3）。**已知实测**：核内融合转置链（NCHW→NHWC）~5.4µs 可忽略；host permute 106–147µs 通常净亏（PL-1.1/1.3）。
 
+**几何特化路径模式集（2026-10-13 两任务实测合入——adaptive_avg_pool2d + adaptive_max_pool2d 迁移，Tier 1 2/2）**：自适应池化在退化几何下可走结构特化（纯优化，语义与精度不变）：① `out=1×1` 全局自适应池化 = 整平面单次归约（avg 用 3D `T.reduce_sum` 链 `dim=2`→`dim=1`；max 用整平面 `reduce_max`——整平面 flatten，比一般 bin 双循环少 ≈H·W 倍向量 op；免 `T.reshape`+transpose 链，后者有 mis-compile 风险见 PL-1.1）；② `out==in` 恒等 = 纯拷贝（bins 全为单元）；③ 退化路径的驻留缓冲随 `H·W` 线性放大 → 以**编译期容量判据**决定是否走特化，否则回退一般路径（`(1,8,32,32)→1×1` 的 C4 flat 缓冲 ≈393KB ≫ 192KB UB → 两任务均回退、回退路径 max_diff=0/1.22e-04 内）；④ 与一般网格的区分以编译期常量分支实现，特化路径的单元粒度须为整平面（`NUM_LOGICAL` 单一定义源；avg 的 C4b 恒等 `num_logical=N*num_cblk` 而非通用式 `N*out_H*num_cblk`——设计修订 2 轮阻塞根因）。证据：avg `examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md#1.6.1, verify_equiv.py}`（任务工作区，未上库）／max `examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{DESIGN.md#0.6-R4, _adaptive_max_pool2d_kernel.py（`identity_bytes`/`global_bytes` 判据）}`（同，未上库）。max 侧无代数化简（非线性 + 无逆元），仅结构特化 + 归约融合可用（见 queue VP-2026-0152）。
+
 ---
 id: ALG-reduction
 family: [reduction, statistics]

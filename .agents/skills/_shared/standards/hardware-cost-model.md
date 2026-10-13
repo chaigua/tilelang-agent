@@ -36,3 +36,10 @@
 - **负向断言举证**（[negative-claim-evidence.md](negative-claim-evidence.md)）：以"违反容量/带宽量级"淘汰候选的论断，其证据 = constants.md 条目（含版本戳）；constants.md 未覆盖的量仍按「未文档化假设 + 估算依据」标注；
 - **实验裁决模式**：roofline 估算不能替代实验裁决——判定裕度落在未实证常数的不确定区间内时仍须产出主选+备选+裁决计划三件套（设计 skill Phase 2 第 3 项）；
 - **版本失效**：tilelang 重编译 / CANN 升级后，constants.md 相关条目自动待重验（`kb_stale_check.py` 检测，repro 套件重验）——设计期引用待重验常数须在估算行标注。
+
+## 5. 退化/几何特化路径的容量核算与 UB 膨胀双口径（2026-10-13 Tier 1 合入，2/2：adaptive_avg_pool2d + adaptive_max_pool2d 迁移）
+
+1. **退化/几何特化路径的容量缩放（①，两任务实测）**：退化路径（全局池化整平面、恒等整平面）的驻留缓冲随 `H·W` 线性放大——设计期以**代表 shape** 的容量结论**不覆盖**退化路径。实现层以编译期容量判据（`H·W·CH·(elem+4)·2 ≤ 192KB` 类）决定是否走特化，否则回退一般路径（纯优化，语义与精度不变）。实测：adaptive_avg_pool2d `(1,8,32,32)→1×1` 的 C4 flat 缓冲 ≈393KB ≫ 192KB UB → 回退，回退路径 max_diff 仍 0；adaptive_max_pool2d 同款 `(1,8,32,32)→1×1` 与 `(1,8,64,64)` 恒等两例回退、max_diff=0（判据 `identity_bytes`/`global_bytes`）。设计 §4.5 只列代表 workload 的 UB 预算时须显式补一行退化路径核算 + 回退结论（否则 §4.5 的容量结论对退化路径无效）。
+2. **UB 膨胀系数双口径并列（②，单源：adaptive_avg_pool2d Stage 2）**：`CONST-capacity-910B2C` 的双口径（默认 auto-multi-buffer 开 ~1.7x；`--enable-auto-multi-buffer=false` 下 1.10–1.12）在设计期须并列给出——设计未显式关闭 auto-multi-buffer 却只引 1.10–1.12 会低估上界；`design_calc_check.py` 的 `UB_INFLATION` 当前只展示 1.7 一档，检视者需自行判断设计引用的是哪一档。
+
+溯源（任务工作区，未上库，允许失效）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md#4.5, REVIEW.md 问题 5, verify_equiv.py}`；`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{DESIGN.md#4.5, Stage 3 L2 两例}`。对应 queue 提案 VP-2026-0146（已合入）。
