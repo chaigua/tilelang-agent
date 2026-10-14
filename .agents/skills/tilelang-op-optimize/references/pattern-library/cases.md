@@ -502,3 +502,33 @@ pool 家族**第六个**迁移算子、**双输出（value + int64 indices）1D 
 **实测**（Session 墙钟 9 366.4 s ≈ 156.1 min，其中 Stage 1 首轮被取消的长跑占 40.3%）：Stage 3 attempt 1 即 `[PRECISION_PASS]`（L0+L1 阻塞全过、L2 8/8、Boundary 8/8；values `max_diff = 0.000e+00` 三 dtype，**int64 索引 0 / 12 207 226 失配**）；设计期 `verify_equiv.py` 1 074 项全 `EQUIV_PASS`；Stage 5 集成 per-op **47/47**（`max_abs_err=0.0`）、benchmark 36/36（`msprof_case_count=24`、`invalid_profile_count=0`）；非 smoke 性能 3 例——`sincnet` fp16 3 192.84 µs / `textcnn` fp16 138.52 µs / `ecg` bf16 1 429.55 µs，**Ratio 3.40–5.70%、带宽均 1.750 TB/s**（≈ fabric 上限，见 profile-collection.md 的纯选择算子 Ratio 判读口径）。
 
 **适用触发条件**：双输出（value + index）池化/argmax 类算子迁移或设计——索引契约逐要素实测、退化特化逐路输出独立可证、空窗口契约与 torch-oracle 陷阱、索引型 UB 记账、`_plan` 逐字复现设计闭式、等价脚本分支采样；Stage 5 集成期 torch 多输出 API golden 可用性核对（静默损坏判据 = dtype/shape 与契约不符）。
+
+---
+id: CASE-quant-fp8-quant-migration
+kind: case
+family: [quantization, fp8, elementwise]
+mode: [developer]
+dtype: [fp8_e4m3, float32, float16, bfloat16]
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（函数级；op 级 fp8_quant-fp8_quant-20261014T152721Z）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: none
+---
+
+### `examples/fp8_quant/_fp8_quant_kernel/` + `examples/TileOPs/tileops/kernels/quantization/fp8_quant/`（任务工作区/集成包，未上库）
+
+**durable 载体**：软件 e4m3 编码的舍入/符号/幂精确性三陷阱自包含于 traps-compiler.md `TRAP-parallel-f32-uint8-cast-rounding` / `TRAP-vexp2-not-exact-pow2` 与 constants.md `CONST-npuir-f32-division-not-ieee-rounded`（三条含知识域 repro）；出参 dtype 静默回落见 traps-runtime.md `TRAP-out-idx-uint8-dtype-fallback`（含 repro）；`uint8` 载体 + host `.view(torch.float8_e4m3fn)` 保留对外 dtype 契约的 runtime 事实与 npuir codegen float8 缺口本体见 `.agents/evolution/capability-gaps.md` CG-2026-0018（codegen，加宽至表达式）/ CG-2026-0023（runtime，新增）；等价性验证的覆盖缺口与独立重生成见 queue VP-2026-0212/0213；集成胶水层签名问题见 queue VP-2026-0215。本任务 `RETROSPECTIVE.md`（op 级/函数级）、`SESSION_TIMING_ANALYSIS.md`、`history_version/design_v0.md`、`verify_equiv.py` 为 provenance（允许失效）。
+
+quantization 族**首个** TileOPs 迁移算子 / **首个字节载体（fp8）算子**（FP8QuantOp；Developer 模式、纯 Vector、Stage 4 跳过）。核心矛盾 =「对外 fp8 dtype 契约 vs 工具链任意 float8 构造不可 codegen」——解法是**软件 e4m3 编码 + uint8 载体 + host `.view`**，对外 shape/dtype/数值完全保持（非契约降级）。要点：
+
+①**绕过的三段式**：(a) kernel 侧输出声明 `uint8`（不出现任何 fp8 类型）；(b) UB 内**纯算术**算 e4m3 字节（`bits = 8(ec+6) + rint(a·2^(3-ec))`，`ec = clamp(floor(log2 a), -6, 8)`），`byte = bits + 128·[v<0]`；(c) wrapper 端 `out.reshape(B,S,G,D).view(torch.float8_e4m3fn)`——`.view(dtype)` 是纯元数据操作、**设备侧可用**（不走 `aclnnInplaceCopy`），而 `.to(fp8)`（561103）与 fp8 `zeros_`（161002）不可用。codegen 缺口比登记文本更宽：fp8 作为 **cast 表达式**亦被 `DTypetoMLIRType`（CastNode 路径）拒绝——「fp8 cast + reinterpret」绕过路径不成立。
+②**字节级等价需要三件事同时成立**（缺一即 ±1 LSB 或整片错）：(a) 字节出在 **signed i8** 空间（`bits - 128·[q<0]`，clamp `[-128,127]`；否则 ≥128 值饱和为 127 = e4m3 NaN 载荷）；(b) mantissa scale `2^(3-ec)` **精确**（走 `T.vshl(1,k)`；`T.vexp2` rel err ~6e-8 使所有 `n.5` tie 反向）；(c) 量化值用与参考**同一除法形态**（`x/scale`，勿 reciprocal-mul——设备 fp32 除法非 IEEE correctly rounded，乘法倒数在 tie 处不等价）。三者齐备后 fp32 随机数据 524288/524288 逐字节一致，fp16/bf16 仅剩 tie 处 ±1 LSB。
+③**设计修订 1 轮（`retry_count=1`，路径 A 检视不通过）**：v0 的符号位用**有限乘数式** `128·min(max(−v·C,0),1)`（`C=1e30`）——对任意有限 C，`|v| < 1/C` 的负值使该式落入 `(0,1)`，字节取到任意值（实测 `q=-9.9e-31 → 0x7E` 解码 +448，参考 `0x80`）。改为**与幅值无关的比较式** `128·[q<|q|]`（⟺`128·[q<0]`，落为 `T.vcmp(q, av, cond, "lt")` + `T.vcast(cond, sbv, "rint")`，i1→f32 得 {0,1}）。缺陷是**非对称且微小幅值**（只在负侧、只在 `(0,1e-30)`），随机测试与典型角点系统性漏过。
+④**「覆盖缺口下的假 PASS」实证**：v0 的 `verify_equiv.py` E4 角点集缺 `(0,1e-30)` 负值区间，机器判据 4/4 PASS 却漏掉真实编码错误；补入微小负值/次正规/`±0`/`±inf`/`NaN` 后 E5 **直接判定「v0 有限乘数式 12/13 字节错、v1 比较式 0/1 错」**——旧式回归守卫（E5 形态）是覆盖缺口的判别力自证。复检侧进一步由检视方**独立重生成** ~3.1M lane 验证集（设计脚本之外）才确认缺口闭合。
+⑤**组合体编译 UB 溢出（设计期估算系统性偏低）**：DESIGN §4.5 手工预算 ×1.12 ≈ 165724B，但 `BLOCK_ELEMS=4096` 组合体实测编译器要求 **253952B > 192KB**（auto multi-buffer 使多 buffer 翻倍，实际 ≈ 手工估计的 ~1.5×）——设计期「逐 op COMPILE_OK」不蕴含组合体可编译（§9.1-R1 高风险项命中）；降至 `BLOCK_ELEMS=2048` 后通过。
+⑥**集成胶水层签名差异**：Stage 3 kernel 采用**显式输出签名**（`(X(R,D), Scale(R,), OutU8(R,D))`，无 `out_idx`——因 uint8 out_idx 静默回落 float32）；`integrate_kernel.py` 只改写 wrapper 的 import 切换块、**不校验调用签名**，改写后的 wrapper 首调即 `ValueError: Expected 3 inputs, got 1`；修法 = 只改胶水层 `_fp8_quant_wrapped_kernel`（host 分配 `scale`/`out_u8`、经 `reshape + .view` 还原对外契约），未改 kernel/dtype/config/测试/manifest。集成脚本的 import 冒烟（`hasattr`）**不覆盖调用签名**。
+
+**实测**（Session 墙钟 8054.4s ≈ 134.2 min，含 ~21.4 min 用户等待；op 级 elapsed 6674s / dispatches 2；函数级 elapsed 5571s——S1 attempts 3〔1492+603+73s，1 fail runtime = S1-PLACEHOLDER 机械误报〕、S2 attempts 2〔272s fail design_revision + 521s complete〕、S3 attempts 1〔2602s，首轮 `[PRECISION_PASS]` 19/19〕）：Stage 3 内嵌分层门禁全过（L0/L1/L2/Boundary 19/19），fp8 字节级判据「契约域内不一致 ⊆ {精确 `-0.0`}」。TileOPs 单算子 report `status=passed`：**正确性 8/8**（含 fp32/fp16/bf16）、benchmark **3/3** msprof 有效（`invalid_profile_count=0`）——kv-index-8k-d64-fp16 **238.42µs**（roofline 1.619%）/ bf16 238.62 / 4k-d128-fp32 238.44（1.569%）；**带宽均 1.75 TB/s**（≈ fabric 聚合上限，算子带宽受限）。设计期 `verify_equiv.py` 5/5 `EQUIV_PASS`（E4：契约域 397568 样本不一致 7 个全为精确 `-0.0`、非预期不一致 0、NaN 16 lane 属契约域外）。
+
+**适用触发条件**：低比特/字节载体（fp8、int8、自定义编码）算子迁移或设计——对外 dtype 契约保持的「软件编码 + 载体 + `.view`」绕过模式；软件编码的舍入/符号/幂精确性三陷阱核对；「与参考逐字节一致」类断言的角点集全定义域覆盖 + 旧式回归守卫；设计期组合体编译探针（勿以逐 op COMPILE_OK 代替）；TileOPs 显式输出 kernel 的 wrapper 胶水适配。

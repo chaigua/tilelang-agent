@@ -226,3 +226,24 @@ repro: repro/repro_dims0_skinny.py
 ### dims=0 归约在长条形 (K,4) 上逐列串行（文档合法但灾难性慢）
 
 `T.reduce_max(val_f (nchunk,M), g, dim=0)` 在长第一轴窄第二轴（(400,4)/(80,4)）实测 33.4/8.8µs——逐列串行 walk（~21ns/elem）。绕法：shared staging + `T.transpose((K,M)→(M,K), permutation=[1,0])` + dims=1 链（PL-1.1 家族），同数据 3.3µs。dims=1（行向归约）为快路径；dims=0 仅在第二轴足够宽时可用。
+
+---
+id: CONST-npuir-f32-division-not-ieee-rounded
+kind: constant
+family: [quantization, elementwise, general]
+apis: [T.vdiv]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/CONST-npuir-f32-division-not-ieee-rounded.py
+---
+
+### npuir fp32 除法不是 IEEE correctly rounded（无正确舍入除法原语）
+
+- **实测（3200×64 f32，Ascend910B3 / CANN 9.0.0）**：`T.vdiv` 于 **2-D 同形/广播** `(M,D)` 形态 **≈6.1% lane 偏 1 ulp**（对照 fp64→fp32 正确舍入商）；`T.Parallel` 体内标量除法式（逐行 scale）**135/256 值偏 1–2 ulp**；`T.vdiv` 的 **(M,1)/(M,1) 列形态逐位精确**（0/256）。偏差随操作数形态变化，非统一 lowering。
+- **对量化/编码类算子的后果**：任何与 CPU/torch 参考做**逐字节**比对的量化算子，在参考值精确落在 round-to-nearest-even tie 上时，设备的 ≤1 ulp 商偏差把量化值推向另一侧邻居，产生 ±1 LSB 字节差（本任务 fp16 4/16384、bf16 18/16384 全为 mantissa `n.5` tie；fp32 随机数据 524288/524288 逐字节一致）。
+- **绕法**：(a) per-row/per-group 的 scale 除法改走 `T.vdiv` **列形态**（实测精确），逐元素量化值除法保留与参考同形的 `x/scale`（**勿换 reciprocal-mul**——乘法倒数在 tie 处与除法不等价，见 TRAP-vexp2-not-exact-pow2 同族与 queue VP-2026-0212）；(b) 字节级判据须允许「参考 mantissa 落在 tie 的 ≤1 device-ulp 邻域内时取另一侧邻居」，把容忍度显式写进分类器（勿放宽为随机容差）。
+- **证明**：`python repro/CONST-npuir-f32-division-not-ieee-rounded.py`（2-D `T.vdiv` 对正确舍入商断言非零 1-ulp 比例并打印实测率；绝对率随环境漂移，锁量级与相对关系）。
+- 能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0021`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/CONST-npuir-f32-division-not-ieee-rounded.py}`。

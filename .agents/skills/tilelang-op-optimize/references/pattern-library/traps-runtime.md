@@ -309,3 +309,24 @@ repro: repro-missing
 - **③ ±inf**：精确（无舍入分歧）。
 - **判读与处置**：`2^30` 恒值 / 全哨兵列是「匹配链全失败」的指纹（与竞态的非确定行数、步长错位的固定行错并列，见 precision-patterns.md 索引失配指纹族）；含 NaN 的负载在 L2/边界用例以 **INFO 记录**行为差（记录不断言崩溃，golden 选择与容差设计据此分野——torch-CPU golden / torch-NPU 设备实现 / 硬件 reduce 语义三方各不相同，设计期逐个实测记录比统一假设更诚实）。哨兵恒值行不可与「匹配链断裂」的缺陷指纹混判：本行是**语义分野**而非 kernel 缺陷。
 - 溯源（任务工作区，未上库，允许失效）：首证 `examples/argmax/_argreduce_kernel/DESIGN.md#§9.2-R1/R2`；第二证 `examples/argmin/_argreduce_kernel/{DESIGN.md#§9.2-R1, _argreduce_kernel.py:927-946（L2 NaN record）}`。与 TRAP-index-reduce-extremum-direction（方向由候选集决定）、TRAP-pool-index-contract-dual-output（池化索引契约）同属索引/语义分野族。
+
+---
+id: TRAP-out-idx-uint8-dtype-fallback
+kind: trap
+family: [quantization, elementwise, general]
+apis: [out_idx]
+dtype: [uint8, int8]
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-out-idx-uint8-dtype-fallback.py
+---
+
+### `@tilelang.jit(out_idx=...)` 对非白名单输出 dtype（uint8 字节载体）静默 fallback 到 `torch.float32`
+
+- **现象**：出参 torch dtype 由 `tilelang/jit/jit_npu.py::_tvm_dtype_to_torch` 的白名单映射（float16/32/64、bfloat16、int8/16/32/64、bool）决定，**无 uint8**，末尾 `mapping.get(dtype_str, torch.float32)` 兜底。prim_func 声明 `uint8` 输出 buffer 时，kernel 仍按 i8 memref 写 GM，而 `out_idx` 分配的返回张量是**同逻辑 shape 的 float32**——shape 对、dtype 错、内容按 4 字节解释，**不报错、不告警**。
+- **影响面**：fp8/低比特软件编码类算子的**字节载体输出**（uint8 出参 + host `.view(fp8)`）。照设计写 `out_idx=[...]` 会得到不可用返回值；改用 float32 出参则丧失 1 字节/元素载体契约。
+- **绕法**：字节载体**一律显式传输出张量、不声明 `out_idx`**（由调用方分配 `torch.uint8` 缓冲），实测逐位一致、无性能/精度代价。
+- **证明**：`python repro/TRAP-out-idx-uint8-dtype-fallback.py`（exit 0；断言 ①`out_idx` 返回 dtype == float32 而 prim_func 声明 uint8、②显式传 uint8 张量往返 bit-exact）。
+- 族内位置：与 TRAP-zero-input-crash（out_idx-only 形态）同属出参分配族但缺陷面不同；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0019`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-out-idx-uint8-dtype-fallback.py, _fp8_quant_kernel.py}`。

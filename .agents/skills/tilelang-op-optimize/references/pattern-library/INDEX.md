@@ -73,7 +73,7 @@
 | TRAP-C10-strided-gather | 跨步 gather 向量指令缺失 | verified |
 | TRAP-C11-parser-vartable | parser var-table 作用域问题 | verified |
 | TRAP-C12-copy-dtype-cast | T.copy 静默跨 dtype 转换（勿用作 cast 融合） | verified |
-| TRAP-UB-multibuffer-inflation | auto-multi-buffer UB 膨胀 ~1.7x 超 192KB | verified |
+| TRAP-UB-multibuffer-inflation | auto-multi-buffer UB 膨胀 ~1.7x 超 192KB；基础分配差 ×1.10–1.12（多 buffer 组合体实测可达 ~1.5×，见第五数据点） | verified |
 | TRAP-vbrc-scalar-shared | vbrc 标量→shared 不可用；serial 变量条件 segfault | verified |
 | TRAP-threads-kwarg-noop | T.Kernel(threads=) 在 npuir 无效果 | verified |
 | TRAP-tvm-parser-rules | TVM script 解析器四条硬规则（if/三元式/条件 alloc/T.rs 作用域） | verified |
@@ -91,6 +91,8 @@
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
 | TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
 | TRAP-npuir-reshape-dst-buffer-shadow | npuir 分支 `T.reshape` 被 `npuir_reshape(src,dst)` 覆盖（第二参 = 目标 buffer，非 shape list）；通用形 `T.reshape(A,[m,n])` 语义漂移（含 repro） | verified |
+| TRAP-parallel-f32-uint8-cast-rounding | `T.Parallel` 内直接 `T.cast(f32,"uint8")` 非最近舍入（16/64 偏 `round()`）+ uint8 字节实际落 i8 空间（≥128 饱和 127 = fp8 NaN 载荷）；绕法 = 两步 `vcast rint` 后窄化 + signed 空间（含 repro） | verified |
+| TRAP-vexp2-not-exact-pow2 | `T.vexp2` = `exp(x·ln2)` 非精确 2^k（rel err ~6e-8 使 `n.5` tie 全反向）；精确 `2^k` 走 `T.vshl(1,k)`（k=0..14 逐位精确；`vshl` 被标量化）（含 repro） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -110,6 +112,7 @@
 | TRAP-pool-index-contract-dual-output | 带索引池化源语义契约：索引 = 空间域展平位置（2D 扁平 / 1D 单轴）、tie 取首个、NaN 取最后命中、padding 全 `-inf` 窗取首个有效元素 | verified |
 | TRAP-index-reduce-extremum-direction | 索引归约极值方向由「写入语义 + 候选集」决定——单遍破纪录集取 max / 两遍等式集取 min，混搭即静默错值 | verified |
 | TRAP-argreduce-edge-semantics | argreduce 边界语义三基准分野：±0.0 可区分全序（NPU）/ NaN 传播→掩码全失败输出哨兵 `2^30`（两证）/ ±inf 精确——golden 选择与容差设计据此分野 | verified |
+| TRAP-out-idx-uint8-dtype-fallback | `@tilelang.jit(out_idx=...)` 对非白名单输出 dtype（uint8 字节载体）静默 fallback 到 `torch.float32`（shape 对、dtype 错、不报错）；绕法 = 显式传输出张量（含 repro） | verified |
 
 ### constants.md — 硬件常数表（D-2，设计期 roofline 口径）
 
@@ -127,6 +130,7 @@
 | CONST-arange-scalar-materialize | T.arange (M,W) 物化标量 ~1ns/elem；(1,N)+首轴 vbrc 绕法（-18.2%） | verified |
 | CONST-gm-to-ub-bw-dilution | gm_to_ub_bw 是总时长稀释口径（用 mte2_ratio×aiv_time 判搬运）；跨步列块 2D 读不慢（0.98× 对照 + 误读更正） | verified |
 | CONST-reduce-dims0-skinny | dims=0 长条形 (K,4) 逐列串行（(400,4)=33µs）；transpose+dims=1 绕法 | verified |
+| CONST-npuir-f32-division-not-ieee-rounded | npuir fp32 除法非 IEEE correctly rounded：`T.vdiv` 2-D ~6.1% lane 1 ulp 偏、标量除法式 135/256 值 1–2 ulp 偏、**列形态 (M,1)/(M,1) 逐位精确**（含 repro） | verified |
 
 ### cases.md — 案例索引与参考实现集
 
@@ -157,6 +161,7 @@
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
 | CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
+| CASE-quant-fp8-quant-migration | quantization 族首个 / **字节载体（fp8）首例**（软件 e4m3 编码 + uint8 载体 + host `.view` 保契约；舍入/符号/幂三陷阱 + 覆盖缺口假 PASS；集成 8/8 + bench 3/3 BW 1.75 TB/s） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

@@ -84,8 +84,8 @@ apis: [T.Pipelined, T.serial]
 dtype: []
 device: 910B2C
 status: verified
-origin_task: mish-optimize-2026-08（首证）/ lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z（第二证）/ ada_layer_norm-_ada_layer_norm_kernel-20260910T145715Z（第三证：结构依赖精测；2026-09-10 蒸馏溯源归位——原回写误标 145312Z，实际 optimize task_id 以 stage_state.json 为准）/ multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z（第四证首源：基础分配差发现）/ multi_head_attention-_gqa_prefill_fwd_kernel-20260915T080600Z（第四证重校：×1.10–1.12 4 点标定 + UB diet 绕法）
-toolchain: 2026-08-24 mish 首证；2026-09-07 lerp_tensor 第二次独立证据；2026-09-10 ada_layer_norm 精测（tilelang 0.1.2+a83118285a + CANN 8.5.0）；2026-09-15 基础分配差（首源 tilelang 0.1.2+28783f45 / 重校 0.1.2+6797758，均 + CANN 8.5.0）
+origin_task: mish-optimize-2026-08（首证）/ lerp_tensor-_make_lerp_tensor_kernel-20260907T010433Z（第二证）/ ada_layer_norm-_ada_layer_norm_kernel-20260910T145715Z（第三证：结构依赖精测；2026-09-10 蒸馏溯源归位——原回写误标 145312Z，实际 optimize task_id 以 stage_state.json 为准）/ multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z（第四证首源：基础分配差发现）/ multi_head_attention-_gqa_prefill_fwd_kernel-20260915T080600Z（第四证重校：×1.10–1.12 4 点标定 + UB diet 绕法）/ fp8_quant-_fp8_quant_kernel-20261014T153942Z（第五数据点：纯 Vector 多 buffer 组合体，手工 ×1.12 估计实测 ~1.5×）
+toolchain: 2026-08-24 mish 首证；2026-09-07 lerp_tensor 第二次独立证据；2026-09-10 ada_layer_norm 精测（tilelang 0.1.2+a83118285a + CANN 8.5.0）；2026-09-15 基础分配差（首源 tilelang 0.1.2+28783f45 / 重校 0.1.2+6797758，均 + CANN 8.5.0）；2026-10-14 第五数据点（tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3）
 repro: repro-missing
 ---
 
@@ -101,7 +101,10 @@ repro: repro-missing
 
 **第四证/姊妹现象（2026-09-15 两任务实证，VP-2026-0059 两证合入）——基础分配差（multi-buffer 关闭仍在）**：`--enable-auto-multi-buffer=false` 下 BishengIR per-AIV UB 实际需求 ≈ 真实手工预算 × **1.10–1.12**（首证 28783f45：178.2KB 预算实测 ~204.1KB +15%；第二证 6797758 4 点标定：(64,256) +9.6% / (80,256) +12.2% / (96,256) +12.0% / (128,256) +12.1%）——手工逐 buffer 预算表**不能当可编译证明**，设计期按系数放大且勿漏计小 buffer（第五轮实证：DESIGN §4.5 漏计 ub_cond2 8.2KB）；宽 config 上靶前以编译探针校准（`ub overflow` 报文 requires bits 即精确实测需求）。系数已录入 constants.md CONST-capacity-910B2C；与 CG-2026-0008（能力缺口本体，recurring）互链。绕法实证：UB diet 削减手工预算 ≥12.4KB（N/D staging 合并 −24.6KB + rowmat 删除 −16.3KB）解锁 (64,256) 宽块。**反例边界（2026-09-16 第六轮 r9，a13585dc）**：显式 alloc 结构（全 UB buffer 首维 = half）实测 0.981×manual（actual 低于手工）——系数结构依赖、非单向上偏，该结构 ~12% 余量即足（constants.md CONST-capacity-910B2C / PL-1.12 r9 update）。
 
-机制推测（未实证）：pass 按 buffer 角色/循环形态决定复制哪些实例，非全量 ×2。溯源：`examples/TileOPs/tileops/kernels/norm/ada_layer_norm/ada_layer_norm_kernel/perf_opt/opt_log.md`（Iteration 2/3 探针记录 + probe_ub_v2.py）；第四证溯源：首证 `examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md` Round 2 + 第二证 `examples/multi_head_attention/_gqa_prefill_fwd_kernel/perf_opt/opt_log.md` Phase 1 编译探针（probe_ub.py，origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260915T080600Z）。
+机制推测（未实证）：pass 按 buffer 角色/循环形态决定复制哪些实例，非全量 ×2。
+
+**第五数据点（2026-10-14，fp8_quant 软件 e4m3 编码，tilelang 0.1.2+8b16bcc / CANN 9.0.0 / Ascend910B3）——纯 Vector 多 buffer 组合体的设计期手工估计系统性偏低 ~1.5×**：设计 §4.5 逐 buffer 表 14 行复算 = 147968B（fp16 输入）/ 156160B（fp32 最坏），按 ×1.12 得 **165724B / 174899B**（余量 ≈30.2KB / ≈21.2KB，设计判 PASS）；Stage 3 组合体实测 `BLOCK_ELEMS=4096` 编译失败——`ub overflow, requires 253952B while 192KB available`（**≈ 手工估计的 1.53×**），降至 `BLOCK_ELEMS=2048` 后通过。与第四证「基础分配差 ×1.10–1.12」互补：本条是 **auto multi-buffer 默认开启**下的多 buffer 组合体，膨胀来自多数 buffer 的实例复制（该算子 ~18 个向量 op/元素、重算术链、多中间 buffer）。纪律：设计期 ×1.12 校核**不得作为容量 PASS 的唯一依据**；「每 tile 元素数」类常量（如 `BLOCK_ELEMS`）须在设计期标注为 Stage 3 可调参数并给出减半降级路径（本任务 DESIGN 已含，Stage 3 现场据此降级一次）。溯源：`examples/fp8_quant/_fp8_quant_kernel/RETROSPECTIVE.md` Stage 3 Skill Flow Issues + `SESSION_TIMING_ANALYSIS.md` §3。
+溯源：`examples/TileOPs/tileops/kernels/norm/ada_layer_norm/ada_layer_norm_kernel/perf_opt/opt_log.md`（Iteration 2/3 探针记录 + probe_ub_v2.py）；第四证溯源：首证 `examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md` Round 2 + 第二证 `examples/multi_head_attention/_gqa_prefill_fwd_kernel/perf_opt/opt_log.md` Phase 1 编译探针（probe_ub.py，origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260915T080600Z）。
 
 ---
 id: TRAP-vbrc-scalar-shared
@@ -411,3 +414,45 @@ repro: repro/TRAP-npuir-reshape-dst-buffer-shadow.py
 - **证明**：`python repro/TRAP-npuir-reshape-dst-buffer-shadow.py`（exit 0；三段断言：生效符号名 == `npuir_reshape`、签名参数 == `['src','dst']`、通用形 `customize.reshape(src, shape)` 仍以原名存在——未来工具链恢复通用签名或移除 alias 时断言触发，而非静默改变存量 kernel 代码的含义）。**纯前端符号检查，无设备依赖**（`T.reshape` 语义与是否编译/上机无关）。
 - **族内位置**：与 TRAP-vcast-shape-and-gm-source（`T.vcast` 不承担 reshape）、TRAP-npuir-arange-pattern-with-whole-plane-reduce（`T.arange → T.reshape → T.vbrc → T.reshape` 链）同属 reshape/形状约束族。
 - 溯源（任务工作区，未上库，允许失效）：`examples/argmin/_argreduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-reshape-dst-buffer-shadow.py, _argreduce_kernel.py:281,309}`；文档面缺口（`docs/Tilelang.language/shape操作/T.reshape.md` 未述 npuir 语义）已在源任务登记。
+
+---
+id: TRAP-parallel-f32-uint8-cast-rounding
+kind: trap
+family: [quantization, elementwise, general]
+apis: [T.Parallel, T.cast, T.vcast]
+dtype: [float32, uint8, int8]
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-parallel-f32-uint8-cast-rounding.py
+---
+
+### `T.Parallel` 内直接 `T.cast(f32, "uint8")` 非最近舍入；且 uint8 字节实际落在 signed i8 空间
+
+- **现象 ①（舍入）**：`T.Parallel` 体内对**分数** f32 表达式直接 `T.cast(x, "uint8")`（lowering 为 `hivm.hir.vcast` f32→i8）**不是最近舍入**：64 点探针中 16 个值偏离 `round()`，既非 trunc 也非 round-to-nearest-even。**先整数化再窄化**才是可靠形态：`T.vcast(src_f32, tmp_i32, round_mode="rint")` → `T.vcast(tmp_i32, tmp_f32, round_mode="rint")` → `T.cast(tmp_f32, "uint8")`（0/64 与 `round()` 一致）。
+- **现象 ②（符号空间）**：codegen 把 `uint8` 降到 **i8**（`memref<...xi8>`）；f32→uint8 直接 cast 对 ≥128 的值**饱和到 127**（= e4m3 NaN 载荷），表现为输出大片 NaN。正确写法是让字节出在 **signed i8 空间**（`bits - 128·[q<0]`，clamp 到 `[-128,127]`）。
+- **与前端 warning 的关系**：`src/transform/npu_loop_vectorize.cc:801` 的 warning「Parallel cast lowering uses fixed round mode 'rint'」在 f32→i8/ui8 **窄化**路径上**与实际行为不符**（该 warning 的截断/取整语义登记见 queue VP-2026-0205；本条以 repro 给出「窄化路径非 rint」的反例）。文档面：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` 规格表无 `f32|ui8` 行（仅 `f16|ui8`）。
+- **证明**：`python repro/TRAP-parallel-f32-uint8-cast-rounding.py`（exit 0；断言直接 cast 与 `round()` 分歧、两步 rint 逐值一致）。
+- 族内位置：与 TRAP-vcast-same-dtype-rounds（同 dtype 退化 rint）、TRAP-vcast-shape-and-gm-source（vcast 形状/源约束）同属 npuir cast/舍入族；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0020`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-parallel-f32-uint8-cast-rounding.py}`。
+
+---
+id: TRAP-vexp2-not-exact-pow2
+kind: trap
+family: [quantization, elementwise, general]
+apis: [T.vexp2, T.vshl, T.vcast]
+dtype: [float32, int32]
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-vexp2-not-exact-pow2.py
+---
+
+### `T.vexp2` 不是精确 2 的幂——需要精确 `2^k` 时走 `T.vshl(1, k)`（整数域）
+
+- **现象**：tile 级 `T.vexp2` 实现为 `exp(x·ln2)`，对整数指数返回非精确值（`2^-4 → 0.0624999962747097`，相对误差 ~6e-8，15 个整数指数中 1 个与 `2.0**k` 不等）。用它当 mantissa 缩放因子时，**所有精确 `n.5` tie 被推过错误一侧**（实测 fp16 4/16384、bf16 18/16384 字节错，全部为 `n.5`）。
+- **绕法**：精确 `2^k` 走 **`T.vshl(1_int32, k)` → `T.vcast(..., "rint")`**（k = ec+6，实测 k=0..14 逐位精确）再以精确幂除得 `|q|·2^(3-ec)`；编码骨架的字段连续性（`rint` 达 16 时经 `(ec+7)·8+mantissa` 进位）使 ±1 指数误差自校正——但**scale 因子本身必须精确**。
+- **证明**：`python repro/TRAP-vexp2-not-exact-pow2.py`（exit 0；断言 ①`vexp2` 路线与精确幂在每探针指数上不等、②`vshl` 路线对 k=0..14 逐位复现 `2.0**k`）。
+- **代价边注**：`T.vshl` 在 UB 上被标量化（编译警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`）——每 tile 一次可接受，放进逐元素热点则发射开销显著（见 queue VP-2026-0214）。
+- 族内位置：与 TRAP-vrsqrt-plain-precision（近似超越指令精度）同属「近似超越/幂运算陷阱」族；与 CONST-npuir-f32-division-not-ieee-rounded 同属软件编码的精确性链路。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vexp2-not-exact-pow2.py}`。

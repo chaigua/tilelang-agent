@@ -577,11 +577,245 @@ created_by: argmax/_argreduce_kernel Stage 4 round 4（2026-09-28）
 last_seen: argmax-_argreduce_kernel-20260924T031005Z（2026-09-28）
 ```
 
+### CG-2026-0018
+
+```yaml
+gap_id: CG-2026-0018
+layer: codegen (src/target/codegen_npuir_api.cc / codegen_npuir_api_a5.cc DTypetoMLIRType)
+capability: >-
+  target="npuir" 的 MLIR API codegen 无法表示 float8 缓冲区类型（e4m3_float8 /
+  e5m2_float8）：DTypetoMLIRType 仅覆盖 f16/f32/f64/bf16 与 int/uint，无 float8
+  分支，任何 float8 Buffer（GM 入参/出参或 UB alloc）在 lower 阶段即
+  LOG(FATAL) "Cannot convert type e4m3_float8"（codegen_npuir_api.cc:493-593）。
+  前端 TIR 支持该 dtype（tvm dtype 名 e4m3_float8，npu_loop_vectorize 可对 fp8
+  cast 表达式按 rint 舍入 lowering），故缺口位于 codegen 的类型映射层。
+  **加宽（2026-10-14 本迁移设计期独立复核）：float8 作为 cast 表达式同样不可 codegen。**
+  `DTypetoMLIRType` 在 `VisitExpr_(CastNode)` 路径（codegen_npuir_api.cc:730 同源调用链）
+  亦被调用，故 `u[i,j] = T.cast(x[i,j], "e4m3_float8")`（赋值目标是 uint8 buffer）与
+  嵌套 `T.cast(T.cast(x,"e4m3_float8"),"uint8")` 均在 lower 阶段报
+  `Cannot convert type e4m3_float8`——「fp8 cast 表达式 + 软件 reinterpret」不构成绕过路径
+  （登记文本「任何 float8 Buffer」比实际缺口窄）。
+blocked_algo: >-
+  FP8QuantOp（per-group fp8_e4m3 量化，输出 float8_e4m3fn + fp32 scale）：无法
+  原样产出/读写 fp8 张量——无法实现。降级（软件模拟 e4m3 编码写入 uint8 字节缓冲 /
+  替换输出 dtype / 阻塞）均改变算法或 dtype 契约，未自行采纳，待用户裁决。
+evidence:
+  - src/target/codegen_npuir_api.cc:493 DTypetoMLIRType：float 分支仅 16/32/64，
+    bfloat16 单列，无 is_float8 处理；:593 default LOG(FATAL) "Cannot convert type"
+  - src/target/codegen_npuir_api_a5.cc 全文 grep float8/e4m3 -> 无命中
+  - 复现（Ascend910B3 / CANN 9.0.0 / tilelang 0.1.2+ac0522ed2）：
+    tilelang.engine.lower(target="npuir") 对含 e4m3_float8 GM 出参的 prim_func 报
+    TVMError: Cannot convert type e4m3_float8；仅含 UB fp8 buffer（出参 uint8）同样报错；
+    去掉 fp8 后同构 kernel（reduce_absmax + clamp + fp32 scale，fp16 出参）lower 成功
+  - docs/ 全目录 grep float8/e4m3/fp8 -> 无命中（无文档化支持声明）
+  - 对照 src/target/codegen_ascend.cc 有 float8 分支（fp8_e4_*_t），但属
+    target.build.tilelang_ascend（CATLASS 字符串 codegen）链路，与 target="npuir"
+    的 MLIR API codegen 非同一路径
+  - 加宽复现（本迁移设计期，tilelang 0.1.2+ac0522ed2 / CANN 9.0.0 / Ascend910B3）：
+    （c）单层 `u[i,j] = T.cast(x[i,j], "e4m3_float8")`（目标 uint8 buffer）→ 同报错；
+    （d）嵌套 `T.cast(T.cast(x,"e4m3_float8"),"uint8")` → 前向量化产出 fp8 临时 buffer
+    后同报错。探针（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/history_version/design_probe_encoder_lowering.py` / `design_probe_tileops.py`
+workaround: >-
+  已回填（2026-10-14 本迁移交付）：软件 e4m3 编码写入 **uint8 字节载体** + host 侧
+  `out.reshape(B,S,G,D).view(torch.float8_e4m3fn)` 还原对外 dtype 契约（`.view` 为纯元数据
+  操作、设备侧实测可用，见 CG-2026-0023）。代价：约 11–13 个向量 op/元素的软件编码链；
+  对外 shape/dtype/数值与源算子一致（非契约降级）。缺口补齐后应去绕化（回退硬件窄化）。
+occurrences: 2
+tasks: [fp8_quant-FP8QuantOp-20261014T150047Z（preflight）, fp8_quant-_fp8_quant_kernel-20261014T153942Z（迁移，独立复核并加宽：表达式路径同样 blocked）]
+toolchain_stamp: preflight tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce；迁移 tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（实测为准，DESIGN §11 记录的 ac0522ed 为设计期探针戳）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+status: recurring
+proposal: >-
+  目标层 codegen（`src/target/codegen_npuir_api.cc` / `codegen_npuir_api_a5.cc` 的
+  `DTypetoMLIRType`）：为 `is_float8()`（e4m3_float8 / e5m2_float8 及其 x4/x8/x16 向量类型）
+  增加 MLIR 类型映射分支（对齐 `codegen_ascend.cc` 的 fp8_e4_*_t 语义），使
+  target="npuir" 的 MLIR API codegen 能表示 float8 buffer 与 float8 cast 表达式。
+  收益量化：解锁 FP8QuantOp（首个 fp8 迁移算子，当前被迫软件编码，+11–13 向量 op/元素的
+  计算代价 + ~18 个中间 buffer 的 UB 压力）；受影响算子范式 = 一切低比特/字节载体算子
+  （fp8 量化、fp8 attention indexer、int8 量化）——当前均须软件模拟或改契约。
+  验证：以本任务 DESIGN §0.5.1 的四条 lower 探针（(a)(b)(c)(d)）为负向控制，补齐后应全部
+  转为 COMPILE_OK，且 FP8QuantOp 可去绕化为硬件窄化路径。issue 草稿（标题前缀 [npuir]）
+  须经用户批准后对外提交。
+created_by: fp8_quant migration preflight (2026-10-14)
+last_seen: fp8_quant-_fp8_quant_kernel-20261014T153942Z（2026-10-14 迁移设计期独立复核并加宽）
+```
+
 ### CG-2026-0008 → 已升级 recurring，条目移入下方 Recurring 区（2026-09-15 occurrences 2）
 
 ---
 
+### CG-2026-0019
+
+```yaml
+gap_id: CG-2026-0019
+layer: Frontend API / runtime (tilelang/jit/jit_npu.py 出参分配)
+capability: >-
+  @tilelang.jit(out_idx=[...]) 的出参 torch dtype 取自 jit_npu.py::_tvm_dtype_to_torch 的
+  白名单（float16/32/64、bfloat16、int8/16/32/64、bool）——**无 uint8**，并以
+  `mapping.get(dtype_str, torch.float32)` 兜底。prim_func 声明 uint8 输出 buffer 时被
+  静默分配 shape 相同但 dtype=float32 的张量；kernel 仍按 i8 memref 写 GM，返回内容
+  按 4 字节解释——不报错、不告警。
+blocked_algo: >-
+  fp8/低比特软件编码类算子的字节载体输出（uint8 出参 + host .view(fp8)）。若沿用
+  out_idx 表述输出，返回值不可用（被迫改为显式传输出张量，或改用 float32 出参从而
+  丧失 1 字节/元素的载体契约）。
+evidence:
+  - tilelang/jit/jit_npu.py:1696-1708 （_tvm_dtype_to_torch 无 uint8 分支，末尾 get 兜底 float32）
+  - 复现（任务工作区，允许失效）examples/fp8_quant/_fp8_quant_kernel/repro/TRAP-out-idx-uint8-dtype-fallback.py（知识域 repro：pattern-library/repro/TRAP-out-idx-uint8-dtype-fallback.py）——out_idx 返回 torch.float32 (256,64)；显式传 uint8 出参则 bit-exact
+workaround: >-
+  字节载体一律显式传输出张量、不声明 out_idx；由调用方分配 torch.uint8 缓冲。
+  代价：调用方多一次分配（实测逐位一致，无性能/精度代价）。
+occurrences: 1
+tasks: [fp8_quant/_fp8_quant_kernel Stage 3]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 / CANN 9.0.0 / Ascend910B3
+status: open
+proposal: none（未达 recurring；建议补齐 _tvm_dtype_to_torch 的 uint8（及 int8 语义区分）映射）
+created_by: fp8_quant/_fp8_quant_kernel Stage 3, 2026-10-14
+last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel Stage 3
+```
+
+### CG-2026-0020
+
+```yaml
+gap_id: CG-2026-0020
+layer: TileLangIR pass / codegen (T.Parallel 内 f32 -> (u)int8 窄化 cast)
+capability: >-
+  `T.Parallel` 体内对**分数** f32 表达式直接 `T.cast(x, "uint8")` 时，lowering 得到
+  `hivm.hir.vcast`（f32 -> i8）且**不是最近舍入**：实测 x.51 及部分 x.49 值映射到非
+  最近整数（64 点探针 16 个值偏离 `round()`），既非 trunc 也非 round-to-nearest-even。
+  同一表达式所在 buffer 的 dtype 是 uint8，codegen 实际降到 `i8`（signed），
+  ≥128 的字节值饱和为 127。
+blocked_algo: >-
+  软件类型编码器（fp8 e4m3 / int8 量化等）需要在 `T.Parallel` 内把算出的字节值
+  窄化到 1 字节；直接 cast 会静默产生错误字节（本任务表现为整片 e4m3 NaN 载荷）。
+evidence:
+  - 复现（任务工作区，允许失效）examples/fp8_quant/_fp8_quant_kernel/repro/TRAP-parallel-f32-uint8-cast-rounding.py（知识域 repro：pattern-library/repro/TRAP-parallel-f32-uint8-cast-rounding.py）——direct 16/64 值偏离 round()；两步 rint 0/64
+  - docs/Tilelang.language/数据类型转换操作/T.vcast.md 规格表无 f32|ui8 行（仅 f16|ui8），
+    前端 warning "Parallel cast lowering uses fixed round mode 'rint'" 与实际行为不符
+  - src/transform/npu_loop_vectorize.cc:801（该 warning 文本）
+workaround: >-
+  先整数化再窄化：`T.vcast(src_f32, tmp_i32, round_mode="rint")` →
+  `T.vcast(tmp_i32, dst_f32, round_mode="rint")` → `T.cast(dst_f32, "uint8")`；
+  且字节须出在 signed i8 空间（`bits - 128*sign`，clamp 到 [-128,127]），
+  两步 rint 后与 `round()` 0/64 一致。代价：每元素 +2 个向量 op。
+occurrences: 1
+tasks: [fp8_quant/_fp8_quant_kernel Stage 3]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 / CANN 9.0.0 / Ascend910B3
+status: open
+proposal: none（未达 recurring；建议修 npu_loop_vectorize 的 Parallel cast lowering 使 f32->i8/ui8 遵循 rint，或在 lowering 报错而非静默错值）
+created_by: fp8_quant/_fp8_quant_kernel Stage 3, 2026-10-14
+last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel Stage 3
+```
+
+### CG-2026-0021
+
+```yaml
+gap_id: CG-2026-0021
+layer: codegen / BishengIR (fp32 除法 lowering)
+capability: >-
+  npuir 的 fp32 除法**不是 IEEE correctly rounded**（无正确舍入的除法原语）：
+  - `T.Parallel` 内标量除法表达式（per-row scale）：256 值中 135 个偏离正确舍入商 1-2 ulp；
+  - `T.vdiv` 二维同形/广播形态（(M,D)）：6.1% lane 偏 1 ulp（3200x64 f32 实测）；
+  - 仅 `T.vdiv` 的 (M,1)/(M,1) 列形态在上述实测中逐位精确。
+blocked_algo: >-
+  任何与 CPU/torch 参考实现做**逐字节**比对的量化/编码算子：参考值精确落在
+  round-to-nearest-even 的 tie 上时，设备的 1 ulp 商偏差会把量化值推向另一侧邻居，
+  产生 ±1 最低有效位差异（本任务 fp16 2/524288、bf16 8/524288 字节差异，全部为
+  mantissa `n.5` tie）。无法通过实现手段消除（除非软件模拟正确舍入除法，代价 ~5+ 向量 op/元素）。
+evidence:
+  - 复现（任务工作区，允许失效）examples/fp8_quant/_fp8_quant_kernel/repro/CONST-npuir-f32-division-not-ieee-rounded.py（知识域 repro：pattern-library/repro/CONST-npuir-f32-division-not-ieee-rounded.py）——T.vdiv 2-D 6.136% lane 1 ulp
+  - /tmp/opencode 探针（session-local）：probe_div2.py（SC_VDIV 0/256 vs SC_PAR 135/256）、
+    probe_run3.py（scale 经 T.vdiv 后 q 仍 1 ulp 偏）
+  - 本任务 §3 级 e2e 记录（任务工作区，允许失效）examples/fp8_quant/_fp8_quant_kernel/RETROSPECTIVE.md Stage 3 章节
+workaround: >-
+  (a) 把 scale 的除法改为 `T.vdiv` 列形态（实测精确），量化值除法保留 `x/scale`
+  形态（与参考一致）而非 reciprocal-mul；
+  (b) 精度判据须允许「参考 mantissa 落在 tie 的≤1 device-ulp 邻域内时取另一侧邻居」
+  （本任务 classifier 用 |frac(|q|*2^(3-ec)) - 0.5| <= 1e-5），不得放宽为随机容差。
+  代价：仍无法做到 100% 逐字节一致（残差 ~1e-5 量级元素数）。
+occurrences: 1
+tasks: [fp8_quant/_fp8_quant_kernel Stage 3]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 / CANN 9.0.0 / Ascend910B3
+status: open
+proposal: none（未达 recurring；若后续多个逐字节比对类算子命中，建议评估提供正确舍入除法的 lowering 或在 docs 标注该限制）
+created_by: fp8_quant/_fp8_quant_kernel Stage 3, 2026-10-14
+last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel Stage 3
+```
+
+### CG-2026-0022
+
+```yaml
+gap_id: CG-2026-0022
+layer: Frontend API / codegen (位级操作)
+capability: >-
+  npuir 前端缺少可用的位级操作路径，三条路线均不可用：
+  (a) `T.reinterpret(dtype, expr)` 写在 `T.Parallel` 体内 → **编译进程 core dump**（无诊断）；
+  (b) 移位/按位表达式（`>>`、`&`）写在 `T.Parallel` 体内 → 同样 core dump；
+  (c) buffer 级 `T.vbitcast(ub_buf, "float32")`（含 `T.copy` 后位重解释）→
+      `InternalError`（memref 形态/断言不符）。
+  唯一可用形态是 tile 级 `T.vshl` / `T.vshr`（int32/int16/int64）。
+blocked_algo: >-
+  需要位级精确的编码/解码配方：从 f32 位型直接提取指数/尾数（frexp 风格）、
+  位掩码构造、字节重解释。本任务的原计划（bitcast + 指数域加法构造精确 2^k）被迫
+  改为「`T.vshl(1,k)` + 精确幂除」的整数域路线。
+evidence:
+  - /tmp/opencode 探针（session-local）：probe_bits.py — reinterp/bitshift 均
+    `timeout: the monitored command dumped core`；vbitcast 报 InternalError
+  - 可用形态：probe_exactu.py（`T.vshl` 编译通过并逐位正确）
+  - docs/Tilelang.language/数据类型转换操作/T.vbitcast.md §2.2.1（uint8/int8/... 均 ×，
+    仅 fp16/fp32 互转）+ docs/Tilelang.language/逻辑操作/T.vshl.md（int16/32/64）
+workaround: >-
+  位级精确改走整数域：需要精确 2^k 时用 `T.vshl(1_int32, k)` 再 `T.vcast(...,"rint")`；
+  需要从 f32 取指数时用 tile 级 `T.vlog2` + `T.vcast(...,"floor")`（本任务实测
+  floor(log2 a) 在 16384 元素上 0 误差）。代价：无法做 frexp 级位提取，
+  位操作类配方须重写为算术配方。
+occurrences: 1
+tasks: [fp8_quant/_fp8_quant_kernel Stage 3]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 / CANN 9.0.0 / Ascend910B3
+status: open
+proposal: none（未达 recurring；建议先在 `T.Parallel` 位操作路径给出诊断而非 core dump，并让 T.vbitcast 支持 UB buffer）
+created_by: fp8_quant/_fp8_quant_kernel Stage 3, 2026-10-14
+last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel Stage 3
+```
+
 ## Recurring（达升级阈值，待推动补齐）
+
+### CG-2026-0023
+
+```yaml
+gap_id: CG-2026-0023
+layer: runtime (torch_npu / aclnn 设备侧算子覆盖)
+capability: >-
+  torch_npu 设备侧不支持 float8_e4m3fn 的 **copy / 初始化**类算子：
+  `x_fp32.to(torch.float8_e4m3fn)`（aclnnInplaceCopy）报 `error code 561103`（任意
+  shape）；`torch.zeros(..., dtype=fp8, device="npu")` / 任意 fp8 `zeros_`
+  （aclnnInplaceZero）报 `error code 161002`。但 **`.view(torch.float8_e4m3fn)` 字节
+  重解释可用**（纯元数据，不走 aclnn copy），`torch.empty(fp8, device="npu")` 亦可用。
+  即作用范围是 copy/init 类算子，不是「fp8 dtype 整体不可用」。
+blocked_algo: >-
+  fp8 算子的 host 侧构造/比较路径：无法在设备侧把 fp32/fp16 张量 cast 成 fp8（golden、
+  reference、比较器须绕行），也无法用 `torch.zeros` 造 fp8 张量。对 FP8QuantOp 的对外
+  dtype 契约**不构成阻塞**（kernel 输出 uint8 载体 + host `.view` 还原即可，见 CG-2026-0018
+  workaround）；但对「设备侧 fp8 cast」直写路径与 fp8 golden 构造构成阻塞。
+evidence:
+  - 复现（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/history_version/design_probe_runtime_front8.py`
+    （Ascend910B3 / torch 2.9.0+cpu / torch_npu 2.9.0.post8 / CANN 9.0.0，逐操作实测表）
+  - 交叉印证（任务工作区，允许失效）：`examples/TileOPs/tests/ops/test_fp8_quant.py` 的 S7 注释
+    （fp8 cast 走 CPU 执行后搬回设备 = golden-availability 适配）
+  - 独立体现（集成侧）：`examples/TileOPs/tileops/testing/test_base.py` 的
+    `_to_comparison_dtype()` 对 fp8 走 CPU 上抛（该改动为脚手架作者所加、自标未授权，见报告 issues）
+  - docs/ 全目录 grep float8/e4m3/fp8 -> 无命中（无文档化支持声明）
+workaround: >-
+  (a) 设备侧 fp8 构造走 `torch.empty(fp8)` 或 `uint8` 缓冲 `.view(fp8)`（勿用 `zeros`/`.to`）；
+  (b) host 侧 fp8 值转换走 CPU（`.cpu().to(fp32)`）+ H2D/D2H，或直接以 uint8 为载体比对；
+  (c) golden/reference 的 fp8 cast 一律 CPU 路由后搬回设备（位级等价）。
+occurrences: 1
+tasks: [fp8_quant-_fp8_quant_kernel-20261014T153942Z]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+status: open
+proposal: none（未达 recurring；建议补齐 aclnn 侧 fp8 copy/init 算子覆盖，或在 torch_npu 文档标注「设备侧 fp8 cast / zeros 不可用、.view 可用」）
+created_by: fp8_quant/_fp8_quant_kernel 设计期独立复核（2026-10-14，脚手架实测）
+last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel（设计+集成两阶段体现）
+```
 
 ### CG-2026-0008
 

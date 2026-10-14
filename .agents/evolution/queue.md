@@ -976,6 +976,133 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 承接 VP-2026-0146（已合入 §5 ①）的「回退」措辞限定；因缺知识域 repro 降级 Tier 1（merge-policy §1 ED-A 语义），任务内 repro 与知识域自包含要求不符（import 任务模块 + 头部缺条目 ID）故未机械转正——该判定已如实披露。
 
+## VP-2026-0208
+
+- type: P
+- title: 软件 fp8 e4m3 编码与 torch 逐字节一致的**三条件**——signed i8 字节空间 + 精确 `2^k`（`T.vshl`）+ 与参考同形的除法（勿 reciprocal-mul）
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3：`_fp8_quant_kernel.py` 步骤 3–6——三条件齐备后 fp32 随机数据 524288/524288 逐字节一致、fp16/bf16 仅剩 tie 处 ±1 LSB；缺条件时的逐步收敛链「整片错 → 313 错 → 3 错 → 0 错」见该任务 RETROSPECTIVE（`/tmp/opencode/final_all.log`，session-local，provenance 允许失效）
+  - 机制归因（三条件各对应一条已实测条目）：traps-compiler.md TRAP-parallel-f32-uint8-cast-rounding（signed i8 空间 + 舍入）/ TRAP-vexp2-not-exact-pow2（精确 `2^k`）/ constants.md CONST-npuir-f32-division-not-ieee-rounded（设备 fp32 除法非 correctly rounded）
+  - 交叉引用：本任务字节级等价断言口径见 queue VP-2026-0212（角点集覆盖）+ VP-2026-0213（独立重生成）
+- repro: repro-missing（需 NPU + tilelang；最小形态 = 小 `BLOCK_ELEMS` kernel 对 fp32 随机输入比对「三条件齐备 vs 缺一」的字节输出）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 条目（软件编码配方族，置于 TRAP-vexp2-not-exact-pow2 邻域并互链）：**软件 fp8 e4m3 字节与 torch 逐字节一致的三条件**——① 字节出在 **signed i8** 空间（`bits - 128·[q<0]`，clamp `[-128,127]`；否则 ≥128 值饱和为 127 = e4m3 NaN 载荷）；② mantissa scale `2^(3-ec)` **精确**（走 `T.vshl(1,k)` → `vcast rint`；`T.vexp2` rel err ~6e-8 使所有 `n.5` tie 反向）；③ 量化值用与参考**同一除法形态**（`x/scale`，勿 reciprocal-mul——设备 fp32 除法非 IEEE correctly rounded，乘倒数在 tie 处不等价）。三条件齐备下 fp32 随机数据 524288/524288 逐字节一致，fp16/bf16 仅剩 tie 处 ±1 LSB（硬件性质，非实现缺陷）。第二证候选：任何低比特/字节载体编码算子（int8 量化、bf16 模拟）。repro-missing（待同族任务回填最小 kernel）。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类无知识域 repro（需 NPU 环境）→ 降级 Tier 1；三陷阱本体已由 Tier 0 条目承载，本条承载「配方完整性 + 交叉引用」价值。
+
+## VP-2026-0209
+
+- type: P
+- title: 字节载体算子设计检查项——输出 dtype 不在 `out_idx` 白名单时改显式传输出张量；用 `.view(dtype)` 保对外契约（设备侧 `.to`/`zeros` 不可用而 `.view` 可用）
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 1 §0.5.1 + Stage 3：`uint8` 出参经 `out_idx` 静默回落 float32（Tier 0 traps-runtime.md TRAP-out-idx-uint8-dtype-fallback）；`out.reshape(B,S,G,D).view(torch.float8_e4m3fn)` 保留对外 dtype 契约——设备侧 `.to(fp8)`=561103、`fp8 zeros_`=161002 不可用而 `.view` 可用（探针 `history_version/design_probe_runtime_front8.py`，任务工作区，允许失效）
+  - 交叉引用：能力缺口 CG-2026-0019（out_idx 白名单）/ CG-2026-0023（runtime fp8 copy/init）
+- repro: repro-missing（第二形态待补；`.view` 可用性最小复现 = uint8→fp8 `.view` + 数值比对，纯 host 事实）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 条目（字节载体设计检查项，置于 TRAP-out-idx-uint8-dtype-fallback 邻域）：**字节载体（uint8/fp8/int8 载荷）算子设计三检查**——① 输出 dtype 不在 `_tvm_dtype_to_torch` 白名单（uint8 缺）时**禁用 `out_idx`**、改显式传输出张量（否则静默回落 float32）；② 对外 dtype 契约可经 **`.view(dtype)` 元数据重解释**零成本保留（设备侧 `.view` 可用，`.to`/`zeros` 类 copy/init 不可用）；③ wrapper 端 host 侧 `reshape + .view` 还原（不改 kernel 契约）。判据：契约域内逐字节一致。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类部分事实已由 Tier 0 条目承载——本条补「设计检查项 + runtime 可用性对照」的交叉引用面；第二证候选 = 任何使用 `.view(dtype)` 保契约的迁移任务。
+
+## VP-2026-0210
+
+- type: P
+- title: 行维非整除的重叠窗口映射——`row0 = min(tile*block_m, R-block_m)` 让每 tile 都是完整块、尾块幂等重算若干行，免部分 `T.copy` / host padding
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3：`_fp8_quant_kernel.py` 步骤 1 注释 + Boundary 用例 `(1,100,1,64)` / `(1,37,1,32)` 与整除形态逐字节一致（`/tmp/opencode/final_all.log`，session-local：non_divisible_R 6400/6400、non_divisible_d32 1184/1184）
+  - 交叉引用：本任务 §5.4 设计期行裁剪（`rows=min(block_m,R-row0)`）为替代形态；queue VP-2026-0180 的 1D 长轴 span 钳制为同族（不同结构面）
+- repro: repro-missing（最小形态 = 非整除 R 的纯逐元素/归约 kernel，比对重叠窗口版与行裁剪版逐位一致）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    add 条目（非整除 tiling 形态）：**行维非整除的重叠窗口映射**——`row0 = min(tile*block_m, R - block_m)`，每 tile 取 `(block_m, D)` 完整块，尾块重算若干已算行。行/组独立且逐行确定性 ⇒ 重算幂等、结果逐位一致（本任务 `(1,100,1,64)`/`(1,37,1,32)` 实测），且**不需要**部分 `T.copy`（保持整块形态最稳）也不需要 host padding。适用：行/组完全独立、每行输出不依赖跨行累加的元素级算子（归一化/量化/逐元素）；代价 = 尾块最多重算 `block_m-1` 行（比率随 R 增大趋零）。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类无知识域 repro（需 NPU）→ 降级 Tier 1。
+
+## VP-2026-0211
+
+- type: P
+- title: 字节级精度 gate 下 `-0.0` 的判据须按「参考语义量」定义（量化值 `q == 0`）而非「输入 `x == 0`」——否则下溢产生的 -0.0 被误报
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3：`_fp8_quant_kernel.py::_classify_mismatches`（`zero_ok = mism & (qf == 0) & ((got ^ ref) == 0x80)`）——首轮按 `x == 0` 判定产生 56 个假报（`x/scale` 在有限 x 上可下溢为 ±0，如 `amax=inf` 的行全为 ±0），改按 `qf == 0` 后归零
+  - 交叉引用：torch-oracle 判据定义域族（traps-runtime.md TRAP-torch-oracle-maxpool1d-empty-window 为「oracle 本身不可用」的另一形态）
+- repro: repro-missing（最小形态 = 纯 torch CPU：`x/scale` 下溢为 -0.0 的行，按 `x==0` 与按 `q==0` 两种判据的假报计数）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 小条目（torch-oracle 判据定义域族）：**`-0.0` 差异的判据定义域按量化值而非输入**——量化/归一化算子中 `x/scale`（或 `x·inv`）可在**有限输入**上下溢为 ±0（`amax=inf` 的行、尾数下溢等），此时输入非 0 而输出是 `-0.0`；若按「输入 `x == 0`」判定会把这类差异误报为 unexpected（本任务首轮 56 个假报）。正确判据 = 「量化值 `q == 0` 且字节差异 == 0x80」→ 接受。推广：精度分类器的「可接受差异」条件应以**参考侧语义量**（量化值/目标 dtype 值）的值为准，不以算子输入定义。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类无知识域 repro（纯 torch 可最小化，待回填）→ 降级 Tier 1。
+
+## VP-2026-0212
+
+- type: P
+- title: D-1 等价性角点集须覆盖等价对象的**全可达幅值区间与两侧符号**，并配一条「旧式回归守卫」断言旧形态确实错（E5 形态）——典型 corner + 随机数系统性漏掉阈值型缺陷
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z：v0 `verify_equiv.py` 角点集缺 `(0,1e-30)` 负值区间 → 4/4 EQUIV_PASS 却漏掉真实编码错误（`q=-9.9e-31 → 0x7E` 解码 +448）；v1 补 `±1e-31/3e-31/5e-31/9.9e-31/2e-31/1e-32/1e-35/1e-38/1e-41/1e-45`、fp32 最小次正规 `2^-149`、随机负次正规、`±0/±inf/NaN` 后 E5 直接判定「v0 有限乘数式 12/13 字节错、v1 比较式 0/1 错」（`verify_equiv.py:43-51,156-172`）
+  - 交叉引用：queue VP-2026-0207（判别力的另一形态——结构性可证伪性/负向对照）/ VP-2026-0199（检视侧）/ VP-2026-0200（设计侧）——本条是其**定义域覆盖**形态（非空真、有判别力但角点集不全）；检视侧执行面见 VP-2026-0213
+- repro: repro-missing（方法形态；复现条件 = 任一含符号/阈值/次正规/编码类等价断言的 `verify_equiv.py`：检查角点集是否显式覆盖每段可达幅值区间与两侧符号，且是否含旧式回归守卫）
+- toolchain_stamp: torch 2.9.0+cpu（脚本侧，与 NPU 工具链无关）/ 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-research.md
+- delta: |
+    add 条目（D-1 角点集覆盖要求 + 旧式守卫）：「与参考实现逐字节/逐位一致」类等价断言，机器验证的角点集必须**显式覆盖可达幅值区间的每一段与两侧符号**（含 `(0, 小阈值)` 的负值、次正规、subnormal 交界、`±0/±inf/NaN`），并**额外带一条旧式回归守卫**——断言被替换的旧形态在缺口区间确实报错（`旧式 mismatch > 0` 且新式 == 0），使「覆盖缺口造成的假 PASS」可被机械证伪。典型 corner + 随机数会系统性漏掉阈值型/微小幅值型缺陷（本任务 v0 实证）。缺角点覆盖时机器 PASS 与真实等价不可区分。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类方法条目（定义域覆盖形态），与 VP-2026-0207/0199/0200 同一发现族的不同形态——三案合入时互链。
+
+## VP-2026-0213
+
+- type: P
+- title: 复检「与参考逐字节一致」类断言须由检视方**独立重生成**覆盖全定义域的验证集——重跑被检脚本只证明脚本与文档自洽，无法排除角点集被收窄
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 2 复审：reviewer 独立脚本（`/tmp/opencode/independent_fp8_check.py`，session-local，允许失效）生成 ~2,400,849 lane 符号式 + ~3.1M lane 编码器验证集（fp32 全指数 `2^-149..2^129`、`(0,1e-30)` 负值、每 power-of-two tie），非预期不一致 0，才确认上轮覆盖缺口真正闭合；对照 skill Phase 1 第 7 步现行「重跑设计脚本 + 对照内嵌表 + 全 EQUIV_PASS」只证明自洽
+  - 交叉引用：queue VP-2026-0207（判别力自证）/ VP-2026-0199（空真守卫）/ VP-2026-0212（角点集覆盖——本条为检视侧执行面）；VP-2026-0028（复检闭合表）
+- repro: repro-missing（方法形态；复现条件 = 检视侧对编码/符号/阈值/次正规类等价断言独立生成验证集，且分类每一处不一致）
+- toolchain_stamp: torch 2.9.0+cpu / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    add 条目（复检方法论）：**复检修订版 ≠ 重跑被检脚本**——重跑 + 对照内嵌表只能证明「脚本与文档自洽」，无法排除角点集被收窄或未来再引入阈值型缺陷。对**编码器/符号/阈值/次正规**类等价断言，检视方必须**独立重生成**覆盖完整定义域的验证集（含参考实现与实现的每一段可达幅值、两侧符号、`±0/±inf/NaN`、次正规交界、每 power-of-two 的 tie），并**分类每一处不一致**（接受差异 / 契约 / 契约域外）。仅以被检脚本的 PASS 作为覆盖充分性依据 = 假安心。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: P 类方法条目；流程规则落点（design-review SKILL.md Phase 1 第 7 步）另立 VP-2026-0219。
+
+## VP-2026-0214
+
+- type: D
+- title: `T.vshl` 在 UB 上被**标量化**（编译警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`）——每 tile 一次可接受，放进逐元素热点则发射开销显著
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3：`_fp8_quant_kernel.py` 步骤 5c（每 tile 一次 `2^(ec+6)`，int32），每次编译均打印该警告（`/tmp/opencode/final_all.log`，session-local，允许失效）；`docs/Tilelang.language/逻辑操作/T.vshl.md`（int32/int16/int64 支持，无向量吞吐说明）
+  - 交叉引用：Tier 0 traps-compiler.md TRAP-vexp2-not-exact-pow2 的代价边注；TRAP-expert-v-operands（operand 形态决定标量化）同族
+- repro: repro-missing（需 NPU；最小形态 = 含 `T.vshl` 的 kernel，观察编译警告并以 profile 量标量化区块的发射/时长）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 小条目（标量化族，置于 TRAP-expert-v-operands 邻域并互链）：**`T.vshl` 在 UB 上被标量化**——编译期固定警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`。它是精确 `2^k` 的正确性代价（`T.vexp2` 非精确，见 TRAP-vexp2-not-exact-pow2）；每 tile 一次（如 exponent 构造）可接受，若放进逐元素热点链则需预期显著发射/时长开销。判据：把 `T.vshl` 从每 tile 一次移入逐元素路径后 profile 对比发射段占比。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: D 类无知识域 repro（现象载体为编译警告 + 需 profile 量化）→ 降级 Tier 1。
+
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
 ## VP-2026-0008
@@ -1080,6 +1207,7 @@ decided_by: evolver / human / -   # 裁决者
   - .agents/tools/gate_lint.py#L36（TEMPLATE_BRACE_RE 定义）+ #L208-215（S1-PLACEHOLDER 判定）
   - 正则行为机械复现（2026-09-07 蒸馏会话）：`TEMPLATE_BRACE_RE.finditer("槽位尾行状态恒 ∈ {零, 有限真实数据}")` 命中 `{零, 有限真实数据}` → fail；误判文本出现在被门禁拒绝的中间版本上（归档 design_v0/v1/DESIGN.md 已无中文花括号——修订后通过）；发生账户来自 conductor 终态钩子输入（复盘工件未覆盖该两次 fail 的 gate 侧原因，同时构成复盘缺口）
   - 〔2026-09-15 复发，task multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z〕新形态两处误报（Stage 1 gate 修复重试的 2×S1-PLACEHOLDER）：`e^{块内分数 − m_cur}`（CJK 数学上标，无列表分隔符）与 `_{\text{Cube 部和，f16 物化回传}}`（LaTeX \text{中文} 下标）——**前者不受本提案正则排除**（负向前瞻仅排除 [,、;；∈≤≥]，无分隔符的 `^{中文 − var}` 形态仍命中），审批时建议扩大排除集（brace 组前缀为 `^`/`_` 或含 `\text{` 时跳过）；writer 侧排版规则另立 VP-2026-0066 互补（改写消除模式命中：括号形式 / 注解移出公式，语义零变化）；纯 ASCII 花括号（`e^{m_prev − m_cur}`）不触发
+  - 〔2026-10-14 第八现（不同任务，quantization 族首个 fp8 迁移），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕Stage 1 gate 修复重试 1 次（`stage_retry_count[1]=1`，67s；S1-PLACEHOLDER）：DESIGN.md 的**字面数学集合记号**（含中文的 ASCII 花括号 `{...}`）被 `TEMPLATE_BRACE_RE` 判「疑似模板变量未替换」，本任务因此消耗一次完整 designer 重调度（`SESSION_TIMING_ANALYSIS.md` §3 建议 4；`examples/fp8_quant/_fp8_quant_kernel/RETROSPECTIVE.md` Stage 1；任务工作区，允许失效）。**新形态特征**：该花括号组既无列表分隔符 `[,、;；]`、也无数学关系符 `∈≤≥`——VP-2026-0019 现提案正则的负向前瞻**不覆盖**此形态，与 2026-09-15「无分隔符 `^{中文 − var}` 上标」同族，进一步佐证「负向前瞻穷举排除」不可完备；审批时建议与 VP-2026-0066（writer 侧「CJK 不进 `{}`」排版规则）同批采纳，writer 侧为主防线、正则修复为副防线。
 - repro: python3 -c "import re; print([m.group(0) for m in re.finditer(r'\{[^{}\n]*[\u4e00-\u9fff][^{}\n]*\}', '恒 ∈ {零, 有限真实数据}')])"
 - toolchain_stamp: gate_lint.py 现行版本（statectl gate 1 机械核对层）；误判发生于 2026-09-07 expert 迁移任务
 - target_doc: .agents/tools/gate_lint.py
@@ -1945,6 +2073,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - task multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z：examples/multi_head_attention/_gqa_prefill_fwd_kernel/RETROSPECTIVE.md Stage 1 gate-修复重试章节 Skill Flow Issues 首行（DESIGN.md L41/L446 两处误报 `e^{块内分数 − m_cur}`、`_{\text{Cube 部和，f16 物化回传}}`；修复 = 括号形式改写 + 注解移出公式，`grep -P '\{[^}]*[\x{4e00}-\x{9fff}][^}]*\}'` 复核清零，语义零变化）
   - 交叉引用：queue VP-2026-0019（gate_lint 正则侧修复——本条为 writer 侧互补；2026-09-15 新形态 `e^{中文 − var}` 无列表分隔符，VP-2026-0019 现提案正则不覆盖，见其证据链追加）
+  - 〔2026-10-14 第三现（不同任务，quantization 族首个 fp8 迁移），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕Stage 1 门禁修复（S1-PLACEHOLDER，67s + 一次完整 designer 重调度）由 DESIGN.md 的**含中文 ASCII 花括号集合记号**触发；修复姿势 = 把 ASCII `{...}` 改为全角 `｛｝`（`REVIEW.md` §7 核验 gate_lint `TEMPLATE_BRACE_RE` 不再命中），语义零变化、门禁可机械复核——与本条「改写消除模式命中」的姿势一致，且再次证明正则侧（VP-2026-0019）无法穷举合法数学记号形态。**推广**：writer 侧规则应表述为「数学记号中的 ASCII `{}` 不承载 CJK——需要中文集合记法时用全角 ｛｝ 或改写为括号/正文」，而非只针对 `\text{}`/上标两形态。
 - repro: 复现条件——DESIGN.md 数学记号含 CJK-in-braces 形态（`grep -P '\{[^}]*[\x{4e00}-\x{9fff}][^}]*\}' DESIGN.md` 有命中）时跑 gate 1
 - toolchain_stamp: gate_lint.py 现行版本；误报发生于 2026-09-15 任务
 - target_doc: .agents/skills/tilelang-op-design/SKILL.md
@@ -3670,6 +3799,7 @@ decided_by: evolver / human / -   # 裁决者
   - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z op 级 `RETROSPECTIVE.md` Stage 5 Skill Flow Issues 第二行：脚手架按「受限参数（`dilation != 1`）」预埋 CPU golden 回退，但本任务实测 `F.max_pool1d(..., return_indices=True)` 的 indices 损坏**对所有 dilation 成立**（`dilation==1` 静默返回 int8 mask buffer）⇒ 按受限参数预埋的回退覆盖面不足，首轮 report 失败（per-op 40/47）
   - 同任务集成包 `integration_log.md#调试历史` + `examples/TileOPs/tests/ops/test_pool.py#MaxPool1dIndicesTest.ref_program`（原 `needs_cpu_golden = dilation != 1` → 改为无条件 CPU golden；修复后 per-op 47/47、`max_abs_err=0.0`）（任务工作区/集成包，未上库）
   - 交叉引用：VP-2026-0178（已合入：Stage 0/S5 golden 可用性自检 + 受限参数回退模板——本条是其覆盖面扩展）/ VP-2026-0179（已合入：integrator 失败分类表子类）；知识侧 = traps-runtime.md TRAP-npuir-ref-backend-golden-capability 第三形态
+  - 〔2026-10-14 追加证据（不同任务，quantization 族首个 fp8 迁移），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕**字节载体/fp8 类算子**的 golden 与比较器对「NPU 后端能力缺口」的依赖不止于选择类：本迁移的集成侧需把 fp8 比较**上抛**改走 CPU （`examples/TileOPs/tileops/testing/test_base.py` 的 `_to_comparison_dtype()` 对 fp8 走 `tensor.cpu().to(fp32)`——设备侧 `.to(fp8)` 报 561103，见能力缺口 CG-2026-0023；该改动由脚手架作者所加、自标未授权，见蒸馏报告 issues），golden 的 fp8 cast 亦一律 CPU 路由后搬回设备（`tests/ops/test_fp8_quant.py` S7 注释）。**建议并入本条**：golden 可用性自检须覆盖**比较器/上抛路径**（不只 golden 计算），判据 = 目标 dtype 的 cast/比较在设备侧可用，否则声明 CPU 路由回退（任务工作区/集成包，未上库）。
 - repro: repro-missing（集成流程规则；复现条件 = 纯选择类算子用 `torch.nn.functional` 多输出 API 作 NPU golden，先实测其 indices 的 dtype/shape 是否等于契约）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
@@ -3964,6 +4094,7 @@ decided_by: evolver / human / -   # 裁决者
   - task argmin-_argreduce_kernel-20261014T151121Z Stage 3：编译日志 `src/transform/npu_loop_vectorize.cc:801` 每次 tiled 编译命中——「Parallel cast lowering uses fixed round mode 'rint'; non-default floor/trunc cast expectations are not preserved」（本实现 `T.cast(j,"float32")` 与索引基址 `T.cast((t+1)*tile_n,"float32")` 触发）
   - 本任务无影响（索引为整数值，`rint` 与 `trunc` 在精确整数域恒等：`j < N_padded ≤ 2^24`、`t*tile_n` 精确）——价值在「该警告的正确解读」：它是固定 lowering 语义，不是可忽略的噪声
   - 复现命令（任务内，provenance 允许失效）：`python examples/argmin/_argreduce_kernel/_argreduce_kernel.py --level L0`（观察 `npu_loop_vectorize.cc:801` 警告行）
+  - 〔2026-10-14 第二任务独立证据（不同任务，quantization 族），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕该 warning 文本「fixed round mode 'rint'」在 **f32→i8/ui8 窄化路径**上**与实际行为不符**：`T.Parallel` 内直接 `T.cast(f32_expr,"uint8")` 的 64 点探针中 **16 个值偏离 `round()`**（既非 trunc 也非 round-to-nearest-even），而两步 `T.vcast(src,i32,"rint")`→`T.vcast(i32,f32,"rint")` 后窄化 0/64 一致（Tier 0 traps-compiler.md `TRAP-parallel-f32-uint8-cast-rounding` + repro）。**对本条的边界修正**：warning 的「强制 rint」描述适用于**截断/取整语义**（argmin 首证形态，整数域恒等无害），但**不**保证窄化 cast 的输出等于 `round()`——按本 warning 推断「直接 f32→uint8 即最近舍入」是错误推论；依赖最近舍入的字节编码必须显式先整数化。
 - repro: repro-missing（知识域最小 repro 待同族任务回填——最小形态 = 一个含 `T.Parallel` 内 `T.cast(float→int)` 且依赖 trunc 语义的探针，比对 rint/trunc 差异域）
 - toolchain_stamp: tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
@@ -4015,6 +4146,285 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
 - decided_by: -
 - decided_note: P 类方法条目（判别力自证法）；与 VP-2026-0199（检视侧）/VP-2026-0200（设计侧）为同一发现的三 Tier 拆分（方法本体 P + 两处流程规则 R）——三案合入时互链。
+
+## VP-2026-0215
+
+- type: R
+- title: `integrate_kernel.py` 只改写 wrapper import 切换块、不校验**调用签名**——Stage 3 kernel 采用显式输出签名（无 `out_idx`）时改写后的 wrapper 首调即 `ValueError: Expected 3 inputs, got 1`；import 冒烟只做 `hasattr`、不触发真实 forward
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 5（op 级 fp8_quant-fp8_quant-20261014T152721Z）：集成后 wrapper 首调报 `ValueError: Expected 3 inputs, got 1`（`tilelang/jit/jit_npu.py:1281`）——kernel 编译后签名 = 显式输出 `(X(R,D), Scale(R,), OutU8(R,D))`（uint8 字节载体，CG-2026-0019 使然）；修法 = 只改胶水层 `fp8_quant.py::_fp8_quant_wrapped_kernel`（host 分配 scale/out_u8、以全部参数调用、`reshape + .view(torch.float8_e4m3fn)` 还原契约）（任务工作区/集成包 `integration_log.md#调试历史`，未上库）
+  - `examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py` L398-422（`smoke_test` 仅 import + `hasattr`；冒烟 `smoke-ok` 后 direct forward 才暴露签名不符）
+  - 交叉引用：VP-2026-0150（wrapper 契约名持久化/ascend_mode，已 apply）/ VP-2026-0140（`_select_config` 成对 import）/ VP-2026-0093（wrapper 口径差）
+- repro: repro-missing（集成流程规则；复现条件 = 用显式输出签名（无 `out_idx`）的 kernel 走 integrate_kernel.py，冒烟 pass 后调用 wrapper.forward 即签名不符）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
+- delta: |
+    动作: update（`smoke_test` 段后追加签名核对）
+    定位锚: "    smoke = smoke_test(integrated_files)"（apply 时按当时文件锁定精确锚——冒烟调用处）
+    old 文本: （即上述定位锚原文所在语句）
+    new 文本: |
+      同处追加：**调用签名核对（import 冒烟不覆盖）**——冒烟只验证可导入/可属性访问，不触发真实 forward；若 Stage 3 kernel 采用**显式输出签名**（无 `out_idx`，字节载体/多输出场景常见），改写后的 wrapper 仍按「单输入 + 返回值」旧模板调用会在 report 首例报 `ValueError: Expected inputs, got N`（fp8_quant 2026-10-14 实证：`Expected 3 inputs, got 1`）。冒烟后追加：对最小 shape 比对 wrapper 实参个数与 kernel 编译后签名（或至少 `[warn] kernel has explicit outputs -> wrapper glue may need host-side output allocation`），并在已知修复目录补「host 分配输出载体 + `reshape` + `.view(dtype)` 还原契约」的适配要点。
+    动机: 本任务集成 attempt 1 的唯一失败即此形态（1 次受控调试闭环 + 一轮 report ≈数分钟）；显式输出签名在字节载体算子中常见（CG-2026-0019 使然），import 冒烟天然不可见该类缺陷。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0216
+
+- type: R
+- title: `tilelang-op-design` Phase 2 第 1 步等价性论证——**阶跃/符号/阈值/次正规**类恒等变形必须给出「全定义域成立」依据（比较式优先），并同步要求 D-1 角点集覆盖该式的边界幅值区
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 1 revision v1（触发 = Stage 2 首轮 1 阻塞项）：v0 的符号位 `128·min(max(−v·C,0),1)` 以散文论证 `v<0 ⇒ −v·C ≥ 1` 被接受，但该前提只对 `|v| ≥ 1/C` 成立 → `0<|v|<1/C` 区间字节错（`q=-9.9e-31 → 0x7E` 解码 +448）；`history_version/design_v0.md` §1.6.1 采纳项 4；`REVIEW.md` 问题 1
+  - 修复形态：改与幅值无关的比较式 `128·[q<|q|]`（落 `T.vcmp(q, av, cond, "lt")` + `T.vcast(cond, sbv, "rint")`），E5 旧式回归守卫实证旧式 12/13 错 / 新式 0 错
+  - 交叉引用：queue VP-2026-0200（D-1 判别力硬要求）/ VP-2026-0212（角点集全定义域覆盖，本条为其设计侧流程落点）/ VP-2026-0219（检视侧落点）
+- repro: repro-missing（流程规则；复现条件 = 任一含符号/阶跃/阈值/取整恒等变形的设计——检查等价性论证是否写出定义域且是否覆盖输入可达集）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 torch 2.9.0+cpu + tilelang 0.1.2+8b16bcc… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 1 步「四要素」条目追加一句）
+    定位锚: "   每个采纳项必须给出**四要素**：原式 → 优化后公式 → **等价性论证**（数学恒等，或容差内等价 + fp16/bf16 舍入影响评估，与 §8.2 精度标准一致）→ **收益量化**（减少的计算量（op 数 / FLOPs）或访存量（Bytes）的估算）。"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加：**阶跃/符号/阈值/次正规/取整类恒等变形**的等价性论证必须给出「**全定义域成立**」依据——凡论证含不等式/阈值/有限乘数（如 `min(max(−v·C,0),1)` 构造符号位），须显式写出其**定义域**并核对输入可达集 ⊆ 该定义域；定义域不覆盖输入可达集即为伪等价（**符号/布尔判定一律用比较式**，比较天然覆盖任意幅值）。同时 D-1 角点集必须显式覆盖该式的**边界幅值区**（如 `(0, 1/C)` 的负值、次正规交界、`±0`）。fp8_quant 2026-10-14 实证：v0 有限乘数式在 `0<|v|<1e-30` 静默错值、角点集缺口使其机器验证假 PASS（v1 补角点 + E5 旧式回归守卫后闭合）。
+    动机: 该缺陷由「散文论证 + 角点集缺口」双重掩护逃过 v0 设计期与 D-1 机器验证，属可机器证伪的论证形态；把定义域与边界幅值区写成硬要求可零成本前置拦截。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0217
+
+- type: R
+- title: `tilelang-op-design` D-1 要求——等价变形依赖**tile 级超越/取整 op**（`vlog2`/`vexp2`/`vsqrt`/`vrsqrt`）时，机器验证必须纳入该 op 在工具链上的**真实精度**，不得用 torch 同名函数代替其行为
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3 Skill Flow Issues 第三行：设计期 D-1 用 torch 精确算子（`torch.exp2`/`torch.log2`/`torch.clamp`）模拟编码链，把「5/5 EQUIV_PASS」的公式带进 Stage 3；真实 tile 级 `T.vexp2`（`exp(x·ln2)`）**非精确 2^k**（rel err ~6e-8），使所有 exact mantissa tie 反向（fp16 4/16384、bf16 18/16384 字节错）→ 设计期等价性验证与实现期 op 近似性之间**验证对象断裂**（任务工作区 `RETROSPECTIVE.md` Stage 3 + `/tmp/opencode/probe_*.py`，session-local）
+  - 修复形态：scale 因子改 `T.vshl(1,k)` 精确幂（Tier 0 TRAP-vexp2-not-exact-pow2）
+  - 交叉引用：TRAP-vrsqrt-plain-precision（近似指令精度同族）；VP-2026-0221（检视侧落点）
+- repro: repro-missing（流程规则；复现条件 = 任一依赖 vlog2/vexp2/vsqrt/vrsqrt 的等价变形——比对 torch 同名函数与该 op 在工具链上的实际实现在 tie/边界样本上的分歧）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+8b16bcc… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 5 步「等价性机器验证（D-1）」条目追加一句）
+    定位锚: "5. **等价性机器验证（D-1，Phase 2 末尾强制——\"散文论证\"变\"可执行论证\"）**：§1.6.1 含采纳优化项时（显式「无优化空间」结论除外），生成并执行 `examples/{project}/{op}/verify_equiv.py`："
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加：**近似 op 精度纳入（硬）**——若等价变形依赖 **tile 级超越/取整 op**（`T.vlog2`/`T.vexp2`/`T.vsqrt`/`T.vrsqrt`/`vcast(floor)` 等），机器验证必须把**该 op 在工具链上的真实精度**纳入对照（实测其实现误差），**不得**用 torch 同名函数代替其行为——设计期用 torch 精确算子模拟会与实现期 op 近似性**断裂**（fp8_quant 2026-10-14 实证：设计期 5/5 EQUIV_PASS 而 `T.vexp2` rel err ~6e-8 使全部 `n.5` tie 反向，Stage 3 才暴露）；无法在 CPU 侧复现该 op 时，至少把「该 op 的真实精度」标注为 **Stage 3 必验项**并在 §9 列出。
+    动机: 设计期等价性验证的对象是「公式」，实现期生效的是「工具链上的具体 op」；本任务该断裂造成 Stage 3 一轮定位（tie 全反向 → 三个最小探针），前置标注可零成本规避。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0218
+
+- type: R
+- title: `tilelang-op-design` UB 预算要求——`BLOCK_ELEMS` 类「每 tile 元素数」常量须标为 Stage 3 可调并给减半降级路径；`×1.12` 校核系数在 auto multi-buffer 下**系统性偏低**，不得作容量 PASS 唯一依据
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3 Skill Flow Issues 第二行：DESIGN §3.3 的可编译性证据是「逐 op COMPILE_OK」，但**组合体**在 `BLOCK_ELEMS=4096` 直接 UB 溢出（编译要求 253952B vs 192KB）；DESIGN §4.5 手工预算 ×1.12 估算 165724B，与实测差 **~1.5×**（auto multi-buffer 使多数 buffer 翻倍）（任务工作区 `RETROSPECTIVE.md` Stage 3 + `/tmp/opencode/probe_e2e.py`，session-local）
+  - 交叉引用：pattern-library traps-compiler.md TRAP-UB-multibuffer-inflation（第五数据点已补）/ constants.md CONST-capacity-910B2C / 能力缺口 CG-2026-0008（recurring）
+- repro: repro-missing（流程规则；复现条件 = 纯 Vector 多 buffer 组合体在 `BLOCK_ELEMS=4096` 编译，读 `ub overflow, requires N bits` 报文对照手工 ×1.12 估计）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+8b16bcc… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 / §4.5 UB 预算要求条目追加两句）
+    定位锚: "   - **设计期探针选项（D-3，裁决计划的可选前置）**"（apply 时按当时文件锁定精确锚——UB 预算要求所在的预算小节）
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      在 UB 预算要求处追加：① **「每 tile 元素数」类常量（`BLOCK_ELEMS` 等）须标注为 Stage 3 可调参数并给出减半降级路径**（组合体 UB 需求只在完整链编译时可见，逐 op COMPILE_OK 不构成容量证明）；② **`×1.12` 校核系数在 auto multi-buffer 开启下系统性偏低**——多中间 buffer 的实例复制可使实际需求达手工估计的 **~1.5×**（fp8_quant 2026-10-14 实证：手工 ×1.12 = 165724B vs 实测 253952B），故设计期估算**不得作为容量 PASS 的唯一依据**，贴限设计须以编译探针校准（`ub overflow` 报文 requires bits 即精确实测需求）。
+    动机: 本任务 Stage 1 判「余量 ≈30.2KB ✓」而 Stage 3 组合体直接溢出，现场降级一次（含重编与 tile 数翻倍）；把「常量为可调 + 系数偏低」写进预算要求可前置暴露该风险。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0219
+
+- type: R
+- title: `tilelang-design-review` Phase 1 第 7 步——「重跑等价性验证」补口径：对**编码器/符号/阈值/次正规**类等价断言，检视方须**独立重生成**覆盖全定义域的验证集，不得以被检脚本 PASS 作为覆盖充分性依据
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 2 复审 Skill Flow Issues 首行：现行「重跑设计脚本 + 对照内嵌表 + 全 EQUIV_PASS」只能证明脚本与文档自洽，无法证明角点集覆盖完整定义域；本检视被迫独立重生成 ~2,400,849 lane 符号式 + ~3.1M lane 编码器验证集（`/tmp/opencode/independent_fp8_check.py`，session-local）才确认上轮覆盖缺口闭合
+  - 交叉引用：VP-2026-0176（空真守卫，已 apply）/ VP-2026-0199（判别力自证）/ VP-2026-0028（复检闭合表）；知识侧方法条目见 queue VP-2026-0213
+- repro: repro-missing（流程规则；复现条件 = 检视侧对编码/符号/阈值类断言独立生成验证集并分类每处不一致）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 torch 2.9.0+cpu / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（Phase 1 第 7 步「重跑等价性验证」条目追加一句）
+    定位锚: "   - **重跑等价性验证**（`DESIGN.md` §1.6.1 含采纳优化项时）：`python examples/{project}/{op}/verify_equiv.py`——执行结果须与 §1.6.1 内嵌结果表一致且全部 `EQUIV_PASS`；脚本缺失、执行失败或与内嵌表不一致 → 维度 8 fail（等价性机器验证失效）；"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加：**「编码器/符号/阈值/次正规」类等价断言的独立重生成要求（硬）**——重跑设计脚本 + 对照内嵌表只证明「脚本与文档自洽」，不能排除角点集被收窄或未来再引入阈值型缺陷；对该类断言，检视方须**独立重生成覆盖完整定义域的验证集**（参考实现与实现的每一段可达幅值、两侧符号、`±0/±inf/NaN`、次正规交界、每 power-of-two 的 tie），并**分类每一处不一致**（接受差异 / 契约 / 契约域外）。不满足即记覆盖缺失（不得以被检脚本 `EQUIV_PASS` 作为覆盖充分性依据）。fp8_quant 2026-10-14 实证：v0 角点集缺 `(0,1e-30)` 负值区间，4/4 PASS 却漏真实编码错误。
+    动机: 「机械复核」的现行三条判据都建立在被检脚本自洽之上；本任务暴露的是「脚本自洽但角点集不全」形态，只有独立重生成才能证伪（检视方实测成本 ≈数分钟）。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0220
+
+- type: R
+- title: `tilelang-design-review` 维度 0「host/op 层引用路径真实性」补**仓库归属**核对——存在性通过不等于归属正确（源仓扁平 vs 脚手架分组路径同时「存在且行号吻合」）
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 2 复审 Skill Flow Issues 第二行：§0.1 引用 `tileops/ops/quantization/fp8_quant.py`（脚手架副本，125 行，forward 103–125）标在「（源码）」列，而源仓实为扁平 `tileops/ops/fp8_quant.py`（66 行；manifest `tileops/manifest/quantization.yaml#source.op` 亦为扁平）——二者同时「存在且行号吻合」，`ls` 存在性检查通过但仓库归属被掩盖（`DESIGN.md#§0.1` + `REVIEW.md` 建议 2）
+  - 交叉引用：VP-2026-0156（维度 0 两核对，已 apply）——本条为其第三核对
+- repro: repro-missing（流程规则；复现条件 = 迁移设计的 §0 引用 host/op 路径时，对照源仓布局与 manifest `source.op` 核对归属）
+- toolchain_stamp: 流程规则（无运行时依赖）/ 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 0「host/op 层引用路径真实性」行扩写）
+    定位锚: "| host/op 层引用路径真实性 | §0/§0.3 引用的源仓 host/op 层路径逐条 `ls` 核对存在（源仓常把同族 op 放在共享模块，如 `tileops/ops/pool.py`；语义解读指向共享实现无碍，但引用的单算子文件路径可能并不存在） | 设计引用 `ops/pool/adaptive_max_pool2d.py` 而源仓实为共享 `tileops/ops/pool.py`（误导读者） |"
+    old 文本: （即上述定位锚原文所在表格行）
+    new 文本: |
+      | host/op 层引用路径真实性 | §0/§0.3 引用的源仓 host/op 层路径逐条 `ls` 核对存在（源仓常把同族 op 放在共享模块，如 `tileops/ops/pool.py`；语义解读指向共享实现无碍，但引用的单算子文件路径可能并不存在）；**并核对「仓库归属」**——当源仓与脚手架/Skill 副本目录分组不一致（源仓扁平 `tileops/ops/`、脚手架带 `quantization/` 子目录）时，两者会同时「存在且行号吻合」，`ls` 通过不足以判 pass；须对照 `manifest/*.yaml#source.op` 或源仓布局，要求设计显式标注根路径（fp8_quant 2026-10-14 实证：脚手架副本 `tileops/ops/quantization/fp8_quant.py`(125 行) 被置于「（源码）」列，而源仓实为扁平 `tileops/ops/fp8_quant.py`(66 行)） | 设计把脚手架分组路径写在「（源码）」列，误导读者以为源仓路径 |
+    动机: 维度 0 现行只校验存在性；本任务该缺口以「语义正确 + 路径存在」形态逃过，属误导性而非致命缺陷，但同类歧义会掩盖真正的路径错误（源仓确实无该文件时也会被脚手架副本「洗白」）。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0221
+
+- type: R
+- title: `tilelang-design-review` 维度 8 补「近似超越函数渗入逐字节一致实现」检查项——等价变形依赖 `vlog2`/`vexp2`/`vrsqrt` 等近似指令时须评估近似误差影响或论证公式结构自校正
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 2 复审 Skill Flow Issues 第三行：e4m3 编码器依赖 `T.vlog2`，而 `docs/Tilelang.language/数学操作/T.vlog2.md` §1/§3 明确其实现为 `ln`+`mul(1/ln2)`（`VLnOp`+`VMulOp`）——「向量化公式依赖**近似超越函数**而语义要求精确整数/阈值」是现有维度 8 表未覆盖的风险形态；本任务因编码字段连续性自校正而无害（本检视实算 ±1% 相对扰动 0 字节错），但流程无 checklist 位
+  - 交叉引用：TRAP-vrsqrt-plain-precision（近似指令精度同族）/ queue VP-2026-0217（设计侧落点）
+- repro: repro-missing（流程规则；复现条件 = 设计等价变形依赖 vlog2/vexp2/vrsqrt 时，评估其近似误差是否被公式结构吸收）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed2 / CANN 9.0.0 / Ascend910B3 / torch 2.9.0+cpu / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 8「等价性论证正确性」行扩写）
+    定位锚: "| 等价性论证正确性 | 逐项独立推演：恒等式数学成立；容差内等价须评估 fp16/bf16 舍入影响且与 §8.2 精度标准一致 | 变形实际改变语义（如改动累加顺序/精度而无论证）；等价论证为空话（\"显然等价\"） |"
+    old 文本: （即上述定位锚原文所在表格行）
+    new 文本: |
+      | 等价性论证正确性 | 逐项独立推演：恒等式数学成立；容差内等价须评估 fp16/bf16 舍入影响且与 §8.2 精度标准一致；**近似超越/取整 op 评估**——等价变形若依赖 `T.vlog2`/`T.vexp2`/`T.vsqrt`/`T.vrsqrt`/`vcast(floor)` 等**近似实现**的 tile 级 op，须评估其近似误差影响或论证公式结构对该误差自校正（`T.vlog2` 实为 `ln`+`mul(1/ln2)`、`T.vexp2` 实为 `exp(x·ln2)`，均非精确；fp8_quant 2026-10-14 实证：编码字段连续性在 ±1 指数误差处自校正 → 无害；但 `T.vexp2` 直接用作 mantissa scale 时 rel err ~6e-8 使所有 `n.5` tie 反向 → 有害），并给出绕法（如精确 `2^k` 走 `T.vshl`） | 依赖近似超越 op 却默认其精确、无误差评估/自校正论证 |
+    动机: 维度 8 现表覆盖「等价性论证」「API 可行性」但无「近似 op 精度」显式位；本任务的两处依赖（vlog2 无害 / vexp2 有害）说明该形态风险**结构依赖**，必须逐项显式论证而非默认精确。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0222
+
+- type: R
+- title: `tilelang-op-develop` Phase 2「不要凭记忆猜 API」清单补两条——① `out_idx` 对非白名单输出 dtype（uint8 等）静默回落，字节载体须显式传输出；② 位级/位移只能走 tile 级 `T.vshl`/`T.vshr`（表达式 `reinterpret`/`>>`/`&` 与 buffer 级 `T.vbitcast` 当前不可用）
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3 Skill Flow Issues 第 1 行 + 第 4 行：① `out_idx=[...]` 对 `uint8` 输出静默分配 float32（`tilelang/jit/jit_npu.py:1696-1708`，`_tvm_dtype_to_torch` 无 uint8 分支）——字节载体须显式传输出（repro `repro/TRAP-out-idx-uint8-dtype-fallback.py`）；② `T.reinterpret`/位移/`&` 写在 `T.Parallel` 体内 → 编译进程 core dump（无诊断）；buffer 级 `T.vbitcast` → `InternalError`；唯一可用 = tile 级 `T.vshl`/`T.vshr`（`/tmp/opencode/probe_bits.py`，session-local，允许失效）
+  - 交叉引用：Tier 0 traps-runtime.md TRAP-out-idx-uint8-dtype-fallback / traps-compiler.md TRAP-parallel-f32-uint8-cast-rounding；能力缺口 CG-2026-0019 / CG-2026-0022
+- repro: repro-missing（流程规则；复现条件见两条 Tier 0 条目 / CG-2026-0019/0022 的探针）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+8b16bcc… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 2 清单追加两条）
+    定位锚: "3. 遵循项目根 AGENTS.md：\"不要凭记忆猜 API\"、\"从示例入手\"——先 Glob `examples/` 同类实现参考。"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加两条（「不要凭记忆猜 API」的负向断言实证）：
+      - **输出 dtype 与 `out_idx`**：`@tilelang.jit(out_idx=[...])` 的出参 dtype 取自 `tilelang/jit/jit_npu.py::_tvm_dtype_to_torch` 白名单（float16/32/64、bfloat16、int8/16/32/64、bool，**无 uint8**），未知 dtype 静默回落 `torch.float32` → 字节载体（uint8/fp8 载荷）**一律显式传输出张量、不声明 `out_idx`**（repro：pattern-library `repro/TRAP-out-idx-uint8-dtype-fallback.py`）。
+      - **位级/位移操作**：当前工具链上表达式式 `T.reinterpret`、`>>`、`&` 写在 `T.Parallel` 体内会使**编译进程 core dump（无诊断）**，buffer 级 `T.vbitcast` 报 `InternalError`；唯一可用形态是 tile 级 `T.vshl`/`T.vshr`（int32/int16/int64）——需要从位型提指数/构造精确 `2^k` 时改走整数域算术（`T.vshl(1,k)`）而非位重解释。
+    动机: 两者均属「凭直觉写法即静默坏值/崩溃且无诊断」的形态，前置到 Phase 2 清单可避免 Stage 3 的探针排查轮次（本任务 core dump 与 out_idx 回落各耗一轮探针）。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0223
+
+- type: R
+- title: `tilelang-op-design` references/info-sources.md 探针小节补一句——探针脚本命名须避开 stdlib 模块名（`bisect`/`random`/`types` 等），否则同目录执行劫持 stdlib `import` 表现为「core dump」假象
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 1 Skill Flow Issues 第三行：设计期用 `lower()` 做可行性探针时，探针目录内文件名 `bisect.py` 与 stdlib 冲突导致 `import` 循环与「core dump」假象，浪费多轮排查（原 `bisect.py` 已删；`history_version/design_probe_encoder_lowering.py`；任务工作区，允许失效）
+- repro: repro-missing（流程规则；复现条件 = 在探针目录内创建与 stdlib 同名模块（如 `bisect.py`）并执行）
+- toolchain_stamp: 流程规则（无运行时依赖）/ 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/info-sources.md
+- delta: |
+    动作: update（探针小节追加一句）
+    定位锚: （探针/复现小节标题行；apply 时按当时文件锁定精确锚——`info-sources.md` 内探针小节）
+    old 文本: （即上述定位锚原文所在段落）
+    new 文本: 在该段落追加：**探针脚本命名须避开 stdlib 模块名**（`bisect`/`random`/`types`/`select` 等）——同目录执行时 Python 会把探针目录置于 `sys.path` 前部，与 stdlib 同名文件劫持 `import`、触发循环导入，表现为「core dump / 进程死亡」假象并误导可行性结论（fp8_quant 2026-10-14 实证：`bisect.py` 浪费多轮排查；改名后正常）。
+    动机: 该形态的失败信号（core dump）与真实的编译器崩溃不可区分，会把「命名事故」误读为「目标形态不可编译」——正是负向断言最危险的误判来源。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0224
+
+- type: R
+- title: `tilelang-op-design` Phase 2 第 3 步设计期探针（D-3）补——探针 harness 须照抄 `examples/` 的 canonical 形态（`@tilelang.jit` + `T.Kernel` + `T.Parallel`），禁自创无参工厂，否则 e2e 探针反复失败且取不到有效信号
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 1 Skill Flow Issues 第二行：设计期探针缺 canonical harness 模板，导致 e2e 探针反复失败（`@tilelang.jit` 无参工厂 + `T.Parallel` 体内表达式 + uint8 输出），最终未取得有效信号，只能降级为「逐 op 实编」+「组合体未验证」的风险条目（`DESIGN.md#§9.1-R1`；`history_version/design_probe_encoder_e2e.py`；任务工作区，允许失效）
+  - 交叉引用：VP-2026-0218（组合体未验证的直接后果）/ pattern-library repro/ README（ED-B 探针模板入口，D-3 已引用）
+- repro: repro-missing（流程规则；复现条件 = 自创无参 `@tilelang.jit` 工厂形态的设计期探针）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed2 / CANN 9.0.0 / Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 3 步「设计期探针选项（D-3）」条目追加一句）
+    定位锚: "   - **设计期探针选项（D-3，裁决计划的可选前置）**：裁决所依赖的未知常数（转置链吞吐、跨步访问代价等）可在设计期以**轻量探针**实测"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加：**探针 harness 形态须照抄 canonical**——探针须沿用 `examples/` 既有 kernel 形态（`@tilelang.jit` + `T.Kernel(n, is_npu=True)` + `T.alloc_ub` + `T.copy`/`T.Parallel`，与目标设计同构），**禁止自创 `@tilelang.jit` 无参工厂**或与目标形态不一致的宿主写法（fp8_quant 2026-10-14 实证：自创形态的 e2e 探针反复失败、取不到信号，导致「组合体未验证」风险带入 Stage 3 并触发一次 UB 溢出返工）；探针被要求在 `templates/` 或 pattern-library `repro/` 既有形态上裁剪（沿用 D-3 现有指引），本轮追加「harness 形态与目标 kernel 同构」的硬要求。
+    动机: D-3 现只约束「预算 + 位置 + 结论回写」，未约束 harness 形态；本任务 e2e 探针失败的根因正是形态自创——D-3 探针若不可运行，其结论为零，直接削弱 §9.1 风险评估的可信度。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0225
+
+- type: R
+- title: `capability-gaps` 条目模板增设 `measured_boundary` 字段（buffer / 表达式 / 向量类型分列）——登记文本的措辞常比实际缺口**窄**，检视侧无法直接引用
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 2 复审 Skill Flow Issues 第三行：复核迁移设计的负向断言时，CG-2026-0018 的源码行号可逐条打开核对，但登记文本措辞（「任何 float8 Buffer」）与实际边界（float8 作为 cast **表达式**亦被拒）不一致，需设计/检视双方各自实测——该成本无 canonical 手段摊薄（`.agents/evolution/capability-gaps.md#CG-2026-0018`）
+  - 本任务已回填 CG-2026-0018 的加宽（buffer → 表达式）；字段化后同类「边界比登记窄」的成本可由登记方一次摊清
+- repro: repro-missing（流程规则；复现条件 = 引用某 CG 条目时核对其登记边界形态与实测边界是否一致）
+- toolchain_stamp: 流程规则（无运行时依赖）/ 2026-10-14
+- target_doc: .agents/evolution/capability-gaps.md
+- delta: |
+    动作: update（「字段速查」yaml 块追加字段）
+    定位锚: "workaround: <当前任务的实际绕法及其代价量化（如\"两遍算法替代单遍，访存 +1.8x\"），或 none（被迫弃用）>"
+    old 文本: （即上述定位锚原文所在行）
+    new 文本: |
+      在该行之后插入：
+      measured_boundary: <实测边界形态分列——buffer / 标量表达式 / 向量类型（x4/x8/x16）各自是否触发该缺口；无法佐证的分列标「未实测」。用于防止登记文本措辞宽窄与实测边界不一致时，检视/设计侧被迫各自重测>
+    动机: 负向断言的措辞宽窄直接决定「未实测路径被误判为可用」的风险（fp8_quant 2026-10-14：「float8 Buffer」字面会漏掉表达式路径）；字段化后条目自描述实测边界，引用方可直接判定适用性。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0226
+
+- type: R
+- title: `tilelang-op-design/references/migration-analysis.md` §5 补一条——引用 `.agents/evolution/capability-gaps.md` 条目时须**实测复现其边界形态**（buffer vs 表达式 vs 向量类型），不得只读登记文本
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 1 Skill Flow Issues 首行：`tilelang-op-design` Phase R/M1 未要求设计期独立复核已登记能力缺口的**加宽结论**——CG-2026-0018 文本只覆盖「float8 Buffer」，实测 fp8 作为 **cast 表达式**同样被 codegen 拒绝（`DTypetoMLIRType` 在 CastNode 路径亦被调用），照登记文本行事会误判「表达式 reinterpret」为合法绕过（`DESIGN.md#§0.5.1` 复核对象 1；`history_version/design_probe_encoder_lowering.py`；任务工作区）
+  - 交叉引用：VP-2026-0225（capability-gaps 模板增设 `measured_boundary`——本条为消费侧对应要求）
+- repro: repro-missing（流程规则；复现条件 = 设计引用某 CG 条目时逐形态实测其边界）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed2 / CANN 9.0.0 / Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/migration-analysis.md
+- delta: |
+    动作: update（§5 硬件耦合性判定/重设计条目追加一条）
+    定位锚: （§5 规则列表中的一条；apply 时按当时文件锁定精确锚——`migration-analysis.md` §5）
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: 在 §5 追加：**引用 capability-gaps 条目时须实测复现其边界形态**——登记文本的措辞常比实际缺口窄（如「任何 float8 Buffer」实际加宽到「float8 cast 表达式」亦被拒），照字面推断会把仍被阻塞的路径误判为可用绕过；设计期须用一个最小探针逐一实测该缺口在 **buffer / 标量表达式 / 向量类型** 三个形态上的可达性，并将实测结论（含版本戳）记入 §0.5 复核段（fp8_quant 2026-10-14 实证）。
+    动机: 能力缺口条目是「无法实现/被迫换算法」结论的前提；前提的边界若不实测，重设计方案可能建立在不可用的绕过路径上（本任务若信「表达式可用」会写出必然编译失败的编码链）。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
+- decided_by: -
+- decided_note: -
 
 ## Decided（merged / rejected / expired / conflict 归档）
 
@@ -4710,6 +5120,7 @@ decided_by: evolver / human / -   # 裁决者
   - examples/ada_layer_norm/_ada_layer_norm_kernel/RETROSPECTIVE.md（Stage 2 Skill Flow Issues 首行：ub_budget=skip、core_split=skip 的机械复核 JSON + REVIEW.md 人工逐行复算补位记录）
   - .agents/tools/design_calc_check.py#L100-103（check_ub_budget 行过滤 `^[a-zA-Z_]|缓冲` 把 N 值数字行当 header 跳过）+ #L156-158（skip detail "no per-level buffer tables parsed"）+ #L231-233（core_split skip "insufficient parsed dims"）
   - 交叉引用：queue VP-2026-0009（UB 预算混合字节口径——本条是其机械拦截位的形态扩展）
+  - 〔2026-10-14 第八现（不同任务，quantization 族首个 fp8 迁移、纯 Vector 多 buffer 组合体），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕design_calc_check 对本 DESIGN.md 仍 `ub_budget: skip` + `core_split: skip`（仅 `r3_metrics: pass`）——§4.5 采用「Buffer/Shape/dtype/大小(Bytes)」逐 buffer 表、§5.5 为 workload 分核表，**两种表形态仍未被解析**；本次人工逐行复算正是发现一处混合字节口径**手工小计算术错误**（131456 vs 实为 143872）的唯一手段（`REVIEW.md` 机械复核段 + 维度 2；任务工作区，允许失效）。**归属说明**：本条已于 2026-10-14 `apply` 批次 2 落盘（新增「按 N 分行的驻留预算表」放行 + §5.5 workload 表按 `ceildiv(M,bm)` 重算），但本任务的表形态（逐 buffer dtype 列 / 纯 Vector 任务维分核）仍在修复覆盖的表形态之外 → 「apply 后仍复发」，建议下次 apply 时并入识别范围 ①②③（见本条目第五–第七现）。
   - 〔2026-09-17 第二证（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕design_calc_check 对该 DESIGN.md **两轮（v0/v1）均 skip 3/4**（ub_budget / l0c_budget / core_split），且 v1 §4.5 已含逐行 Bytes 列与「稳态峰值合计」行、§5.2 有 bl/bs/bp/bn 代码块、§5.5 有 w1–w4 逻辑核数列表仍全部无法解析——与 ada_layer_norm（N 分行驻留表形态）构成**两类表格形态的独立第二证**；REVIEW 只能人工复算（UB 115.25KB 逐项加和、L0C 16KB、逻辑核数 8/768/2560/16384）。机械拦截位（VP-2026-0009 类）连续两任务不生效，建议审批时把本条的 §5.5 workload 分核表解析与 ssd 的 w1–w4 列表形态并入 new 文本 2 的识别范围
   - 〔2026-09-20 第三现 + 新子缺陷，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕4 项检查 3 skip（ub_budget/l0c_budget/core_split——该任务 §4.3 多张 buffer 表 + §5.2 block 常量代码块 + §5.5 分核三要素列表均无法解析，仅 r3_metrics 生效，全靠人工复算兜底）；**新子缺陷**：l0c_budget 解析取 "block 64x128"（bn=128 被当 block_N），与真实 L0C acc [bl,bp]=[64,64] 不符（结论 pass 侥幸同向）——GEMM 类多 block 参数文档的维度取用需语义识别而非首个数值对，建议并入 new 文本 2 识别范围（优先匹配 alloc_L0C/L0C 容量句上下文中的 [bl,bp] 组合）
   - 〔2026-09-28 第四现（不同任务，reduction 族）+ 两类新表形态，task argmax-_argreduce_kernel-20260924T031005Z〕design_calc_check 对该 DESIGN v0/v1 两轮检视 + v1 复审（同一任务三轮）ub_budget/core_split 全 skip，仅 r3_metrics 生效；人工复算 ~20 组数字（含 12 组分核算术）是发现膨胀系数数据点混用与 C1 缓冲区间漏 fp32 bm=1 的唯一途径。**两类新表形态**（建议并入识别范围）：① §4.5「B/elem 表 + 逐配置预算表」（列名含 手工预算/×2 双缓冲/结论）；② §5.5「逐 workload 分核表」（列名含 num_row_blocks/num_kernels/核内任务数）。REVIEW.md v0/v1 机械复核表（skip 三行 + 人工复算结论）。**合入优先级建议上调**：四任务（ada/ssd×2/argmax）连续命中，reduction 族最严重的阻塞项（workload (M,N) 差 1024×）正落在 skip 的 core_split 域——与 VP-2026-0136（--manifest 真值推导模式）互补：本条修「表解析」，该条补「真值来源」
