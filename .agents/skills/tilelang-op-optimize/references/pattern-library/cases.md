@@ -467,3 +467,28 @@ pool 家族**第五个** TileOPs 迁移算子、**1D 首例**（MaxPool1dFwdOp�
 **实测**（Session 墙钟 3094.2 s ≈ 51.6 min；`retry_count=0`、各 `stage_retry_count=0`——设计一次通过检视、开发一次精度过、集成一次成功）：Stage 3 内嵌分层门禁 L0/L1/L2/Boundary 全过、`[PRECISION_PASS]`，fp16/bf16/fp32 三 dtype `max_diff = 0.000e+00`（`atol=rtol=0`；含 NaN / ±inf / subnormal / large / zeros 类用例）；设计期 `verify_equiv.py` **117 case-group 全 EQUIV_PASS（0 failures）**，含 C4x 守卫组与逐 lane 下标落界断言；**`_plan` 输出与 DESIGN §5.2 代表表逐值吻合（实现期实跑，非纸面）**——`smoke (1,8,32) k3s2p1`：CH=8 / BL=16 / LSPAN=32 / num_logical=1；`sincnet (32,80,4096) k3s3p0`：CH=64 / BL=26 / LSPAN=78 / 3 392（40 kernels × 85 local）；`textcnn (64,256,128) k128s1p0`：fp16 CH=64 / global / 256，fp32 CH=32 / global / 512；`ecg (16,128,2048) k5s2p2 d2 ceil`：CH=64 / BL=31 / LSPAN=69 / 1 056；`num_kernels = min(num_logical, 40)`（纯 Vector = 实查 20 核 × 2）、`num_local` 为 Python 编译期常量（静态界）。TileOPs 单算子 report：correctness **本算子 rollup 34/34**（`avg_max_abs_err = max_abs_err = 0.00e+00` 逐位；文件级 `correctness_tests=55` 含 adaptive/max_pool2d 兄弟算子——authoritative per-op view 是 rollup，queue VP-2026-0157 已生效知识正例）；`status=partial`，benchmark **6 例失败**（`kernel_size = tuple(op_params["kernel_size"])` 对 int 标量报 `TypeError: 'int' object is not iterable`——Stage 0 脚手架 bench 段缺陷，全部在 profiling 前 abort；**correctness 不受影响**，本算子无有效 msprof 记录 `performance_cases=0`，见 queue VP-2026-0182）。
 
 **适用触发条件**：1D / 长空间轴窗口池化（pool1d、长序列滑窗类）迁移设计——空间轴分块 + 连续 span 钳制载入 + `BL` 取最大 + 三类尾块；**同族 2D→1D 迁移时的结论平移检查**（照搬前先问「该结论依赖几个空间轴 / 轴长上限多少」——整轴驻留 / 守卫外提 / `BH=1` 最优三处 2D 结论均不可平移）；纯 Vector persistent 分核与容量驱动 CH 的 1D 形态参照；容量回退可达性核算（拒绝路径 vs 回退路径）。集成侧经验：`integrate_kernel.py` 的 `--meta` 路径按 **CWD（`examples/TileOPs`）**解析而非仓库根，任务内须传绝对路径（或相对仓库根的路径）；benchmark 段缺陷与 correctness 判定须分离（`partial` report 由 out-of-scope bench 引起，本任务验收判据为 correctness）。
+
+---
+id: CASE-pool-maxpool1dindices-migration
+kind: case
+family: [pool, pooling, window, argmax]
+mode: [developer]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（函数级；op 级 max_pool1d_with_indices-max_pool1d_with_indices-20261014T100411Z）
+toolchain: tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: none
+---
+
+### `examples/max_pool1d_with_indices/_max_pool1d_with_indices_kernel/` + `examples/TileOPs/tileops/kernels/pool/max_pool1d_with_indices/`（任务工作区/集成包，未上库）
+
+**durable 载体**：双输出池化索引契约（2D 扁平 / 1D 单轴）见 traps-runtime.md TRAP-pool-index-contract-dual-output；索引归约极值方向 + 两遍法见 TRAP-index-reduce-extremum-direction；空窗口 regime「torch 不可作 oracle」见 TRAP-torch-oracle-maxpool1d-empty-window（含 repro）；`return_indices=True` 的 NPU 静默损坏 + CPU golden 回退见 TRAP-npuir-ref-backend-golden-capability；双输出 1D 容量闭式 `69+2·eb` + 薄裕度纪律见 layout.md PL-1.4；1D 长轴必需结构见 algorithm-candidates.md ALG-pooling。本任务 `RETROSPECTIVE.md`（op 级/函数级）、`SESSION_TIMING_ANALYSIS.md`、`history_version/design_v0.md` 为 provenance（允许失效）。
+
+pool 家族**第六个**迁移算子、**双输出（value + int64 indices）1D 变体**（MaxPool1dIndicesFwdOp；Developer 模式、纯 Vector、Stage 4 跳过）。与同族前作的族内差异 =「输出个数 1 → 2（索引型）」+「空间轴 2 → 1」叠加。要点：
+
+①**索引型算子的退化特化必须逐路输出独立可证**——单输出变体可采纳的「整线归约 C4」在双输出变体上不可照搬：整线 argmax 索引的自然实现依赖 `T.arange` 派生 pattern 在 `vcmp→vselect→reduce_min` 链内消费（TRAP-npuir-arange-pattern-with-whole-plane-reduce 的已验证断裂链），**值半成立不代表索引半成立** ⇒ 无法证明索引构造独立于该链时走一般路径（本任务设计记录为 C4/C4b 不可采纳）；②**两遍法消除次序依赖**（本任务相对同族前作的改进）：第一遍值/NaN/last-NaN、第二遍在 `acc` 定稿后由等式集合取 `min{iw : x[iw]==acc}`（`BIG` 哨兵），避免了「winner 判据 vs 累加器更新相对次序」陷阱（前作 v0 该次序错致整链失效；本任务 `N2N3-ord` 误形态 39/72 组检出）；③**空窗口契约对齐源**：`d≥2 ∧ p>0` 可产生无界内 lane 的窗口；源状态机给 `(-inf, 0)`，而 torch CPU 在该域返回**越界索引** ⇒ golden 只断言契约、显式记录 torch 越界，并复用 `(BL,CH)` 布尔缓冲实现 `max_idx==BIG ∧ ¬has_nan ⇒ idx=0`（不新增 UB）；④**容量闭式须复现设计值**：双输出 1D 记账 `G = CH·LSPAN·(2·eb+9) + BL·CH·(69+2·eb) + 256`（相对单输出只增单元类 buffer，`+44 B/元素`，`BL` 压 2–3 档：sincnet `BL=16` / ecg `BL=17`）；首版设计把系数写成 `53+2·eb`（与同行分量注释求和 69 自相矛盾）被 Stage 2 拦截，实现侧若改按「实际 buffer 精确记账」则 `BL` 静默选到 18/20、分核表与设计永久漂移（本任务 Stage 3 实测两版 plan 差：`num_logical` 4 864 vs 5 504）⇒ 实现 `_plan` 逐字复现冻结闭式；⑤**验证脚本的枚举成本纪律**：D-1 等价脚本若对全配置矩阵跑「全线公式」（`O(out_l × L_in)`）会 40 min 级卡死（本任务首轮设计因此被取消，占总墙钟 40.3%），改为按 `(k,s,p,d,ceil)` 分支采样 + 特殊化子句 value-only 少量论证后 ≈12–43 s / 1 074 项检查；⑥**集成期 reference 路径受控修复**：torch_npu 的 `F.max_pool1d(..., return_indices=True)` 在 NPU 上 indices **静默损坏**（int8 `(N,C,k,L_pad)` mask buffer，全 dilation；values 正常）⇒ 纯选择类算子改无条件 CPU golden，per-op 47/47、`max_abs_err=0.0`（原 40/47）。
+
+**实测**（Session 墙钟 9 366.4 s ≈ 156.1 min，其中 Stage 1 首轮被取消的长跑占 40.3%）：Stage 3 attempt 1 即 `[PRECISION_PASS]`（L0+L1 阻塞全过、L2 8/8、Boundary 8/8；values `max_diff = 0.000e+00` 三 dtype，**int64 索引 0 / 12 207 226 失配**）；设计期 `verify_equiv.py` 1 074 项全 `EQUIV_PASS`；Stage 5 集成 per-op **47/47**（`max_abs_err=0.0`）、benchmark 36/36（`msprof_case_count=24`、`invalid_profile_count=0`）；非 smoke 性能 3 例——`sincnet` fp16 3 192.84 µs / `textcnn` fp16 138.52 µs / `ecg` bf16 1 429.55 µs，**Ratio 3.40–5.70%、带宽均 1.750 TB/s**（≈ fabric 上限，见 profile-collection.md 的纯选择算子 Ratio 判读口径）。
+
+**适用触发条件**：双输出（value + index）池化/argmax 类算子迁移或设计——索引契约逐要素实测、退化特化逐路输出独立可证、空窗口契约与 torch-oracle 陷阱、索引型 UB 记账、`_plan` 逐字复现设计闭式、等价脚本分支采样；Stage 5 集成期 torch 多输出 API golden 可用性核对（静默损坏判据 = dtype/shape 与契约不符）。

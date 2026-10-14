@@ -68,6 +68,15 @@ R1：avg pool = 常数权重卷积；sum pool × 常数 = avg pool。R2：滑窗
 
 证据：首证 task `max_pool2d-_max_pool2d_kernel-20261014T062320Z`（`verify_equiv.py` 57→69 case-group 含 C4x 反例组 + 负向控制守卫，全 PASS；Stage 1 v0 → v1 六处同步）；第二证 task `max_pool1d-_max_pool1d_kernel-20261014T082309Z`（1D 同构复现 `d==1` 必要性 + `verify_equiv.py` 117 case-group 全 PASS 含 `[C4x-GUARD]` 段；kernel L0-11b/d4-guard 与 L0-11b3/d4-bit-exact 实跑走一般路径返回 0.0）。provenance 允许失效（两任务工作区，均未上库）。
 
+**窗口池化域的必需空间分块形态（长轴 / 1D）（2026-10-14 两证合入——1D `max_pool1d` 首证 + 双输出 1D `max_pool1d_with_indices` 第二证；queue VP-2026-0180 达 2/2）**：单空间轴长超 UB 驻留预算时，沿该轴分块是**必需维度**而非可选优化（2D 的 `W_in ≤ 112` 整行驻留结论不可外推；1D `L_in` 可达 4096）。
+① **判定式**：空间轴长 × `CH` × 元素宽度 × 膨胀系数 > UB 容量（192 KiB 档）⇒ 必须沿该轴分块，分块后读的是**连续 span**（非逐元素 gather）。
+② **钳制载入形态**（恒在界内 + 长度静态）：`span = (BL−1)·s + (k−1)·d + 1`、`LSPAN = min(span, L_in)`、`s0 = max(0, min(base, L_in−LSPAN))`（`base = ow0·s − p`）、读出下标 `j = iw − s0`；守卫 `0 ≤ iw < L_in` 与「缓冲下标 ∈ [0, LSPAN)」是等价式，可写成可执行断言（逐 lane 验下标落界）。
+③ **`BL` 取容量允许的最大值**：halo 重读随 `BL` 下降（`LSPAN/(BL·s) → 1`；ecg `k5s2p2d2` 实测 BL=31 ≈1.11× GM 读 vs BL=1 ≈4.5×），方向与 2D 的 `BH=1` 最优**相反**。
+④ **访存削减的正确口径**：span 载入的收益 = 「窗口重叠复用 + 连续 span 合并访存」，**不是**「读次数降 `k_W` 倍」（后者只对高度重叠的窗口且以窗口/输入长度比计）——GM 读次数比 = `(num_oblk·LSPAN)/(L_out·k_W)`；`k/s > 1` 的负载降为 ecg ≈ `61·41/(1023·5)` = 0.48×，而 `k = s` 的负载（sincnet `86·48/4096` ≈ 1.01×）读次数≈不变、收益只在**访存模式**（连续 span 取代跨步 gather）。第二证（双输出 1D）复现同口径：`sincnet 86·48/4096` ≈ 1.008×、`ecg 61·41/2048` ≈ 1.22×。
+⑤ **轴数前提清单**：整轴驻留 / 守卫外提 / `BH=1` 最优三处 2D 结论均要求 ≥2 个空间轴——同族迁移逐项核对「该结论依赖几个空间轴 / 轴长上限多少」。
+⑥ **尾块三类**：任务尾块（`uid < num_logical`）、通道尾块（`real_c = min(CH, C−cb·CH)`）、输出块尾（`BL_real = min(BL, L_out−ow0)`；1D 独有，2D 因整行驻留而无）。
+证据：首证 task `max_pool1d-_max_pool1d_kernel-20261014T082309Z`（`DESIGN.md#§0.6 R1/R3`、`#§1.6.1 C1`、`#§4.5`、`#§5.2`；`_span/_choose_bl/_choose_ch_bl/_plan` + `verify_equiv.py` C1 组 117 case-group 全 PASS）；第二证 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z`（同形态在**双输出（argmax 索引）**变体上复现：`DESIGN.md#§0.6 R1/R3`、`#§1.6.1 C1`、`#§4.5`、`#§5.2` 同一 `span/LSPAN/s0/j` 形态 + 三类尾块；`verify_equiv.py` C1 组 90 (config, BL) 结构检查逐 lane 验下标落界；集成 per-op 47/47）——两证为**不同任务、不同算子（输出个数不同）**，该 1D 结构形态跨输出变体成立。provenance 允许失效（两任务工作区，均未上库）。
+
 ---
 id: ALG-reduction
 family: [reduction, statistics]

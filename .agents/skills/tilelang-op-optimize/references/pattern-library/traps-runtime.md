@@ -68,18 +68,20 @@ apis: [F.max_pool2d, F.max_pool1d]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: max_pool2d-_max_pool2d_kernel-20261014T062320Z（首证，2D 直接观测）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第二证，1D 泛化应用）
-toolchain: 首证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c + torch_npu 2.9.0.post8 + torch 2.9.0 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二证 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: max_pool2d-_max_pool2d_kernel-20261014T062320Z（首证，2D 直接观测）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第二证，1D 泛化应用）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第三形态：`return_indices=True` 静默损坏）
+toolchain: 首证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c + torch_npu 2.9.0.post8 + torch 2.9.0 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二证 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第三证 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313 + torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
 repro: repro-missing
 ---
 
-### NPU 参考后端（torch_npu）自身的能力缺口——`F.max_pool*` 只支持 `dilation == 1`；纯选择类算子的 CPU golden 回退逐位一致
+### NPU 参考后端（torch_npu）自身的能力缺口——`F.max_pool*` 只支持 `dilation == 1`、`return_indices=True` 的 indices 静默损坏；纯选择类算子的 CPU golden 回退逐位一致
 
 **缺口本体**（与 npuir 前端 / TileLangIR pass 缺口不同类）：`F.max_pool2d` 在 NPU 上经 `aclnnMaxPool2dWithMask` 实现，**只支持 `dilation == 1`**；`dilation != 1`（int 或 tuple 任一非 1）时在 `ref_program` 内即抛 `AclNN_Parameter_Error(EZ1001): dilation only support 1`，**被测算子未执行**（堆栈落在 `torch.nn.functional`）。判别信号 = 异常出现在 `ref_program` 且算子尚未执行 + `AclNN_*_Error` 前缀 → 归因为参考后端能力缺口，而非 kernel/迁移缺陷。首证实测：[INTEGRATE_FAIL]（`run.json` `correctness_failed=1`，`dilation=(2,1)` 用例；stamp 见 front-matter）。
 
 **处置形态**：纯**选择**类算子（max/min/argmax/排序，无累加）把该用例的 reference 计算回退 CPU（`F.x(input.cpu(), **kwargs).to(input.device)`）——结果与设备输出逐位一致，`atol=rtol=0` 与用例集（含 `dilation>1` 覆盖）均保持原样（放宽容差 / skip / xfail / 删例均不构成处置）。首证 2D attempt 2 修复后本算子 rollup 22/22、`max_abs_err = 0.00e+00`。**含累加算子不可照搬**该回退（sum/avg/conv/gemm 的 CPU/设备浮点序不同）；回退前提是「输出 = 输入元素的纯选择，无算术合并」。
 
 **第二证（1D 泛化，不同任务/不同算子/不同 stamp）**：max_pool1d 迁移的 Stage 0 脚手架按 max_pool2d 教训**预置**了同款回退（`examples/TileOPs/tests/ops/test_pool.py` 的 `MaxPool1dTest.ref_program`；任务工作区/集成包，未上库，provenance 允许失效），Stage 5 单算子 report 本算子 rollup **34/34**、`max_abs_err = 0.00e+00`，`ecg-cnn-dilated`（`dilation=2`）用例实跑走该回退且无 `AclNN_*_Error`。限定：1D 侧实测的是「补救路径（CPU golden 回退）跨算子/跨 stamp 泛化成立」，未再触发 1D 的 `dilation>1` 后端报错本身（回退已前置）；缺口本体为 2D 侧直接观测。
+
+**第三形态（2026-10-14，1D **双输出**变体——**静默损坏、不抛异常**）**：`F.max_pool1d(..., return_indices=True)` 在 NPU 上 **indices 输出损坏且无任何异常**——`dilation == 1` 时返回 `torch.int8 (N, C, kernel_size, L_pad)` 的**内部 mask buffer**（设备直探实测 `(1,8,3,64)`，含 0/1 噪声）而非契约要求的 `int64 (N, C, L_out)`；`dilation != 1` 另抛 `AclNN_Parameter_Error(EZ1001)`（= 首证形态）。**values 输出正常**，故「跑得通」不构成 golden 可用判据——错误直到测试 harness 的 tensor 比较处才以 `RuntimeError: The size of tensor a (16) must match the size of tensor b (64)` 浮出（形似 shape/runtime 失败）。识别信号因此须扩为「异常 `AclNN_*_Error` **或** 后端返回 tensor 的 dtype/shape 与算子契约不符（静默损坏）」；两形态同属「NPU reference 后端能力缺口」子类，处置同为纯选择类算子走 CPU golden（该子类已落盘 integrator 失败分类表，见 queue VP-2026-0179）。本形态的**覆盖面超出按参数预埋的回退**：损坏对**所有** dilation 成立，脚手架按「`dilation != 1` 受限参数」预埋的 CPU golden 回退覆盖不足，须对**纯选择类算子的多输出/`return_indices` 后端支持**先实测再定回退范围。实测与修复：探针 `i.shape/i.dtype` → `(1,8,3,64) torch.int8`；迁移算子对 CPU golden 逐位一致（`val_max_diff = 0.000e+00`、`torch.equal(idx_cpu, idx_ref) == True`）⇒ kernel 正确、仅 NPU reference 不可用；reference 计算路径改为无条件 CPU golden 后 per-op **47/47**（原 40/47，`max_abs_err=0.0`、int64 索引精确）、benchmark 36/36（24 有效 msprof）。溯源：`examples/TileOPs/reports/tileops/20261014_122210_526209_MaxPool1dIndicesFwdOp/run.json`（失败轮）与 `.../20261014_122557_915676_MaxPool1dIndicesFwdOp/run.json`（通过轮）+ 集成包 `integration_log.md#调试历史`（任务工作区，未上库，provenance 允许失效）。
 
 **配套**：Stage 0 脚手架期的 golden 可用性自检见 queue VP-2026-0178（集成期失败回交/扩权成本 ≈17min 实测）；同族另一类「设计层 vs 后端」边界（窗口池化退化特化条件）见 algorithm-candidates.md ALG-pooling。**不登记 `capability-gaps.md`**——AGENTS.md 的缺口层枚举（Frontend API / TileLangIR pass / BishengIR / tladapter / runtime）不含 PyTorch-NPU 参考后端，故按 pattern-library 事实条目 + 流程提案双落点处置。
 
@@ -214,3 +216,74 @@ repro: repro-missing
 - **绕法**：① bench harness 的默认配置从**被测 kernel 模块的 TUNED 常量**解析（`getattr(mod, "TUNED_DEFAULT_CONFIG", {}).get(...)`），baseline 无常量时 fallback 兼容——使「交付配置=测量配置」成为机械保证；② 续跑/翻转轮次第一步 = current best 的同 session 重测校准（同口径基准行）；③ 调优日志的采集命令模板必须与实际执行完全一致（含全部显式参数）。
 - **教训**：跨 session 的 perf_records 对比，「设备状态漂移」与「配置口径断裂」症状相同（系统性偏移）——配置探针成本 ~2 分钟，应优先排除；跨 run 双态（BP_run_state_bimodality ±3~5%）解释不了 ±20% 量级的偏移。
 - 溯源：`examples/ssd_chunk_scan/_ssd_chunk_scan_fwd_kernel/perf_opt/`（opt_log R7 口径断裂段；profiles/round7_bn_check/；bench.py R7 修复）。
+
+---
+
+id: TRAP-torch-oracle-maxpool1d-empty-window
+kind: trap
+family: [pool, window, golden, migration]
+apis: [F.max_pool1d]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（Stage 3 repro 转正；Stage 2 问题 2 首记该 regime）
+toolchain: tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-torch-oracle-maxpool1d-empty-window.py
+---
+
+### 空窗口（无界内 lane 的池化窗口）regime——torch 不可作 oracle，源/torch/哨兵三方行为互异
+
+- **regime 与触发条件**：1D 窗口池化的窗口输入覆盖集合是等差子集 `{ow·s − p + kw·d}`；`d ≥ 2 ∧ p > 0` 时窗口可全落 `[0, L_in)` 之外（manifest-legal；最小例 `L_in=1, k=2, s=1, p=1, d=2` → lane `{−1, 1}`；ceil 例 `L_in=1, k=2, s=3, p=1, d=3` → lane `{−1, 2}`）。「`p ≤ ⌊k/2⌋` ⇒ 窗口非空」只在 `d == 1` 成立——非空窗口的真实充分条件是 `d == 1 ∧ p ≤ ⌊k/2⌋ ∧ s > 0`；`d ≥ 2` 下不成立（枚举 `L_in ≤ 13, k ≤ 6, s ≤ 5, p ≤ ⌊k/2⌋, d ≤ 6, ceil ∈ {F,T}` 得 89 组 `(config, ow)` 反例）。
+- **三方行为实测**：① torch 2.9.0 CPU `F.max_pool1d(..., return_indices=True)` 值 = `-inf` 而索引**越出 `[0, L_in)`**（实测 `1`/`2`，其 CPU kernel 的 loop-artifact）；② 源状态机（`max_pool1d.py` 第 250/252/257 行：`max_val=-inf` 初值、`max_idx=0` 初值、越界 lane 跳过）输出 `(val, idx) = (-inf, 0)`；③ 设计侧 `BIG=L_in` 哨兵给出 `L_in`。**排除空窗口后的 3 195 组随机配置上 torch 与源/设计逐位一致（0 失配）**⇒ 该 regime 是唯一分歧域。
+- **测试设计陷阱**：照字面 `torch.equal(indices, ref)` 会把一个**正确** kernel 在空窗口用例上判 fail；此类用例的可用判据只有「与源对齐的文档化契约」+ 显式记录 torch 越界作为 premise 证据（本算子 L0-15、`verify_equiv.py#empty_window_evidence()`、转正 repro 三段一致）。非空窗口下 torch 仍是合法 oracle（对照组 `idx=[0,2,2,4,5,5]` 全在界内）。
+- **契约对齐的低成本实现形态**（本算子实测）：`idx32` epilogue 追加 `max_idx==BIG ∧ ¬has_nan ⇒ idx=0`，复用已存在的 `(BL,CH)` 布尔缓冲、不新增 UB 驻留（本族容量裕度薄，见 layout.md PL-1.4）——使「与源等价」在全部 manifest-legal 配置下成立（`EW` 分支 3 配置 × 3 dtype × 3 数据全 `EQUIV_PASS`）。
+- **证明**：`python repro/TRAP-torch-oracle-maxpool1d-empty-window.py`（exit 0；premise + torch 越界 + 契约值 0 且 ≠ torch + 非空窗口对照组四段断言；纯 torch CPU、无 NPU、不 import 任务模块）。溯源：`examples/max_pool1d_with_indices/_max_pool1d_with_indices_kernel/`（DESIGN.md §0.1/§8.3 L0-15、RETROSPECTIVE.md Stage 2 问题 2、REVIEW.md 问题 2——任务工作区，未上库，provenance 允许失效）。
+
+---
+
+id: TRAP-pool-index-contract-dual-output
+kind: trap
+family: [pool, window, argmax, golden]
+apis: [F.max_pool2d, F.max_pool1d, F.adaptive_max_pool2d]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z（首证，2D 扁平索引）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第二证，1D 单轴索引 + padding/空窗口退化域）
+toolchain: 首证 tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + torch 2.9.0+cpu + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二证 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro-missing
+---
+
+### 带索引池化（`return_indices=True`）的源语义契约——索引是「空间域展平位置」，非坐标对
+
+- **索引编码**：2D —— `indices` = `H×W` 平面**行主序扁平下标** `ih*W_in + iw`（int64）；1D —— `indices` = 沿 L 轴的输入位置 `iw`（int64）。两者都是「输入张量在空间域内的展平位置」，**非** `(ih, iw)` 坐标对。
+- **并列（tie）**：取**首个**命中（源为严格 `>` 更新的首写生效语义）。
+- **NaN**：窗口含 NaN 时值 NaN，索引取**最后命中的 NaN**（非首 NaN、非哨兵）。
+- **边界/退化域**：① 前 padding 下全 `-inf` 窗口的索引 = 窗口内**首个有效元素**的 `iw`（可能 `> 0`，源 `first_valid` 首次 seed，`max_pool1d.py` 第 266–269 行）；② 空窗口（无界内 lane，`d≥2 ∧ p>0`）契约 = `(val, idx) = (-inf, 0)`（`max_idx` 初值 0 + 越界 lane 跳过；torch 在此域返回越界索引、不可作 oracle——见 TRAP-torch-oracle-maxpool1d-empty-window）；③ `{+inf, -inf}` 同窗 → 值 `+inf`（非 NaN）。
+- **与设备 golden 的三方分野**：torch-CPU（IEEE 相等取首现 + 本节编码）、torch-NPU 设备 argmax（`±0.0` 用可区分全序）、NPU 硬件 reduce（NaN 传播 → 哨兵 `2^30`）三方各不相同（见 traps-runtime.md TRAP-argreduce-edge-semantics）——跨设备 golden 对齐逐个实测记录。
+- **证据**：首证 2D 12 行 torch 2.9.0 CPU 实测表 + 集成侧 NaN 窗用例（rollup 7/7、`avg_max_abs_err=0.0`、int64 索引 `torch.equal` 精确）；第二证 1D `DESIGN.md#§0.1` 11 行实测（`semantics_evidence()` 逐行确认）+ Stage 5 集成 per-op 47/47（`max_abs_err=0.0`、索引精确）。溯源：两任务工作区，未上库，provenance 允许失效。
+
+---
+
+id: TRAP-index-reduce-extremum-direction
+kind: trap
+family: [pool, argmax, reduction, vectorize]
+apis: [T.vmax, T.vmin, T.vcmp, T.vselect, T.reduce_min]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z（首证：v0 `vmin` → v1 破纪录集 `vmax`）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第二证：1D 两遍法 + 候选集口径澄清）
+toolchain: 首证 tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二证 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro-missing
+---
+
+### 索引归约的极值方向判据——方向由「源写入语义 + 候选集」共同决定
+
+- **改写前提**：把源的「顺序条件覆写 / 记录」改写为「集合上取可交换极值」前，先判源写入语义——**首写生效**（严格 `>`，并列取首）vs **末写生效**（无条件覆写，如 NaN 分支覆盖）。
+- **两种等价形态（候选集不同 ⇒ 方向名不同，不可混搭）**：
+  - 单遍（累加器未定稿）：候选集 = **破纪录集合** `{i : x[i] > max(x[<i])}`，取该集合的**位置最大值**（`vselect(gt, flat_idx, -1)` + `vmax`）。误取 `min` 得「窗口内首个局部峰值」索引——首证实测：v0 `vmin` 首轮 **20 426 mismatch**，`rand` 组 123/144 索引错而 `all_equal`/`zeros`/`all_neg_inf` 退化形态全过；改 `vmax` 后 340 例全 `EQUIV_PASS`。
+  - 两遍（累加器定稿后）：候选集 = **等式集合** `{iw : x[iw] == acc}`，取**位置最小值**（`vselect(eq, iw, BIG)` + `reduce_min`，`BIG` 哨兵）。第二证实测：两遍法（第一遍值/NaN/last-NaN，第二遍 first-hit）消除了「winner 判据与累加器更新的相对次序」依赖，8 配置 × 6 kind × 3 dtype 全 `EQUIV_PASS`，而次序颠倒的误形态在 39/72 组被检出。
+  - 两形态数值等价（`max(破纪录集) = min{x[i]==acc}` ⇒ first-hit），但「候选集 A + 取 min」与「候选集 B + 取 max」的混搭即错——判据表述须绑定候选集，不能只看算子名（`vmin`/`vmax`）。
+- **两遍法的前提**：访问序 `iw` 单调递增（`d_W > 0`）；访问序非单调时 last-record 须按访问序计算，不能直接取 `min`/`max`。
+- **last-NaN 方向**：末写生效（无条件覆写）= NaN 位置集合的**最大值** `max{iw : isnan(x[iw])}`（两证一致）。
+- **D-1 用例形态要求**：须含「多个严格递增破纪录元素」的窗口（2D `H*W ≫ 1` 的 `rand`；1D 长 `k`）；`all_equal`/`zeros`/`all_neg_inf` 形态在错误方向下也可能全过。
+- 溯源：首证 `examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{DESIGN.md#§1.6.1 N2/N3, REVIEW.md#问题 1}`；第二证 `examples/max_pool1d_with_indices/_max_pool1d_with_indices_kernel/{DESIGN.md#§0.6 R3, §1.6.1 N2/N3(-ord), verify_equiv.py N2N3/N2N3-ord}`（均任务工作区，未上库，provenance 允许失效）。

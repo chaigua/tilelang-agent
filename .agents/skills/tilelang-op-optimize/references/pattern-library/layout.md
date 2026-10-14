@@ -101,8 +101,8 @@ apis: []
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）
-toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；后两证均 dev root build + CANN 9.0.0 + Ascend910B3
+origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第四数据点：双输出（索引型）1D 记账式 `69+2·eb` + 薄裕度纪律 + 闭式自洽）
+toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；第四数据点 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）；全部 dev root build + CANN 9.0.0 + Ascend910B3
 repro: repro-missing
 ---
 
@@ -112,6 +112,9 @@ repro: repro-missing
 - **UB 约束**：CH×空间 tile 驻留超 192KB 时收缩 CH（实测 vis-3x3 的 CH=64 需 252.8KB 被排除，CH=32 落地）；buffer 生命周期不重叠时可探索 aliasing 复用（预估再省 10–20%，未验证）。
 - **回退分发**：C%16≠0 或 shape 越界时回退到非重排路径（工厂层静态判定，无运行时开销）——保持全 shape 兼容。
 - **容量驱动 CH 选择**（2026-10-14 两证合入，queue VP-2026-0174 达 2/2）：`CH` = 满足「实现将要落地的 buffer 清单」逐项带字节数求和后 `× 膨胀系数 1.7 ≤ 192 KiB` 的最大 8 的倍数。2D 形态按 `ub_bytes(CH, W_in, out_W, dtype)` 记账；1D（单空间轴，需先沿该轴分块）形态按 `G = CH·LSPAN·(2·eb+9) + BL·CH·(25+2·eb)` 记账（`eb` = 元素字节、`LSPAN = min((BL-1)·s + (k-1)·d + 1, L_in)`；`2·eb+9` = row_src + row_dst + row_f32 + eq_mask + eq_f32，`25+2·eb` = acc/flag/zeros/infbuf/nanbuf/out32 六个 f32 + cfinal(bool) + acc16 + acc_t）——**`BL` 由 `min(L_out, BL_MAX)` 逐级下调试到首个可行值，CH 在 `BL=1` 仍不可行时折半（下限 8）**，故两档是同一条不等式上的联合取档。实测压档：2D `W_in=112` 窗口池化 fp16 CH 64 → 32（CH=64 需 ≈244.5 KiB ✗）、fp32 → 16；1D `textcnn`（`C=256`、`L_in=128`、k128s1p0）fp16 CH=64 → **fp32 折半为 32**（`eb=4` 使行类缓冲翻倍，`num_logical` 256 → 512）——CH 选择必须 dtype 感知，按 fp16 档硬编码到 fp32 会 UB 溢出。两条纪律：① 不得用代表 shape 的头部大 buffer 结论外推（低报）——须给「逐 buffer 原始字节 + 膨胀后字节 + 统一 KiB」；② **实现形式改变（如掩码由逐元素 `(1,CH)` 改行级/块级）后容量结论必须重算**，不得沿用设计档位（第二证实证：fp32 resnet-stem CH 32→16）。
+- **双输出（argmax 索引型）1D 记账式 = `G = CH·LSPAN·(2·eb+9) + BL·CH·(69+2·eb) + 256`**（2026-10-14 第四数据点，queue VP-2026-0174 同族续证）：相对单输出**只增加单元类 buffer**（行类 `CH·LSPAN` 项不变）——`69 = 25 + 44`，即单输出基式 `25+2·eb` 之上再加 `7×i32`（`max_idx`/`nan_idx`/`cand`/`nanc`/`bigv`/`neg1v`/`zero_i32` = 28 B）+ `idx32`/`idx_t` 转置缓冲 8 B + `idx64` 落盘缓冲 8 B；`+256` = `fv`（`(1,CH)` 上界）。实测档位（`INFLATE=1.7`，判据 192 KiB）：`sincnet` fp16 `CH64/BL16/LSPAN48` = `114 944 B`（×1.7 = 190.8 KiB ✓）、`ecg` bf16 `CH64/BL17/LSPAN41` = `113 792 B`（×1.7 = 188.9 KiB ✓）——**同 shape 单输出档位为 `BL=18/20`，索引型的额外 44 B/元素把 `BL` 压掉 2–3 档**。
+  - **薄裕度纪律**（该族实测裕度 ≈0.6%）：`sincnet` 原始 114 944 B 距判据仅 1 203 B，**再加一个 `(BL,CH)=16×64` bool（1 024 B）即 `(115 968)×1.7 = 197 146 B > 196 608 B` 翻转**⇒ 薄裕度算子的 §4.3 buffer 清单须与分析表逐名一致（「为清晰而拆缓冲」的实现会越界），且须给出「再加一个最小缓冲是否翻转判据」的边界核算。
+  - **闭式自洽自检**：闭式括号内分量的求和须等于系数（本条目首个设计版本记 `53+2·eb` 而同行分量注释求和为 `69`——纯文本即可发现的漏计；见 §4.5 的更正链）；逐 buffer 求和须等于闭式值；档位（`BL`/`CH`）变更后所有派生量（`LSPAN`→`num_oblk`→`num_logical`→`num_local`）与备选档连带重算。
 
 ---
 id: PL-1.5-quickref

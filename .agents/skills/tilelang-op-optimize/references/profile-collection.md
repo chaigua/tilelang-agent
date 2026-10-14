@@ -82,6 +82,14 @@ perf_opt/logs/{profile_stage}/{run_id}.log
 
 无效 profile 记录 reason，并重新采集；无效数据不能进入诊断。
 
+### 4.1 纯选择 / 带宽受限算子的 Ratio 判读（2026-10-14 两证合入，queue VP-2026-0175 达 2/2）
+
+`Ratio = Perf/Computility`、`Perf = msprof 计数 FLOPs / Task Duration` ⇒ 对以选择/搬运为主（max/min/argmax/池化类，无累加矩阵乘）的算子，Ratio 反映的是**比较/归约 op 的记账密度**，而非硬件利用率：实测池化族 Ratio 2.3–14.3%（窗口池化 12.1–14.3% 高于自适应 bin 2.3–7.8%），而同 workload 带宽已到 **1.75 TB/s ≈ fabric 聚合上限（见 pattern-library constants.md CONST-fabric-bw）**——即「Ratio 低」在带宽受限域不构成优化空间信号。
+
+判读动作：① 先读 GM/L2 带宽口径核对是否近 fabric 上限（是 ⇒ 带宽受限，Ratio 不作目标）；② 只有计算受限（Cube/矩阵乘类）才把 Ratio 当硬目标；③ 给带宽受限算子立项时用**流量/带宽达成率**作判据，避免为抬 Ratio 做无意义的 op 密度操作。
+
+证据：首证 task `max_pool2d-_max_pool2d_kernel-20261014T062320Z` Stage 5（单算子 report rollup 22/22 + 9 msprof case 全有效；per-op Ratio 区间 12.11–14.25%、带宽 1.75 TB/s）；第二证 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z` Stage 5（benchmark 36/36、`msprof_case_count=24`、`invalid_profile_count=0`；非 smoke 3 例——sincnet fp16 Ratio 3.404% / textcnn fp16 5.699% / ecg bf16 4.151%，`bandwidth_tb_s` 均 **1.750**）。provenance 允许失效（两任务 report 位于 `examples/TileOPs/reports/`，过程产物）。
+
 ---
 
 ## 5. 记录格式

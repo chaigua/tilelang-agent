@@ -39,6 +39,8 @@ decided_by: evolver / human / -   # 裁决者
 
 ### Tier 1（P 类，2 次独立证据后合入）
 
+> **条目迁移（2026-10-14 蒸馏，max_pool1d_with_indices 双输出 1D 迁移）**：VP-2026-0159（双输出池化索引契约）/ VP-2026-0160（索引归约极值方向）第二证达标（两证均来自 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z`，不同任务/不同算子）→ 分别合入 `pattern-library/traps-runtime.md` TRAP-pool-index-contract-dual-output / TRAP-index-reduce-extremum-direction；VP-2026-0175（纯选择算子 Ratio 判读口径）第二证达标（同上任务）→ 合入 `profile-collection.md` §4.1；VP-2026-0180（1D 长轴窗口池化必需结构）第二证达标（同上任务，输出个数不同的变体）→ 合入 `algorithm-candidates.md` ALG-pooling。完整记录移至下方 `## Decided` 归档区。
+
 > **条目迁移（2026-10-13 蒸馏）**：VP-2026-0003 第二证达标（adaptive_avg_pool2d 迁移），已合入 `pattern-library/layout.md` PL-1.21-vector-persistent-split，完整记录移至下方 `## Decided` 归档区。
 
 > **条目迁移（2026-10-14 蒸馏，max_pool1d 1D 窗口池化迁移）**：VP-2026-0172（窗口池化退化特化充分条件）/ VP-2026-0173（NPU 参考后端 golden 能力缺口）/ VP-2026-0174（容量驱动 CH 选择）第二证达标（三证均来自 task `max_pool1d-_max_pool1d_kernel-20261014T082309Z`，不同任务/不同算子/新工具链 417dae9），已分别合入 `algorithm-candidates.md` ALG-pooling / `pattern-library/traps-runtime.md` TRAP-npuir-ref-backend-golden-capability / `pattern-library/layout.md` PL-1.4-tiling-heuristic，完整记录移至下方 `## Decided` 归档区。
@@ -936,41 +938,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 第二源为同族前作代码事实（未独立任务化）——保守按 1/2 待第三证；target 为 op-design references（Tier 1 写域）。
 
-## VP-2026-0159
-- type: D
-- title: 双输出池化的源语义三要素（torch 2.9.0 CPU 实测）——`indices` = H×W 平面行主序扁平下标（非二维坐标）／并列取首个命中／窗口含 NaN → 值 NaN + 索引取最后命中的 NaN／`{+inf,-inf}` 同窗 → 值 `+inf`
-- evidence:
-  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 1：`DESIGN.md` §0.1 实测表（12 行 torch 2.9.0 CPU 实测）+ §1.6.1；同目录 `RETROSPECTIVE.md` Stage 1 Value Point Proposals 第二行（任务工作区，未上库，provenance 允许失效）
-  - 消费侧实证：`examples/TileOPs/tests/ops/test_pool.py` 用例 `test_adaptive_max_pool2d_indices_nan_window`（NaN 窗 → 值 NaN + last-NaN 索引）+ 单算子 report `run.json`（本算子 rollup 7/7、`avg_max_abs_err=0.0`、int64 索引 `torch.equal` 精确）
-  - 交叉引用：queue VP-2026-0125（argreduce 边界语义三基准分野：torch-NPU ±0.0 全序 / NPU reduce 传播 NaN → 哨兵 2^30）——本条补池化索引域的三要素
-- repro: repro-missing（torch CPU 语义基准脚本待同族池化/argreduce 任务回填；任务内复现命令 = §0.1 表内 12 行 `adaptive_max_pool2d(..., return_indices=True)` 逐行对照）
-- toolchain_stamp: torch 2.9.0+cpu（语义基准）+ tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
-- delta: |
-    add 条目 TRAP-pool-index-contract-dual-output（golden 基准选择类，置于 TRAP-argreduce-edge-semantics 邻位并互链）：带索引池化（`return_indices=True`）的源语义三要素——① **`indices` = H×W 平面行主序扁平下标 `ih*W_in + iw`**（int64，**非** `(ih,iw)` 二维坐标）；② 值并列时取**首个**命中；③ 窗口含 NaN → 值 NaN 且索引取**最后命中的 NaN**；④ `{+inf,-inf}` 同窗 → 值 `+inf` 且索引取 `+inf` 位的扁平下标。与 torch-NPU 设备 argmax 的 ±0.0 可区分全序、以及 NPU 硬件 reduce 的 NaN 传播（掩码匹配全失败 → 哨兵 2^30）三方语义各不相同：跨设备 golden 对齐须逐个实测记录，不得统一假设（三方分野详见 VP-2026-0125）。实测依据：12 行 torch 2.9.0 CPU 表 + 集成侧 NaN 窗用例。
-- status: pending
-- confirmations: 1/2
-- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z 2026-10-14
-- decided_by: -
-- decided_note: 缺知识域 repro 降级 Tier 1（merge-policy §1 ED-A 三件套）。
-
-## VP-2026-0160
-- type: D
-- title: 索引归约的极值方向判据——「顺序条件覆写 → 可交换归约」改写中 first-hit（严格 `>` 首写生效）与 last-NaN（无条件覆写末写生效）都取**破纪录集合扁平最大值**（`max`，非 `min`）；误用 `min` 静默产出「窗口内首个局部峰值」索引；D-1 用例须含「多个严格递增破纪录元素」的窗口
-- evidence:
-  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 1：`DESIGN.md` §1.6.1 N2/N3（v0 `vmin` → v1 `vselect(gt, fv, -1)` + `vmax`）+ §1.6.2；`REVIEW.md#问题 1`（first-hit 次序阻塞项）；`verify_equiv.py` N3 首轮 20426 mismatch → 修正后 340 例全 `EQUIV_PASS`（任务工作区，未上库）
-  - 用例形态实证（同任务 `verify_equiv.py`）：初版 `vmin` 下 `rand` 组（如 `(1,4,11,13)→6,6`）**123/144 索引错**，而 `all_equal` / `zeros` / `all_neg_inf` 形态全过——单靠这些退化形态无法暴露极值方向错误
-- repro: repro-missing（知识域最小 repro 待同族 argmax/池化任务回填：把候选式改回 `torch.minimum` 即复现方向错误，数行 torch CPU 脚本可验证）
-- toolchain_stamp: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
-- delta: |
-    add 条目 TRAP-index-reduce-extremum-direction（语义陷阱类，与 VP-2026-0125/0131 邻位互链）：把「顺序条件覆写 / 记录」改写为可交换归约时，极值方向由源的**写入语义**决定——**首写生效**（严格 `>`，tie 取首）⟹ 取「破纪录集合扁平**最大**值」（`vselect(gt, flat_idx, -1)` + `vmax`）；**末写生效**（无条件覆写，如 NaN 分支）⟹ 取「NaN 位置集合扁平**最大**值」。两者都是 `max`；误取 `min`（"第一个破纪录元素"）得到窗口内首个局部峰值的索引——静默错值、无报错，且 values 侧可能同时正确。D-1 用例形态要求：必须包含「多个严格递增破纪录元素」的窗口（`rand` 在 `H*W≫1` 的窗口）；`all_equal` / `zeros` / `all_neg_inf` 形态在错误方向下也可能全过（实测 123/144 错 vs 退化形态全过）。实测：v0 `vmin` 首轮 20426 mismatch → v1 `max` 后 340 例全 `EQUIV_PASS`。
-- status: pending
-- confirmations: 1/2
-- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0159（索引契约三要素）同任务同域但独立成条（方向判据 vs 源语义基准），合入时可相邻互链；缺知识域 repro 降级 Tier 1。
-
 ## VP-2026-0161
 - type: D
 - title: 共享累加器的「比较-更新次序」是正确性字段——`vmax(acc,v)` 先于 `v > acc` 则判据恒假、极值/索引输出静默退化为初值；公式级 D-1 全 PASS **不覆盖**实现 op 次序（最小反例 `arange(12)→(2,2)` 的 `bin(1,1)`：正确 11 / 错误 6）
@@ -1022,49 +989,6 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z 2026-10-14
 - decided_by: -
 - decided_note: 缺知识域 repro 降级 Tier 1；与 constants.md CONST-arange-scalar-materialize / traps-compiler TRAP-vcast-shape-and-gm-source（同族 dtype/形状约束）互链。
-
-## VP-2026-0175
-- type: P
-- title: 纯选择/带宽受限算子的 roofline Ratio 判读口径——FLOPs 记账口径下 Ratio 只反映比较密度（窗口池化 12.1–14.3% / 自适应 2.3–7.8%），性能判据应改用带宽/流量达成率（实测已达 fabric 上限 1.75 TB/s）
-- evidence:
-  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5：单算子 report 本算子 rollup 22/22 + 9 msprof case 全有效；per-op Ratio 区间 **12.11–14.25%**、带宽 **1.75 TB/s**（≈ CONST-fabric-bw ≥1.73 TB/s 聚合上限）——算子带宽受限而 Ratio 低（任务工作区 report `20261014_072101_015168_MaxPool2dFwdOp/run.json`，未上库，provenance 允许失效）
-  - 同族量级对照（不同任务）：adaptive_avg_pool2d Ratio 2.30/3.81/2.35%、adaptive_max_pool2d 5.38/7.77/4.69%、adaptive_max_pool2d_with_indices 2.54/4.57/2.56%——池化族 Ratio 随窗口内**比较/归约 op 密度**变化（窗口池化 k3/k2 高于自适应 bin），而非随利用率变化
-  - 交叉引用：queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数核对）；pattern-library CONST-fabric-bw / CONST-vector-launch-overhead
-- repro: repro-missing（需 msprof + 目标算子；判读口径 = 同 workload 并读 Ratio 与带宽侧（GM/L2 条目）——带宽近 fabric 上限而 Ratio 低即判「带宽受限、Ratio 不作目标」）
-- toolchain_stamp: CANN 9.0.0 msprof + Ascend910B3 / 2026-10-14（采数侧 tilelang 0.1.2+0d3950aa）
-- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
-- delta: |
-    add 判读口径小节（置于 captured_op 追溯要求段之后，与 VP-2026-0081 的采数管线规则互补）：**纯选择 / 带宽受限算子的 Ratio 判读**——`Ratio = Perf/Computility`、`Perf = msprof 计数 FLOPs / Task Duration`，故对以选择/搬运为主（max/min/argmax/池化类，无累加矩阵乘）的算子，Ratio 反映的是**比较/归约 op 的记账密度**而非硬件利用率：实测池化族 Ratio 2.3–14.3%（窗口池化 k3/k2 高于自适应 bin），而同 workload 带宽已到 **1.75 TB/s ≈ fabric 聚合上限（CONST-fabric-bw）**——即「Ratio 低」在这里不构成优化空间信号。判读动作：① 先读 GM/L2 带宽条目核对是否近 fabric 上限（是 → 带宽受限，Ratio 不作目标）；② 只有计算受限（Cube/矩阵乘类）才把 Ratio 当硬目标；③ 给带宽受限算子立项时用**流量/带宽达成率**作判据，避免为抬 Ratio 做无意义的 op 密度操作（对照 VP-2026-0081 的采数口径三条）。
-- status: pending
-- confirmations: 1/2
-- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
-- decided_by: -
-- decided_note: 单任务观察 + 同族三任务量级对照（均非独立第二证）——保守按 1/2 待同族计算受限/带宽受限对照任务补证；缺知识域 repro 降级 Tier 1。
-
-## VP-2026-0180
-- type: P
-- title: 1D / 长空间轴窗口池化的必需结构——「输出块 BL + 连续 span 载入 + 起点钳制」（2D 的整轴驻留结论不可平移）；BL 取容量允许最大值（halo 重读随 BL 下降）；单空间轴无「第二轴判据外提」；三类尾块
-- evidence:
-  - task max_pool1d-_max_pool1d_kernel-20261014T082309Z Stage 1：`examples/max_pool1d/_max_pool1d_kernel/DESIGN.md#§0.6 R1/R3` + `#§1.6.1 C1` + `#§4.5` + `#§5.2`（长轴分块判定式与钳制载入形态；任务工作区，未上库，provenance 允许失效）
-  - 同任务实现 + 机器断言：`_max_pool1d_kernel.py` `_span/_choose_bl/_choose_ch_bl/_plan`——`span=(BL−1)·s+(k−1)·d+1`、`LSPAN=min(span, L_in)`、`s0=max(0,min(base, L_in−LSPAN))`、读出下标 `j=iw−s0`、输出块尾 `BL_real=min(BL, L_out−ow0)`、`BL ≤ min(L_out, 32)` 由容量不等式取档；`verify_equiv.py` C1 组（`BL∈{4,8,16}` × 7 配置 × 3 dtype 逐 lane 断言 `iw−s0 ∈ [0,LSPAN)`，117 case-group 全 PASS）
-  - 同任务 RETROSPECTIVE Stage 1 Transferable Lessons：2D→1D 三处结论不可平移（整轴驻留 → 必须分块；守卫外提 → 1D 不适用；`BH=1` 最优 → 1D 取最大 `BL`）；BL 方向数据点：ecg `k5s2p2d2` BL=31 ≈1.11× GM 读 vs BL=1 ≈4.5×
-  - 交叉引用：layout.md PL-1.4（容量驱动 CH 取档，本任务第三数据点已合入）/ PL-1.22 ⑥（守卫外提的「≥2 空间轴」前提）；queue VP-2026-0172（退化特化条件——同族互补，已合入）
-- repro: repro-missing（结构形态 + 设计期机器断言；知识域最小 repro 待同族任务回填）
-  - 〔provenance，允许失效〕任务内复现条件：跑 `verify_equiv.py` 的 C1 组（`BL∈{4,8,16}` × 7 配置 × 3 dtype 逐 lane 断言 `iw−s0 ∈ [0,LSPAN)`）——任务工作区脚本，不随交付上库
-- toolchain_stamp: tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9，dev root build）+ torch 2.9.0 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md（ALG-pooling）
-- delta: |
-    update ALG-pooling 追加「窗口池化域的必需空间分块形态（长轴 / 1D）」段（与已有「几何特化路径模式集」「窗口池化域退化特化条件」并列）：
-    ① **判定式**：空间轴长 × CH × 元素宽度 × 膨胀系数 > UB 容量（192 KiB 档）⇒ 必须沿该轴分块，且分块后读的是**连续 span**（非逐元素 gather）——2D 的 `W_in ≤ 112` 整行驻留结论不可外推（1D `L_in` 可达 4096）；
-    ② **钳制载入形态**（保证恒在界内 + 长度静态）：`span=(BL−1)·s+(k−1)·d+1`、`LSPAN=min(span, L_in)`、`s0=max(0, min(base, L_in−LSPAN))`、读出下标 `j=iw−s0`；守卫 `0<=iw<L_in` 与「缓冲下标 ∈ [0,LSPAN)」是等价式，可写成可执行断言（逐 lane 验下标落界）；
-    ③ **BL 取容量允许的最大值**：halo 重读随 BL 下降（`LSPAN/(BL·sW) → 1`；ecg 实测 BL=31 ≈1.11× GM 读 vs BL=1 ≈4.5×），与 2D 的 `BH=1` 最优方向相反（2D 整行已驻留，BH>1 只增容量）；
-    ④ **轴数前提清单**：整轴驻留 / 守卫外提 / `BH=1` 最优三处 2D 结论均要求 ≥2 个空间轴——同族迁移须逐项核对「该结论依赖几个空间轴 / 轴长上限多少」；
-    ⑤ **尾块三类**：任务尾块（`uid < num_logical`）、通道尾块（`real_c = min(CH, C−cb·CH)`）、输出块尾（`BL_real = min(BL, L_out−ow0)`；1D 独有，2D 因整行驻留而无）。
-- status: pending
-- confirmations: 1/2
-- created_by: task max_pool1d-_max_pool1d_kernel-20261014T082309Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0172（退化特化条件，已合入）/ VP-2026-0174（容量驱动 CH，已合入）同族互补——本条管「空间分块与 BL 方向」；无 repro（结构形态 + 设计期断言），按 P 类计 1/2 待第二证（下一个长空间轴/1D 池化类任务）。
 
 ## VP-2026-0181
 - type: D
@@ -1378,6 +1302,7 @@ decided_by: evolver / human / -   # 裁决者
   - 〔2026-09-20 第三任务独立复现，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕复检三段式：§0.1–§0.4 与 v0 逐字一致（diff 确认）→ 首轮源码行号级核对结论安全沿用；§0.5–§0.7 与 v1 逐字一致 → 上轮修复保留；变更半径审计（v1→v2 diff 28删/40增全落修复域，无越界改动/决策翻案）+ 决定性探针复跑（band 直载形态编译复证）——section-diff 复用 + diff 锁定深查范围第三任务实证；建议合入时把「变更半径审计 / 决定性探针复跑」两步骤并入本提案 new 文本的重审工作流
   - 〔2026-10-13 第四任务独立复现 + 补充「v_prev 问题闭合表」证据，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z〕Stage 2 两次复检均以人工「v_prev 问题逐项闭合表」完成：v0 的 2 阻塞 + 4 建议在 v1 被逐项核对闭合（CH/膨胀系数/收益分母/PL-1.4 四处口径），据此才把注意力放到新问题（v1 新发现 C4b 恒等路径 1 阻塞为 v0/v1 通用 Tiling 核对均未触及）；第二轮复检确认 v1 遗留 1 阻塞 + 1 建议闭合、v0 六项回归保持闭合。**补充证据**：只重跑机械检查会漏掉「旧问题改了一半」的情形（本任务复检靠闭合表拦截）。建议把「复检模式强制产出 v_prev 问题逐项闭合表（阻塞必列 + 建议列，每项给本版证据句，未闭合照常 fail）」并入本提案的重审工作流（与既有复用白名单/diff 锁定/三态判定并列）
   - 〔2026-10-14 第五任务独立复现（不同任务，pool 族），task max_pool2d-_max_pool2d_kernel-20261014T062320Z〕Stage 2 复检轮由 conductor prompt 专项要求「**先建立 v0 问题闭合表，再查新问题**」，Reviewer 据此产出「上一轮（v0）检视问题闭合表」小节（5 项逐项闭合、1 处命名残留另列）并以 69 case-group 复跑为基线（v0 为 57 组）——闭合表形态第五次独立复现。同轮两条新发现落在本提案未覆盖的检查面：① **跨章节复述项取值漂移**——§3.2（API 映射表）的 C4 判决 `vcmp(nmax,zero,"gt")` 与 §3.3/§4.4 的 `"eq"` 矛盾，照抄 §3.2 会**反转 NaN 判决**（须对每个跨章节复述的谓词/比较模式/单位 `grep` 全部出现处核对取值一致）；② **负向守卫的子句隔离覆盖缺口**——C4x 两配置均对称 dilation（`dH==dW`），只删 `dW==1` 子句时断言不触发（「移除任一子句即失败」对该子句是空真）。**建议**：把「复检模式（Phase 0'：存在上一轮 REVIEW.md 时先逐项产出闭合表〔问题→证据句→状态〕再进入维度检视）+ §5 模板增『上一轮问题闭合表』小节（仅复检时输出）」并入本提案的重审工作流；①的动作面并入 VP-2026-0147（跨节一致性检查项）；②见 queue VP-2026-0177（特化谓词检查项含子句隔离覆盖）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〔第六任务复现〕Stage 2 **复审**（revision v1）由 reviewer 自发补建「前次阻塞项闭环核对」——2 条前次阻塞项（§4.5 容量系数 / §0.1 空窗口域不变量）逐项**独立复算**确认闭环（未采信 DESIGN.md 的「相对上一版调整表」自述）；并专项核「修复爆炸半径」时发现 §1.6.2 分析表仍留旧的两缓冲形态（`cfinal`/`cfinal2`）与 §3.2/§3.3/§4.3 的单一 `cfinal` 不一致（非阻塞 warn）——「跨节 buffer 清单一致性」是本提案工作流未覆盖的检查面（现由 VP-2026-0147 承担）。本任务的复审仍须自行 Read 上一版 REVIEW.md 重建阻塞项清单（skill 侧无 `Phase 0（revision 复审）` 步骤）〕
 - repro: 复现条件——Stage 2 第 N 轮（N≥2）修订版重审（本任务 R2/R3 两轮实证）
 - toolchain_stamp: 证据环境 tilelang 0.1.2 + 910B2C（2026-09-07）
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -3150,6 +3075,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: design-review SKILL Phase 2 复审纪律两条——① 复审场景上一轮 REVIEW.md 的文档引文/实测数字一律视为待核工件（阻塞修复涉及的支持面论断必须重读原文档，不得 diff 两版 REVIEW 文本代替取证）② 阻塞修复涉及的数值及其派生量在 DESIGN 全文检索所有出现点并逐处同口径重算（「修订说明列出的章节」≠「受影响的全部章节」）
 - evidence:
   - task argmax-_argreduce_kernel-20260924T031005Z Stage 2 复审：① v0 REVIEW 引用 T.transpose.md §2.2.1 dtype 表把 uint32 写成 √（文档实际 ×），v1 DESIGN 更正复述与 v0 REVIEW 引文冲突，复审重读原文才裁定 v1 准确——若沿用前轮引文会误判 v1「引入新错误」；② v1 定点修订在未改动章节留下三处数字残留（附录 A 262KB〔应 268MB〕/ §9.2-R8 32768B〔应 28672B〕/ §5.2 269MB〔应 272.6MB〕），靠全文 grep + 逐处重算才捕获（REVIEW.md v1 复审维度 2/3/7 N2/N3/N4）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〕Stage 2 复审实测：复审者独立复算两条阻塞项（容量系数闭式 ∧ 逐 buffer 求和、空窗口域不变量的真实充分条件）后才判「通过」——与①「上一轮 REVIEW.md 的引文/数字一律视为待核工件」一致；②「修复爆炸半径」在本任务以「冻结伪代码 ↔ 分析表 ↔ buffer 清单」跨节缓冲名交叉检索体现（发现 §1.6.2 双缓冲残留）。建议把该跨节检索点写成显式步骤（与 VP-2026-0147 的跨节一致性检查项互补：本条管复审工作流，0147 管维度 3/7/8 检查项）〕
 - repro: 复现条件——任一 Stage 1 revision 后的 Stage 2 复审（阻塞修复核验场景）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 2026-09-24
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -3362,6 +3288,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: op-design SKILL Phase 2 第 1 步（数学等价优化）补「状态机类改写的写入语义判定」——把「顺序条件覆写」改写为「集合取极值」前先判首写生效（`>`）还是末写生效（无条件覆写），再决定取 `min` 还是 `max`
 - evidence:
   - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 1：`DESIGN.md` §1.6.1 N2/N3——首版把 first-hit 当成「值等于最终最大值的**最小**扁平下标」（`vmin`），`verify_equiv.py` N3 首轮 **20426 mismatch**；源的写入语义是严格 `>` 更新（首写生效）⟹ 破纪录集合扁平最大值，改 `vmax` 后 340 例全 `EQUIV_PASS`；`rand` 组在错误方向下 123/144 索引错而 `all_equal`/`zeros`/`all_neg_inf` 全过（任务工作区，未上库）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〕Stage 1 首版设计即按「先判写入语义、再定候选集」执行并写入 §1.6.1：1D 窗口池化 first-hit（严格 `>` 首写生效）= `min{iw : x[iw]==acc}`（**两遍法**：`acc` 定稿后由等式集合取 `min` + `BIG` 哨兵，第二遍与第一遍解耦 ⇒ 消除「判据 vs 累加器更新次序」依赖），last-NaN = `max{iw : isnan(x[iw])}`；`verify_equiv.py` N2N3（8 配置 × 6 kind × 3 dtype 全 `EQUIV_PASS`）+ N2N3-ord（次序颠倒误形态 39/72 检出）。**口径澄清**：单遍式取「破纪录集合的位置最大值」与两遍式取「等式集合的位置最小值」数值等价，但**候选集不同**——判据表述须绑定候选集（混搭即错）；建议插入文本补该澄清，避免后续设计师把 `vmin` 一律当作错误方向〕
   - 复盘出处：同目录 `RETROSPECTIVE.md` Stage 1 Skill Flow Issues 首行（「技能 Phase 2 只要求等价性论证，未强制状态机类改写先写出源的『最后写入语义』再取极值」）
 - repro: repro-missing（设计流程规则；复现条件 = 设计把「顺序条件覆写 / 记录」改写为集合取极值时，核对 §1.6.1 是否写明首写/末写判定与所选极值方向）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + Ascend910B3 / 2026-10-14
@@ -3429,6 +3356,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 2：`REVIEW.md#问题 2`——v0 §4.5 一般网格行（65.1 KB）复算无误，但 C4 行**低报 46%**（记 ≈90KB / 实算 132.8KB）、C4b 行漏计「模式构造 buffer」（`idx1d/idxp4/idxb4/idxbl` ≈51KB，记 ≈64KB / 实算 112.1KB），使「两档均在容量内」的结论在默认档 ×1.7 下失效（C4 ≈226KB > 192KB）；v1 §4.5 改为逐 buffer 复算表 + 判据不等式 `degenerate_bytes(CH_deg,H,W,dtype) × inflate ≤ 192 KB` + 容量驱动收窄 `CH_deg = min(C,32)`（C4 68 200 B / ×1.7 = 113.2 KB ✓、C4b `CH_deg=8` → 15 048 B / 25.0 KB ✓、`(1,8,32,32)` 实算 ≈340 344 B ≫ 192 KB 回退）（任务工作区，未上库）
   - 同族第三现：hardware-cost-model.md §5（2026-10-14 增补的第三数据点）；机检缺口见 queue VP-2026-0047（第七现：`ub_budget` 对逐 buffer 表 + 编译期分支形态仍 skip）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〕Stage 2 检视 #1 唯一阻塞项即 §4.5 双输出（索引型）1D 容量闭式**分量漏计**：v0 记 `53+2·eb` 而同行分量注释求和为 `69`（漏 `idx32/idx_t` 8 B + `idx64` 8 B）——纯文本即可拦截的自相矛盾；v1 改为 `G = CH·LSPAN·(2·eb+9) + BL·CH·(69+2·eb) + 256` 并逐 buffer 求和 = 闭式值（sincnet fp16 `BL=16` 114 944 B、ecg bf16 `BL=17` 113 792 B，×1.7 均 ≤192 KiB；被否档 `BL=18/20` 130 880/132 800 B ×1.7 超容）。**建议本提案的 1D 形态要求补两条自检**：① 容量闭式括号内分量求和 = 系数（机器可查）；② 档位（`BL`/`CH`）变更后所有派生量（`LSPAN`→`num_oblk`→`num_logical`→`num_local`）与备选档连带重算〕
   - 复盘出处：同目录 `RETROSPECTIVE.md` Stage 1 revision v1 Skill Flow Issues 第二行（「skill Phase 4 未强制特化/退化路径按实际 alloc 清单逐 buffer 复算 + 带字节数的编译期判据不等式」）
 - repro: repro-missing（设计流程规则；复现条件 = 设计含几何特化/退化路径而 §4.5 只列代表 workload 容量结论时）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
@@ -3566,6 +3494,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: design-review Phase 1 第 7 步补「纯 Vector 设计的机械复核退化」——design_calc_check 对该类设计三检查全 skip（仅 r3_metrics pass），Stage 2 须人工逐 buffer 复算 UB 预算与分核三要素并写入机械复核段
 - evidence:
   - task max_pool1d-_max_pool1d_kernel-20261014T082309Z Stage 2 复盘：Skill Flow Issues 首行（`python3 .agents/tools/design_calc_check.py --design <DESIGN.md>` → `ub_budget` / `l0c_budget` / `core_split` 三 skip、仅 `r3_metrics` pass）+ Value Point Proposals 首行；REVIEW.md「机械复核」段记录了人工逐 buffer 复算（113 152 / 114 944 B，任务工作区，未上库，provenance 允许失效）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〔第六→第七现〕Stage 2 复审机械复核：`design_calc_check.py --design examples/max_pool1d_with_indices/_max_pool1d_with_indices_kernel/DESIGN.md` → `ub_budget`/`l0c_budget`/`core_split` **三 skip**、仅 `r3_metrics` pass（纯 Vector 双输出设计，同为「逐 buffer 表 + 闭式不等式」形态）；人工逐 buffer 复算成为唯一拦截位——本任务 Stage 2 **首检**正是靠人工复算拦下闭式系数漏计（`53+2·eb` vs 同行分量注释求和 `69`）。**建议扩展本提案的 delta**：纯 Vector 形态的人工复算口径补两条——① 容量闭式须与 pattern-library 同类记账式交叉核对（本任务以 `layout.md` PL-1.4 单输出版式 `25+2·eb` 为独立佐证判定双输出应为 `69+2·eb`），系数差异逐项解释；② `G×INFLATE` 距判据 < 5% 时须给「再加一个最小 buffer 是否翻转判据」的边界结论（本任务裕度 0.6%，单个 `(BL,CH)` bool 即翻转）〕
   - **修复后仍复发**：VP-2026-0047 的两类表解析扩展已于 2026-10-14 08:10 apply（commit ddf4255）而本任务 08:16 起运行仍三 skip——工具侧修复覆盖不到的表形态仍在，检视侧兜底位独立成立；同族累计第八现（ada / ssd×2 / argmax / pool 族四连）
   - 交叉引用：queue VP-2026-0047（工具侧解析扩展，已 merged）/ VP-2026-0168（设计侧退化路径逐 buffer 复算）/ VP-2026-0136（`--manifest` 真值推导）
 - repro: 复现条件——对纯 Vector（无 `block_M×block_N`、无逐 buffer 解析表）的设计跑 `python3 .agents/tools/design_calc_check.py --design <DESIGN.md>`，观察四项检查的 skip 数
@@ -3589,6 +3518,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: op-design 的窗口/池化候选清单补两个维度——① 空间轴长超 UB 驻留预算时「沿该轴分块 + 连续 span 载入」是必需维度（非可选优化）；② 同族前作结论须标注轴数前提（整轴驻留 / 守卫外提 / `BH=1` 最优均为 ≥2 空间轴结论）
 - evidence:
   - task max_pool1d-_max_pool1d_kernel-20261014T082309Z Stage 1 复盘：Skill Flow Issues 首行（skill 的「窗口/池化类」候选清单只列「I/O 原生布局 + 最内连续轴」与「核内重排布局 + 高整除性轴」两类轴向候选，未提容量维度；2D 骨架「照搬」风险）+ 第三行（1D 与 2D 的「守卫外提」不可平移，skill 的同族前作教训未标注轴数前提，照搬会写出不存在的优化）
+  - 〔2026-10-14 证据链追加（task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z，pool 族双输出 1D 变体）〕Stage 1 Skill Flow Issues 首行：**索引型（双输出）算子不得照搬单输出变体的退化特化**——单输出可采纳的整线归约（C4）在双输出上需额外构造整线 argmax 索引，其自然实现依赖 `T.arange` 派生 pattern 在 `vmax/vselect/reduce` 链内消费（`TRAP-npuir-arange-pattern-with-whole-plane-reduce` 的已验证断裂链）；**判据 = 特化的每一路输出都必须独立可证，值半成立不代表索引半成立**，无法证明时走一般路径（本任务 C4/C4b 均记录为不可采纳）。**建议把该维度写入本提案候选清单**：长空间轴维度之外增「索引构造是否独立于 arange 派生 pattern 链」前置核对（窗口/池化族 + argmax/argreduce 族同适用）〕
   - 同任务 DESIGN.md §0.6 R1（为何必须沿 L 分块）/ §1.6.1（1D-2D 守卫差异）；RETROSPECTIVE Stage 1 Transferable Lessons 末条（「照搬前先问该结论依赖几个空间轴 / 轴长上限多少」）
   - 交叉引用：queue VP-2026-0180（该结构的 P 类条目——数据/模式类落点）/ VP-2026-0147（设计盘点漏点族）
 - repro: repro-missing（设计流程规则；复现条件 = 窗口/池化类设计的目标空间轴长超出 UB 驻留预算时观察候选清单是否提示分块维度）
@@ -3654,6 +3584,196 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task max_pool1d-_max_pool1d_kernel-20261014T082309Z 2026-10-14
 - decided_by: -
 - decided_note: -
+
+## VP-2026-0188
+- type: R
+- title: op-develop Phase 2 补「实现侧 `_plan` 须逐字复现冻结设计的容量闭式」——不得以「更精确的实现记账」替换设计闭式（否则档位与分核表静默漂移），并给出「plan 输出 vs 设计 §5.x 表」逐字段自查
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 3 Skill Flow Issues 首行 + Value Point Proposals 第二行：首版 `_general_bytes` 按**实现实际 buffer 清单**精确记账（索引型每 `BL·CH` 元素 `53+2·eb`，UB 方向安全）⇒ `BL` 选到更大值，`sincnet BL=18/LSPAN=54/num_oblk=76/num_logical=4 864/num_local=122`（设计 `16/48/86/5 504/138`）、`ecg BL=20/LSPAN=47/num_oblk=52/num_logical=1 664/num_local=42`（设计 `17/41/61/1 952/49`）；修正为逐字复现设计闭式 `G = CH·LSPAN·(2eb+9) + BL·CH·(69+2eb) + 256` 后 plan 与 `DESIGN.md#§5.2`/`#§5.5` **逐字段一致**，L0/L1/L2/Boundary 全过（任务工作区，未上库，provenance 允许失效）
+  - 同任务 `RETROSPECTIVE.md` Stage 3 Transferable Lessons 首条（「实现侧的 `_plan` 必须复现冻结设计的容量闭式，而不是更精确的实现记账」）；漂移后果：不影响精度，但 §5.2/§5.5 分核表与实现永久不一致，Stage 4/5 的对照基准失效
+- repro: repro-missing（开发流程规则；复现条件 = 设计侧给出容量闭式与 `CH`/`BL` 档位表，而实现侧按实际 buffer 清单自行记账后输出 plan，与设计表逐字段比对）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 1 步前追加一条前置核对）
+    定位锚: "1. 按 DESIGN.md §3 API 映射 + §6 循环结构生成 `@tilelang.jit(target=\"npuir\")` kernel。"
+    new 文本: 在该条前插入：
+      ⓪ **分块常数须复现冻结设计（前置）**：1D/2D 分块的具体常数（容量闭式系数、`CH`/`BL` 选型规则与档位表）属**冻结设计的一部分**——实现侧的分块计划（`_plan`/`_choose_bl`/`_choose_ch_bl` 及并联的 `num_oblk`/`num_logical`/`num_local`）须**逐字复现设计闭式**，不得以「更精确的实现记账」（按实现实际 buffer 清单精确求字节）替换之：实现实际占用通常**小于**设计的保守闭式（方向安全），但按实际记账会选出更大的 `BL`/`CH`，使分核表与 `DESIGN.md#§5.x` 永久漂移、Stage 4/5 对照基准失效（max_pool1d_with_indices 实证：同一 shape 两版 plan 的 `num_logical` 为 4 864 vs 5 504；改回逐字复现闭式后逐字段一致）。自查 = 打印实现 `_plan` 输出与设计 `§5.2`/`§5.5` 表逐字段比对。
+    动机: 本次漂移不影响精度、门禁全过，属「静默」类不一致（Stage 4/5 才会暴露）；一条打印级自查即可闭环，成本≈0。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0149（develop 三条前置核对）/ VP-2026-0183（容量回退分支核算）相邻但锚点与主题不同（本条管「设计闭式的单一定义源」）；定位锚为 Phase 2 第 1 步原文，apply 时按当时文件锁定精确锚。
+## VP-2026-0189
+- type: R
+- title: op-design 等价性脚本产出纪律两条——① D-1 脚本按条件分支采样（禁「全配置矩阵 × 全线公式」全枚举）+ 单命令时限 + 先落 DESIGN.md；② 语义要素实测表须由脚本 `semantics_evidence()` 产出并逐行落 §0.1（与 §1.6.1 公式等价表分开）
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 1 Skill Flow Issues 第二/三行 + `SESSION_TIMING_ANALYSIS.md` §3/§4：首次设计的 `verify_equiv.py` 对 C4/C4b 全枚举（`whole_line_formula` 对 `L_in=4096` 逐 `ow×t` 循环）跑 ~40 min 被取消，占本任务总墙钟 **40.3%**（3 775.4 s / 9 366.4 s）；用户补充 S3 后改按 `(k,s,p,d,ceil)` 分支采样（每分支 ≥1 代表组）+ 特殊化子句 value-only 少量论证，脚本降至 ≈38.5 s / 1 074 项检查（其后两次重跑 12.2 s / 84 s，随宿主负载漂移）
+  - 同任务 `DESIGN.md#§0.1`（11 行 torch 语义实测表，由 `verify_equiv.py#semantics_evidence()` 产出）与 `#§1.6.1`（公式等价 item 表）分列；`RETROSPECTIVE.md` Stage 1 revision「D-1 措辞须与脚本实现一致」教训
+  - 交叉引用：VP-2026-0132（D-3 探针纪律三条——探针预算口径；本条管 D-1 等价脚本的规模与耗时口径）/ VP-2026-0164（D-1 内容判据三条）——三者同节不同锚
+- repro: repro-missing（设计流程规则；复现条件 = 长轴算子（`L_in` 达数千）的 D-1 脚本若对全配置矩阵跑 `O(out_l × L_in)` 的全线公式，单配置即数亿次 Python 迭代）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 5 步 D-1 与迁移解读段各追加一条）
+    定位锚 1: "   - **内容**：每个采纳项的候选式 vs 基线式数值对照——随机张量 + 角点值（±inf/NaN/subnormal/边界 shape）上以 **fp64 参照**比对（torch CPU 实现，两式均以 fp64 计算后按目标 dtype 舍入对照）；SymPy 符号化简可选（仅限可符号化公式）；"
+    new 文本 1: 在该 bullet 之后（或在 Step D-1 的「脚本规模」说明处）追加：
+      - **脚本规模与耗时纪律**：等价性脚本的 `(k,s,p,d,ceil)` 空间按**条件分支采样**（每分支 ≥1 代表组；`padding>0` / `dilation>1` / `ceil_mode` / `stride≠kernel` / 长度不整除 各至少一例），**禁止对全配置矩阵 × 全线公式做全枚举**——长轴算子（`L_in` 达数千）的 `O(out_l × L_in)` 全线 item（如 `for ow: for t: fmax`）单个配置即数亿次 Python 迭代（实测 ~40 min 未完成，占任务墙钟 40%）；长轴配置只进轻量 item（下标记/结构断言），整线/恒等特化未采用时只做少量 value-only 数学论证。**先落 DESIGN.md 再跑长验证**，且任何单条命令的墙钟设硬上限（超限即拆分）。
+      - **产物的可复现描述用不变量而非秒数**：脚本规模以「item 组数 + 检查项数 + 分支采样配置数」描述（同一脚本实测耗时随宿主负载在 12–84 s 间漂移）。
+    定位锚 2: "**迁移解读**"（`migration-analysis.md` 承载的迁移解读段引入处；apply 时按当时文件锁定精确锚）
+    new 文本 2: 在该段追加一句：
+      **语义要素须脚本实测并落 §0.1**：索引编码 / tie 方向 / NaN 行为 / 越界跳过 / padding 退化窗等语义要素须以 `semantics_evidence()` 类函数在 torch 上逐个实测，并**逐行**写入 `DESIGN.md#§0.1`（与 §1.6.1 的公式等价表分列——前者是语义定标、后者是公式对照）。
+    动机: 首次设计的长跑是本任务最大单点墙钟来源（40.3%）；且语义要素与公式等价混列会降低两类证据的可核性。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 定位锚 1 与 VP-2026-0148/0164 同节不同锚（0148 判据分档、0164 内容判据，本条管规模/耗时与产物描述口径）；定位锚 2 为 migration-analysis 承载段（apply 时锁定）。
+## VP-2026-0190
+- type: R
+- title: design_calc_check.py 增「容量闭式自洽性」纯文本检查——闭式括号内分量求和 ≠ 系数即 fail；1D 形态或于 skip detail 固定附「须人工按同节 buffer 清单重算并对照 pattern-library 同类记账式」
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 2 Skill Flow Issues 首行 + Stage 1 revision Skill Flow Issues 首行（**同任务两次独立提出**）：`design_calc_check.py` 在 1D 池化「逐 buffer 表 + 闭式不等式」形态下 `ub_budget`/`l0c_budget`/`core_split` 三项 skip（仅 `r3_metrics` pass），容量类算术错误的机械拦截位实质失效；本任务 v0 的 `53+2·eb` 与同行分量注释求和 `69` 自相矛盾——**纯文本即可拦截**却漏过，只能靠 Stage 2 人工逐分量手算发现
+  - 同任务 `REVIEW.md#问题 1`（含逐 buffer 求和复算表）+ `DESIGN.md#§4.5`（闭式与分量注释并存）
+  - 交叉引用：VP-2026-0047（已合入：补两类表格形态解析——本条是其**未覆盖的纯文本自洽子形态**，与 VP-2026-0184（design-review 侧人工复算口径）互补：本条是工具侧机械拦截
+- repro: repro-missing（工具规则；复现条件 = 任一含「闭式 + 括号内分量注释」的 §4.5 且分量和 ≠ 系数——`python3 .agents/tools/design_calc_check.py --design <path>` 应报 fail）
+- toolchain_stamp: design_calc_check.py 现行版本；失效环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/tools/design_calc_check.py
+- delta: |
+    动作: update（检查器集合追加一项 + skip detail 文本）
+    定位锚: "UB_INFLATION" （现文件内 UB 预算相关常量/检查函数定义处；apply 时按当时文件锁定精确锚）
+    new 文本: 新增 `capacity_closed_form_self_consistency` 检查（纯正则/文本，无需解析 buffer 表）：扫描设计文本中形如 `... = <符号表达式> + <术语>·(A + B·eb) + ...` 的容量闭式，把 `(A + B·eb)` 中的常数分量 `A` 与该条闭式旁注的分量逐一求和值比对，不一致即 `fail`（本任务 v0 实证：闭式系数 `53` vs 分量注释求和 `69`，后者正确）。同时在 `ub_budget`/`core_split` 的 `skip` detail 末尾固定追加：**「1D/纯 Vector 形态暂不支持：须人工按同节 buffer 清单逐项求和重算，并对照 pattern-library 同类记账式（layout.md PL-1.4 等）」**——`skip` 不得被当作 `pass`。
+    动机: 本次唯一阻塞项是「纯文本即可拦截」的自相矛盾（分量和 ≠ 系数），而同一检查器已能读到该闭式文本；补一条正则级检查成本极低、拦截面覆盖全部 1D/纯 Vector 设计（该族已连续多任务三项全 skip）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0047（表格形态解析，已 apply）/ VP-2026-0136（--manifest 真值推导）/ VP-2026-0184（design-review 人工复算口径）同工具族不同锚；建议与 0184 同批审批。
+## VP-2026-0191
+- type: R
+- title: design-review 维度 0 增「域不变量断言」复核项——凡 §0.x 出现「某参数条件 ⇒ 某集合关系（非空/全覆盖/退化）」的断言，须独立推导真实充分条件并枚举反例（附反例规模）；正例覆盖不足与断言过强同为 fail
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 2 Skill Flow Issues 第三行 + `REVIEW.md#问题 2`：维度 0 的 7 个检查项全为「源语句/章节一致性」类，**无域不变量复核项**——§0.1「`p ≤ ⌊k/2⌋` ⇒ 每个窗口至少含 1 个有效元素」被独立枚举参数空间推翻（`L_in ≤ 13, k ≤ 6, s ≤ 5, p ≤ ⌊k/2⌋, d ≤ 6, ceil ∈ {F,T}` 得 **89 组** `(config, ow)` 反例；最小例 `L_in=1,k=2,s=1,p=1,d=2`，真实充分条件为 `d==1 ∧ p≤⌊k/2⌋ ∧ s>0`）（任务工作区，未上库，provenance 允许失效）
+  - 同族复发型：`max_pool2d` 任务同族缺陷（整平面归约充分条件漏 `d`，VP-2026-0172/0177）与 `adaptive_*` 任务的特化条件措辞，均属「参数约束 ⇒ 集合关系」断言类——跨任务已三现，检视侧无对应检查项
+  - 交叉引用：VP-2026-0177（维度 8 编译期特化谓词充分条件 + 子句隔离覆盖——锚点在维度 8，本条在维度 0 的域不变量断言）/ algorithm-candidates.md 窗口池化域条件①③
+- repro: repro-missing（检视流程规则；复现条件 = 设计 §0.x 含「参数条件 ⇒ 集合关系」断言时，按本项独立推导充分条件并枚举短 shape 反例）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 0 检查项表追加一行）
+    定位锚: 维度 0 检查项表的末行（迁移任务「源算子理解」类检查项末行；apply 时按当时文件锁定精确锚）
+    new 文本: 追加一行：
+      | 域不变量断言 | §0.x 中凡出现「某参数条件 ⇒ 某集合关系（非空 / 全覆盖 / 退化 / 两集合相等）」的断言，须**独立推导其真实充分条件**并**枚举反例**（附反例脚本或手工枚举规模与参数空间）；断言过强（存在反例）与正例覆盖不足（未证明充分性）同为 fail。典型形态：池化窗口「非空」的真实条件是 `d==1 ∧ p≤⌊k/2⌋ ∧ s>0`（`d≥2` 下有 89 组反例）；整平面归约的充分条件须含 `d==1`。引用来源不能替代独立推导。 |
+    动机: 本任务 §0.1 的核心边界断言错误由检视者在无专属检查项下自发枚举才发现（一次设计修订 + 一次复审 ≈14% 墙钟）；同族该形态已三现，属检查项缺口而非个案。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0177（维度 8 谓词充分条件）/ VP-2026-0168（op-design 逐 buffer 复算）同族互补、锚点分属不同维度。
+## VP-2026-0192
+- type: R
+- title: op-design 迁移解读段补「参数约束 ⇒ 集合关系」的真实充分条件推导 + 空窗口类退化 regime 的契约（含「退化 regime 不得拿 torch 当 oracle」）+ 源引用须指向本算子行号
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 1 revision Skill Flow Issues 第三行 + `DESIGN.md` v0 §0.1（第 109–110 行「`p≤⌊k/2⌋` ⇒ 窗口非空（无需兜底）」）vs v1 §0.1（逐条件非空窗口保证 + 空窗口契约 `max_idx==BIG ∧ ¬has_nan ⇒ idx=0` 对齐源 `(-inf,0)`）（任务工作区，未上库）
+  - 同任务 Stage 1 revision Transferable Lessons：「参数约束不蕴含窗口非空；`d≥2` 时窗口输入覆盖集合是等差子集，须逐窗口判空」「退化 regime 不得拿 torch 当 oracle（空窗口下 torch 返回越界索引）」「引文须指向本算子行号（`§0.4`/`§1.6.0` 曾引用同族单输出工厂第 15–68 行而非本算子第 212–288 行）」
+  - 交叉引用：VP-2026-0185（候选清单维度）/ VP-2026-0172（窗口池化退化特化充分条件，已合入 algorithm-candidates）/ queue VP-2026-0159（索引契约）；知识侧落点见 traps-runtime.md TRAP-torch-oracle-maxpool1d-empty-window
+- repro: repro-missing（设计流程规则；复现条件 = 迁移设计的源算子含 padding/dilation 且 §0.1 以参数约束推断集合性质时）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/migration-analysis.md
+- delta: |
+    动作: update（迁移解读段追加三条）
+    定位锚: 迁移解读段「域/边界语义」相关条目（apply 时按当时文件锁定精确锚）
+    new 文本: 追加：
+      ① **集合关系断言须逐条件推导**：凡由 shape/参数约束推出集合关系（窗口非空 / 覆盖集合 = 全轴 / 退化恒等），须写出**真实充分条件**并逐子句隔离验证——窗口池化的「非空」条件是 `d==1 ∧ p≤⌊k/2⌋ ∧ s>0`（`d≥2` 时覆盖集合为等差子集 `{o·s−p+k·d}`，反例族存在），不得默认「无需兜底」；② **退化 regime 的契约与 oracle 分野**：须显式写出退化域（空窗口 / 全 padding 窗口 / 越界 lane）的索引/值契约（对齐源初值 vs 对齐 torch），并标注该域是否可用 torch 作 oracle——窗口池化空窗口域 torch 返回**越界索引**（见 pattern-library traps-runtime.md TRAP-torch-oracle-maxpool1d-empty-window），此类用例只能断言与源对齐的文档化行为；③ **引文指向本算子**：引用源机制时指向本算子迁移函数的行号，而非同族其它变体/工厂（语义可同族同构，引文指向会误导读者）。
+    动机: 三条均为本任务 Stage 1 修订 v1 的实际修复内容（v0 缺 ① 致 Stage 2 阻塞、② 的 oracle 分野由 `empty_window_evidence()` 逐行留证才闭合、③ 曾被复审记为瑕疵）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0189（同文件/同段，锚点不同：0189 管语义实测表落 §0.1）互补不重叠；知识侧落点 = TRAP-torch-oracle-maxpool1d-empty-window + TRAP-pool-index-contract-dual-output。
+## VP-2026-0193
+- type: R
+- title: add-npu-op reference 模板——纯选择类算子（max/min/argmax/排序，无累加）的 NPU golden 不可用判据不限于「受限参数」，多输出/`return_indices` 后端支持须先实测；纯选择类默认直接走 CPU golden
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z op 级 `RETROSPECTIVE.md` Stage 5 Skill Flow Issues 第二行：脚手架按「受限参数（`dilation != 1`）」预埋 CPU golden 回退，但本任务实测 `F.max_pool1d(..., return_indices=True)` 的 indices 损坏**对所有 dilation 成立**（`dilation==1` 静默返回 int8 mask buffer）⇒ 按受限参数预埋的回退覆盖面不足，首轮 report 失败（per-op 40/47）
+  - 同任务集成包 `integration_log.md#调试历史` + `examples/TileOPs/tests/ops/test_pool.py#MaxPool1dIndicesTest.ref_program`（原 `needs_cpu_golden = dilation != 1` → 改为无条件 CPU golden；修复后 per-op 47/47、`max_abs_err=0.0`）（任务工作区/集成包，未上库）
+  - 交叉引用：VP-2026-0178（已合入：Stage 0/S5 golden 可用性自检 + 受限参数回退模板——本条是其覆盖面扩展）/ VP-2026-0179（已合入：integrator 失败分类表子类）；知识侧 = traps-runtime.md TRAP-npuir-ref-backend-golden-capability 第三形态
+- repro: repro-missing（集成流程规则；复现条件 = 纯选择类算子用 `torch.nn.functional` 多输出 API 作 NPU golden，先实测其 indices 的 dtype/shape 是否等于契约）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
+- delta: |
+    动作: update（reference 模板/自检段扩展）
+    定位锚: Stage 0/S5「NPU 参考实现（golden）可用性自检」段（VP-2026-0178 apply 后的现存段；apply 时按当时文件锁定精确锚）
+    new 文本: 在该段末尾追加：**纯选择类算子（max/min/argmax/排序，无累加）的默认 golden 路径 = CPU golden**——按「受限参数」分支预埋回退不足以覆盖「全参数区间静默损坏」类缺口（实测：torch_npu 的 `F.max_pool1d(..., return_indices=True)` 在 `dilation == 1` 下**不抛异常**却返回 dtype/shape 全错的 indices（`int8 (N,C,k,L_pad)` 内部 mask buffer），`dilation != 1` 才抛 `AclNN_Parameter_Error`）；自检须核对 golden 输出**每个**返回值的 `dtype`/`shape` 是否等于算子契约（「跑通」不构成判据），多输出/`return_indices` 类后端支持一律先实测再定回退范围。含累加算子（sum/avg/conv/gemm）不得照搬该默认。
+    动机: 本任务首轮集成失败 100% 源于「按受限参数预埋」的覆盖面假设；把默认值前置到 reference 模板可消除同类缺口的整轮集成返工（≈17 min/次，见 VP-2026-0178）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 承接已合入的 VP-2026-0178（自检机制）与 VP-2026-0179（失败分类），本条只改「默认 golden 路径与覆盖面」；apply 时须先读文件确认 0178 落盘形态再定位锚。
+## VP-2026-0194
+- type: R
+- title: integrator 失败分类表「NPU reference 后端能力缺口」行的识别信号扩为「异常 `AclNN_*_Error` **或** 后端返回 tensor 的 dtype/shape 与算子契约不符（静默损坏）」
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z op 级 `RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行：现行子类的识别信号只写「异常 + `AclNN_*_Error`（op 未执行、堆栈落在 `torch.nn.functional`）」——本次后端**不抛异常、照常返回**，indices 为 `torch.int8 (N,C,k,L_pad)` 垃圾 buffer，错误直到测试 harness 的 tensor 比较处以 `RuntimeError: size mismatch` 浮出（形似 shape/runtime 失败）；仅按「异常信号」判类会把该形态误归 shape/runtime 类而漏掉 CPU-golden 修复（任务工作区/集成包 `integration_log.md#调试历史`）
+  - 同任务修复后 `run.json` 通过轮（per-op 47/47、`max_abs_err=0.0`、benchmark 36/36）
+  - 交叉引用：VP-2026-0179（已合入：该子类行本体，用户批准 2026-10-14 apply 落盘于 `.opencode/agents/tilelang-op-integrator.md`）——本条是对该行的**识别信号扩展**
+- repro: repro-missing（集成流程规则；复现条件 = 用 torch 多输出 API 作 NPU golden，后端返回 dtype/shape 与契约不符的 tensor 而 op 未被执行/未被判错）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .opencode/agents/tilelang-op-integrator.md
+- delta: |
+    动作: update（失败分类表「NPU reference 后端能力缺口」行的「识别信号」列扩展）
+    定位锚: VP-2026-0179 落盘后的子类行（含「异常在 ref_program 内、op 尚未执行且报 `AclNN_*_Error`」的单元格；apply 时按当时文件锁定精确锚）
+    old 文本: 异常出现在 `ref_program` 内、**op 尚未执行**（堆栈落在 `torch.nn.functional`）且报 `AclNN_*_Error`（如 `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1`）
+    new 文本: 异常出现在 `ref_program` 内、**op 尚未执行**（堆栈落在 `torch.nn.functional`）且报 `AclNN_*_Error`；**或** reference 后端**不抛异常、照常返回**但返回值与算子契约不符（dtype 或 shape 错，如 `F.max_pool1d(..., return_indices=True)` 在 NPU 上返回 `int8 (N,C,kernel_size,L_pad)` 内部 mask buffer 而非 `int64 (N,C,L_out)`）——后者错误会延迟到测试 harness 的 tensor 比较处才以 `RuntimeError: size mismatch` 浮现、形似 shape/runtime 类，判类时须核对 golden 每个返回值的 `dtype`/`shape`。两形态处置相同（纯选择类算子 reference 回退 CPU golden）。
+    动机: 本次 attempt 1 的分类若按旧信号会漏掉该子类而错走 shape/runtime 排查；扩展后该缺口在集成期一步判类（本任务实际修复成本 = 一次受控 reference 路径修复 + 一次 report 重跑 ≈17 min）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 修订已被用户批准的 VP-2026-0179 落盘行（同一单元格），apply 时须先读 `.opencode/agents/tilelang-op-integrator.md` 现状定位；与 VP-2026-0193（add-npu-op 侧默认 golden）配套。
+## VP-2026-0195
+- type: R
+- title: tilelang-skill-evolution retrospective-schema 补「上游提案数值更正」登记通道——Stage 2/3 发现同函数上游 D 类提案数值错误时以「更正：<上游标题>」登记（evolver 蒸馏时以更正条目优先裁决）
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 2 Skill Flow Issues 第四行（Info-source）：Stage 1 的 `RETROSPECTIVE.md` 已把**被推翻的**数值 `53+2·eb` 作为 D 类 durable 价值点入表（Value Point Proposals 第 3 行 + Transferable Lessons），而 `retrospective-schema.md` §3 价值点表只有「新增提案」形态、**无「更正/撤回」通道**——错误常数有流入 pattern-library 的风险；Stage 2 的 Value Point Proposals 首行以「更正：…系数 = `69+2·eb`（非 `53+2·eb`）」形态记录并指明冲突双方位置（任务工作区，未上库）
+  - 蒸馏侧实证（本任务 evolver 本次）：两级复盘中同一数值的正/误两版并存，裁决依赖跨章节人工比对（`DESIGN.md#§4.5` 分量注释求和 vs Stage 1 提案行）；若按机械追加，错误常数会先于更正条目落库
+  - 交叉引用：pattern-library INDEX.md §2 证伪协议（证伪更正须留痕）/ merge-policy §3 冲突消解（Tier 0 D 类冲突可直接「新 add + 旧 deprecate」）
+- repro: repro-missing（复盘 schema 规则；复现条件 = 同一函数级任务的 Stage 2/3 复盘发现 Stage 1 已登记的数值错误时，检查 §3 表是否有更正形态可承载）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-skill-evolution/references/retrospective-schema.md
+- delta: |
+    动作: update（§3 价值点表字段说明追加一行）
+    定位锚: §3 价值点表（Value Point Proposals）字段说明处（apply 时按当时文件锁定精确锚）
+    new 文本: 追加说明：**上游提案的数值更正通道**——Stage 2/3 复盘若发现同一函数级任务上游（Stage 1 等）已登记的提案数值/结论有误，以 `title = 更正：<上游提案标题>` 登记（`vp_type` 按证据类型），并在 `evidence` 列**同时给出冲突双方位置**（上游提案行 + 本次反算依据）；evolver 蒸馏时以「更正」条目优先裁决（实测 > 推演；并可对旧条目执行 `deprecate`），避免错误常数先于更正落库。
+    动机: 本任务 v0 的错误容量系数（`53+2·eb`）已被上游复盘登记为 D 类 durable 价值点，而更正只能靠 Stage 2 自发写入 Value Point Proposals；机械追加若无更正通道，错误结论会与更正条目并存甚至先落库（pattern-library 的 D 类冲突虽可自愈，但依赖人工发现）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 属自进化机制自身的 schema 修改（Tier 2 人工门）；与 merge-policy §3 冲突消解条款衔接。
+## VP-2026-0196
+- type: R
+- title: pattern-library/repro/README.md 补「oracle / 测试设计类陷阱允许纯宿主语言（torch/numpy）实现」——只要可独立执行 + 断言现象存在 + 不 import 任务工作区，且头部标注 `First verified` 验证环境
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z Stage 3 Skill Flow Issues 第二行：本任务新增 repro `repro/TRAP-torch-oracle-maxpool1d-empty-window.py`（96 行，纯 `torch.nn.functional`、无 NPU 依赖、`python repro/...` exit 0）——是 repro 索引中**首个纯宿主语言形态**（现存 12 条均为 NPU 可运行）；`repro/README.md` 的「每个 repro 的要求」只写「可独立执行/可独立检查 + 自描述头 + 断言」，未说明**是否允许非 tilelang / 非 NPU 的 oracle 类陷阱**（任务工作区，未上库）
+  - 本次蒸馏已按 ED-C 机械转正该 repro（逐字节拷贝 + 头部核验 + py_compile PASS + `repro_runner --filter` 实跑 PASS），但其形态与 README 现行措辞的默认假设（NPU 可运行）不一致——需要 spec 侧显式承认该形态
+  - 交叉引用：repro/README.md「分级断言形态（kind: trap）」段 / `repro_runner.py` 的可运行部分语义（纯 CPU 脚本天然可批量回归）
+- repro: repro-missing（repro 规范规则；复现条件 = 提交一个纯 torch/numpy 的 oracle 类陷阱 repro，检查 README 是否有条款承载）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…） + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/repro/README.md
+- delta: |
+    动作: update（「每个 repro 的要求」第 1 条后追加一句）
+    定位锚: "1. **可独立执行/可独立检查**：`python repro/<条目ID>.py` 直接跑或通过语法检查——输入自造（脚本内构造最小张量/shape）、不 import 任务工作区模块、不读 `examples/{project}/` 路径（kb_lint 的 `KB-REPRO-DECOUPLE` 机械校验此解耦）；"
+    new 文本: 在该条之后追加：
+      **oracle / 测试设计类陷阱（kind: trap）允许纯宿主语言实现**（torch / numpy，无 NPU、无 tilelang）——只要满足「可独立执行 + 断言现象存在（premise + hazard + control 三段）+ 不 import 任务工作区」，并在头部标注 `First verified` 的验证环境（宿主语言与版本）；此类 repro 对 `repro_runner` 天然是全可运行部分（如 pooling 空窗口域的 torch-oracle 陷阱）。
+    动机: 本任务转正的纯 torch repro 与 README 现行措辞的默认假设不一致；spec 不承认会使后续同类转正被 kb_lint/人工核验判为形态例外而反复讨论。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
+- decided_by: -
+- decided_note: 与已合入条目 repro/TRAP-torch-oracle-maxpool1d-empty-window 配套；仅扩形态许可，不放宽「可独立执行 + 解耦」两条硬要求。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 
@@ -4586,3 +4706,87 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: evolver
 - decided_note: 2026-10-14 蒸馏：第二证（1D 同口径 + fp16→fp32 折半实测）达 Tier 1 阈值 2/2，本周期合入 layout.md PL-1.4（新增「容量驱动 CH 选择」bullet，含 2D 与 1D 两套记账形态、`BL`/`CH` 联合取档、两条纪律）；front-matter 的 origin_task/toolchain/dtype/device 同步扩展为多证形态。与 VP-2026-0145（设计盘点两漏点）/ VP-2026-0146（退化路径容量）同族互补。
 
+## VP-2026-0159
+- type: D
+- title: 双输出池化的源语义三要素（torch 2.9.0 CPU 实测）——`indices` = H×W 平面行主序扁平下标（非二维坐标）／并列取首个命中／窗口含 NaN → 值 NaN + 索引取最后命中的 NaN／`{+inf,-inf}` 同窗 → 值 `+inf`
+- evidence:
+  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 1：`DESIGN.md` §0.1 实测表（12 行 torch 2.9.0 CPU 实测）+ §1.6.1；同目录 `RETROSPECTIVE.md` Stage 1 Value Point Proposals 第二行（任务工作区，未上库，provenance 允许失效）
+  - 消费侧实证：`examples/TileOPs/tests/ops/test_pool.py` 用例 `test_adaptive_max_pool2d_indices_nan_window`（NaN 窗 → 值 NaN + last-NaN 索引）+ 单算子 report `run.json`（本算子 rollup 7/7、`avg_max_abs_err=0.0`、int64 索引 `torch.equal` 精确）
+  - 交叉引用：queue VP-2026-0125（argreduce 边界语义三基准分野：torch-NPU ±0.0 全序 / NPU reduce 传播 NaN → 哨兵 2^30）——本条补池化索引域的三要素
+- repro: repro-missing（torch CPU 语义基准脚本待同族池化/argreduce 任务回填；任务内复现命令 = §0.1 表内 12 行 `adaptive_max_pool2d(..., return_indices=True)` 逐行对照）
+- toolchain_stamp: torch 2.9.0+cpu（语义基准）+ tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 条目 TRAP-pool-index-contract-dual-output（golden 基准选择类，置于 TRAP-argreduce-edge-semantics 邻位并互链）：带索引池化（`return_indices=True`）的源语义三要素——① **`indices` = H×W 平面行主序扁平下标 `ih*W_in + iw`**（int64，**非** `(ih,iw)` 二维坐标）；② 值并列时取**首个**命中；③ 窗口含 NaN → 值 NaN 且索引取**最后命中的 NaN**；④ `{+inf,-inf}` 同窗 → 值 `+inf` 且索引取 `+inf` 位的扁平下标。与 torch-NPU 设备 argmax 的 ±0.0 可区分全序、以及 NPU 硬件 reduce 的 NaN 传播（掩码匹配全失败 → 哨兵 2^30）三方语义各不相同：跨设备 golden 对齐须逐个实测记录，不得统一假设（三方分野详见 VP-2026-0125）。实测依据：12 行 torch 2.9.0 CPU 表 + 集成侧 NaN 窗用例。
+- status: merged
+- confirmations: 2/2
+- confirmed_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14（不同任务、不同算子：双输出 1D 变体的索引契约四要素——索引=沿 L 轴位置 iw、tie 取首个、NaN 取最后命中、前 padding 全 -inf 窗取首个有效元素，+ 空窗口契约 (-inf,0)）
+- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z 2026-10-14
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证（pool 族双输出 1D 变体，不同任务/不同算子）成立后合入 traps-runtime.md **TRAP-pool-index-contract-dual-output**——条目把两证并列（2D 行主序扁平索引 + 1D 单轴位置索引），并补 1D 侧两条边界域（前 padding 全 -inf 窗的索引 = 首个有效元素；空窗口契约 (-inf, 0) 且该域 torch 返回越界索引不可作 oracle）。缺知识域 repro 维持 `repro-missing`（与 VP-2026-0173 合入先例一致）。
+
+
+## VP-2026-0160
+- type: D
+- title: 索引归约的极值方向判据——「顺序条件覆写 → 可交换归约」改写中 first-hit（严格 `>` 首写生效）与 last-NaN（无条件覆写末写生效）都取**破纪录集合扁平最大值**（`max`，非 `min`）；误用 `min` 静默产出「窗口内首个局部峰值」索引；D-1 用例须含「多个严格递增破纪录元素」的窗口
+- evidence:
+  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z Stage 1：`DESIGN.md` §1.6.1 N2/N3（v0 `vmin` → v1 `vselect(gt, fv, -1)` + `vmax`）+ §1.6.2；`REVIEW.md#问题 1`（first-hit 次序阻塞项）；`verify_equiv.py` N3 首轮 20426 mismatch → 修正后 340 例全 `EQUIV_PASS`（任务工作区，未上库）
+  - 用例形态实证（同任务 `verify_equiv.py`）：初版 `vmin` 下 `rand` 组（如 `(1,4,11,13)→6,6`）**123/144 索引错**，而 `all_equal` / `zeros` / `all_neg_inf` 形态全过——单靠这些退化形态无法暴露极值方向错误
+- repro: repro-missing（知识域最小 repro 待同族 argmax/池化任务回填：把候选式改回 `torch.minimum` 即复现方向错误，数行 torch CPU 脚本可验证）
+- toolchain_stamp: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2 + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 条目 TRAP-index-reduce-extremum-direction（语义陷阱类，与 VP-2026-0125/0131 邻位互链）：把「顺序条件覆写 / 记录」改写为可交换归约时，极值方向由源的**写入语义**决定——**首写生效**（严格 `>`，tie 取首）⟹ 取「破纪录集合扁平**最大**值」（`vselect(gt, flat_idx, -1)` + `vmax`）；**末写生效**（无条件覆写，如 NaN 分支）⟹ 取「NaN 位置集合扁平**最大**值」。两者都是 `max`；误取 `min`（"第一个破纪录元素"）得到窗口内首个局部峰值的索引——静默错值、无报错，且 values 侧可能同时正确。D-1 用例形态要求：必须包含「多个严格递增破纪录元素」的窗口（`rand` 在 `H*W≫1` 的窗口）；`all_equal` / `zeros` / `all_neg_inf` 形态在错误方向下也可能全过（实测 123/144 错 vs 退化形态全过）。实测：v0 `vmin` 首轮 20426 mismatch → v1 `max` 后 340 例全 `EQUIV_PASS`。
+- status: merged
+- confirmations: 2/2
+- confirmed_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14（不同任务、不同算子：1D 两遍法——acc 定稿后由等式集合取 min + BIG 哨兵，N2N3 8 配置 × 6 kind × 3 dtype 全 EQUIV_PASS、N2N3-ord 误形态 39/72 检出）
+- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z 2026-10-14
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证成立后合入 traps-runtime.md **TRAP-index-reduce-extremum-direction**——第二证补齐「两遍法（累加器定稿后等式集合取 min）」等价形态，并把**候选集口径**写入条目：单遍「破纪录集合取位置最大值」与两遍「等式集合取位置最小值」数值等价但候选集不同，判据表述须绑定候选集（混搭即错）——消除后续设计师把 `vmin` 一律当错误方向的误读风险。缺知识域 repro 维持 `repro-missing`。
+
+
+## VP-2026-0175
+- type: P
+- title: 纯选择/带宽受限算子的 roofline Ratio 判读口径——FLOPs 记账口径下 Ratio 只反映比较密度（窗口池化 12.1–14.3% / 自适应 2.3–7.8%），性能判据应改用带宽/流量达成率（实测已达 fabric 上限 1.75 TB/s）
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5：单算子 report 本算子 rollup 22/22 + 9 msprof case 全有效；per-op Ratio 区间 **12.11–14.25%**、带宽 **1.75 TB/s**（≈ CONST-fabric-bw ≥1.73 TB/s 聚合上限）——算子带宽受限而 Ratio 低（任务工作区 report `20261014_072101_015168_MaxPool2dFwdOp/run.json`，未上库，provenance 允许失效）
+  - 同族量级对照（不同任务）：adaptive_avg_pool2d Ratio 2.30/3.81/2.35%、adaptive_max_pool2d 5.38/7.77/4.69%、adaptive_max_pool2d_with_indices 2.54/4.57/2.56%——池化族 Ratio 随窗口内**比较/归约 op 密度**变化（窗口池化 k3/k2 高于自适应 bin），而非随利用率变化
+  - 交叉引用：queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数核对）；pattern-library CONST-fabric-bw / CONST-vector-launch-overhead
+- repro: repro-missing（需 msprof + 目标算子；判读口径 = 同 workload 并读 Ratio 与带宽侧（GM/L2 条目）——带宽近 fabric 上限而 Ratio 低即判「带宽受限、Ratio 不作目标」）
+- toolchain_stamp: CANN 9.0.0 msprof + Ascend910B3 / 2026-10-14（采数侧 tilelang 0.1.2+0d3950aa）
+- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
+- delta: |
+    add 判读口径小节（置于 captured_op 追溯要求段之后，与 VP-2026-0081 的采数管线规则互补）：**纯选择 / 带宽受限算子的 Ratio 判读**——`Ratio = Perf/Computility`、`Perf = msprof 计数 FLOPs / Task Duration`，故对以选择/搬运为主（max/min/argmax/池化类，无累加矩阵乘）的算子，Ratio 反映的是**比较/归约 op 的记账密度**而非硬件利用率：实测池化族 Ratio 2.3–14.3%（窗口池化 k3/k2 高于自适应 bin），而同 workload 带宽已到 **1.75 TB/s ≈ fabric 聚合上限（CONST-fabric-bw）**——即「Ratio 低」在这里不构成优化空间信号。判读动作：① 先读 GM/L2 带宽条目核对是否近 fabric 上限（是 → 带宽受限，Ratio 不作目标）；② 只有计算受限（Cube/矩阵乘类）才把 Ratio 当硬目标；③ 给带宽受限算子立项时用**流量/带宽达成率**作判据，避免为抬 Ratio 做无意义的 op 密度操作（对照 VP-2026-0081 的采数口径三条）。
+- status: merged
+- confirmations: 2/2
+- confirmed_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14（不同任务、不同算子：非 smoke 3 例 Ratio 3.404/5.699/4.151%，`bandwidth_tb_s` 均 1.750 ≈ fabric 上限；benchmark 36/36、msprof_case_count=24、invalid=0）
+- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证（pool 族双输出 1D 变体，Ratio 低而带宽贴 fabric 上限）成立后合入 `.agents/skills/tilelang-op-optimize/references/profile-collection.md` **§4.1 纯选择/带宽受限算子的 Ratio 判读**（含首证 2D 窗口池化 12.11–14.25% 与自适应池化 2.3–7.8% 的密度对照、判读动作三条、CONST-fabric-bw 互链）。
+
+
+## VP-2026-0180
+- type: P
+- title: 1D / 长空间轴窗口池化的必需结构——「输出块 BL + 连续 span 载入 + 起点钳制」（2D 的整轴驻留结论不可平移）；BL 取容量允许最大值（halo 重读随 BL 下降）；单空间轴无「第二轴判据外提」；三类尾块
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261014T082309Z Stage 1：`examples/max_pool1d/_max_pool1d_kernel/DESIGN.md#§0.6 R1/R3` + `#§1.6.1 C1` + `#§4.5` + `#§5.2`（长轴分块判定式与钳制载入形态；任务工作区，未上库，provenance 允许失效）
+  - 同任务实现 + 机器断言：`_max_pool1d_kernel.py` `_span/_choose_bl/_choose_ch_bl/_plan`——`span=(BL−1)·s+(k−1)·d+1`、`LSPAN=min(span, L_in)`、`s0=max(0,min(base, L_in−LSPAN))`、读出下标 `j=iw−s0`、输出块尾 `BL_real=min(BL, L_out−ow0)`、`BL ≤ min(L_out, 32)` 由容量不等式取档；`verify_equiv.py` C1 组（`BL∈{4,8,16}` × 7 配置 × 3 dtype 逐 lane 断言 `iw−s0 ∈ [0,LSPAN)`，117 case-group 全 PASS）
+  - 同任务 RETROSPECTIVE Stage 1 Transferable Lessons：2D→1D 三处结论不可平移（整轴驻留 → 必须分块；守卫外提 → 1D 不适用；`BH=1` 最优 → 1D 取最大 `BL`）；BL 方向数据点：ecg `k5s2p2d2` BL=31 ≈1.11× GM 读 vs BL=1 ≈4.5×
+  - 交叉引用：layout.md PL-1.4（容量驱动 CH 取档，本任务第三数据点已合入）/ PL-1.22 ⑥（守卫外提的「≥2 空间轴」前提）；queue VP-2026-0172（退化特化条件——同族互补，已合入）
+- repro: repro-missing（结构形态 + 设计期机器断言；知识域最小 repro 待同族任务回填）
+  - 〔provenance，允许失效〕任务内复现条件：跑 `verify_equiv.py` 的 C1 组（`BL∈{4,8,16}` × 7 配置 × 3 dtype 逐 lane 断言 `iw−s0 ∈ [0,LSPAN)`）——任务工作区脚本，不随交付上库
+- toolchain_stamp: tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9，dev root build）+ torch 2.9.0 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md（ALG-pooling）
+- delta: |
+    update ALG-pooling 追加「窗口池化域的必需空间分块形态（长轴 / 1D）」段（与已有「几何特化路径模式集」「窗口池化域退化特化条件」并列）：
+    ① **判定式**：空间轴长 × CH × 元素宽度 × 膨胀系数 > UB 容量（192 KiB 档）⇒ 必须沿该轴分块，且分块后读的是**连续 span**（非逐元素 gather）——2D 的 `W_in ≤ 112` 整行驻留结论不可外推（1D `L_in` 可达 4096）；
+    ② **钳制载入形态**（保证恒在界内 + 长度静态）：`span=(BL−1)·s+(k−1)·d+1`、`LSPAN=min(span, L_in)`、`s0=max(0, min(base, L_in−LSPAN))`、读出下标 `j=iw−s0`；守卫 `0<=iw<L_in` 与「缓冲下标 ∈ [0,LSPAN)」是等价式，可写成可执行断言（逐 lane 验下标落界）；
+    ③ **BL 取容量允许的最大值**：halo 重读随 BL 下降（`LSPAN/(BL·sW) → 1`；ecg 实测 BL=31 ≈1.11× GM 读 vs BL=1 ≈4.5×），与 2D 的 `BH=1` 最优方向相反（2D 整行已驻留，BH>1 只增容量）；
+    ④ **轴数前提清单**：整轴驻留 / 守卫外提 / `BH=1` 最优三处 2D 结论均要求 ≥2 个空间轴——同族迁移须逐项核对「该结论依赖几个空间轴 / 轴长上限多少」；
+    ⑤ **尾块三类**：任务尾块（`uid < num_logical`）、通道尾块（`real_c = min(CH, C−cb·CH)`）、输出块尾（`BL_real = min(BL, L_out−ow0)`；1D 独有，2D 因整行驻留而无）。
+- status: merged
+- confirmations: 2/2
+- confirmed_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14（不同任务、不同算子：双输出（argmax 索引）1D 变体复现同一 `span/LSPAN/s0/j` 形态与三类尾块，C1 组 90 结构检查逐 lane 验下标落界）
+- created_by: task max_pool1d-_max_pool1d_kernel-20261014T082309Z 2026-10-14
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证（同一 1D 长轴结构形态在**输出个数不同的变体**上复现）成立后合入 `.agents/skills/tilelang-op-design/references/algorithm-candidates.md` ALG-pooling **「窗口池化域的必需空间分块形态（长轴 / 1D）」**段（判定式 / 钳制载入形态 / `BL` 取最大 / **访存削减正确口径**（吸收本任务 C1 更正：非「读次数降 k_W 倍」）/ 轴数前提清单 / 尾块三类）。

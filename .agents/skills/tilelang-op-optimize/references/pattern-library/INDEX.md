@@ -86,7 +86,7 @@
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
 | TRAP-vcast-shape-and-gm-source | `T.vcast` 形状须一致（无 broadcast/reshape）+ 源须为 UB（GM 源 BiShengHIR pipeline 失败）；伴随：runtime let-bound 标量可作 vmul src2 | verified |
 | TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro） | verified |
-| TRAP-npuir-ref-backend-golden-capability | NPU 参考后端（torch_npu）`F.max_pool*` 仅支持 `dilation==1`（否则 `ref_program` 内抛 `AclNN_Parameter_Error`、算子在执行前失败）；纯选择类算子可回退 CPU golden（逐位一致、`atol=rtol=0` 保持） | verified |
+| TRAP-npuir-ref-backend-golden-capability | NPU 参考后端（torch_npu）两形态能力缺口：`dilation!=1` 抛 `AclNN_Parameter_Error`（op 未执行）+ `return_indices=True` 的 indices **静默损坏**（int8 mask buffer，全 dilation）；纯选择类算子回退 CPU golden 逐位一致 | verified |
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
 | TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
@@ -105,6 +105,9 @@
 | TRAP-L1-band-dst-tail-overrun | L1 band 组装 dst 列区间须尾块裁剪（越界写依 L1 布局触发——bf16 必现 fp16 靠运气；分支门禁须含 bf16×非整除 shape） | verified |
 | TRAP-DEVMODE-PERSIST-GEMM | Developer+persistent+gemm 混排运行时崩溃（unaligned UUB）；Expert 同结构正常（双模式对照 repro） | verified |
 | TRAP-BENCH-CONFIG-CALIBRATION | 采数 harness 默认配置 ≠ kernel TUNED 交付配置 → 续跑场景 +19~21% 假回退（先做双配置探针再谈设备漂移；harness 默认须从 TUNED 常量解析） | verified |
+| TRAP-torch-oracle-maxpool1d-empty-window | 空窗口池化 regime（`d≥2 ∧ p>0`）torch 索引越界、源给 `(-inf,0)`、哨兵给 `L_in` 三方互异——该域 torch 不可作 oracle（含纯 torch repro） | verified |
+| TRAP-pool-index-contract-dual-output | 带索引池化源语义契约：索引 = 空间域展平位置（2D 扁平 / 1D 单轴）、tie 取首个、NaN 取最后命中、padding 全 `-inf` 窗取首个有效元素 | verified |
+| TRAP-index-reduce-extremum-direction | 索引归约极值方向由「写入语义 + 候选集」决定——单遍破纪录集取 max / 两遍等式集取 min，混搭即静默错值 | verified |
 
 ### constants.md — 硬件常数表（D-2，设计期 roofline 口径）
 
@@ -151,6 +154,7 @@
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
+| CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 
