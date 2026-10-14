@@ -162,8 +162,8 @@ apis: []
 dtype: []
 device: 910B2C, 910B3
 status: verified
-origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260907T115424Z / adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z（跨型号数据点：910B3 = 20）
-toolchain: 2026-09 build；910B3 实查 tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 / 2026-10-13
+origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260907T115424Z / adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z（跨型号数据点：910B3 = 20）/ argmin-_argreduce_kernel-20261014T151121Z（910B3 第二数据点 + `aivector_core_num` 直查入口）
+toolchain: 2026-09 build；910B3 实查 tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 / 2026-10-13；910B3 第二数据点 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 / 2026-10-14
 source: PL-1.7-expert-persistent-boundary
 repro: none
 ---
@@ -173,6 +173,8 @@ repro: none
 persistent 结构按 24 核设计（logical tasks = ceildiv(S,bm)·H·B；wall-rows = ceil(ceildiv(S,bm)/24)·bm——bm=44 使 S=1024/2048/4096 得 44/88/176 行）。实查命令：`NPUUtils.get().get_aicore_num()`（设计期分核三要素之一，禁止假设值）。
 
 **跨型号数据点（adaptive_avg_pool2d 迁移 2026-10-13，tilelang 417dae99 + CANN 9.0.0，设备 `npu-smi` 显示 910B3）**：`NPUUtils.get().get_aicore_num()` 实查 = **20**（底层 `rtGetAiCoreCount`，`tilelang/utils/npu_utils.cpp:127`），纯 Vector 算子核数翻倍 = **40**——与本条 910B2C 的 24（翻倍 48）不同。核数常数绑定设备型号：跨型号复用本值会得到错误核数（29% 偏差级），实查入口的另一约束是须在项目 venv（如 `/workspace/venv/bin/python`）下执行——系统 `python3` 缺 `torch`/`tqdm` 会使 `import tilelang` 失败而误报为「环境无 tilelang 运行时」。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/DESIGN.md#§5.5`。
+
+**910B3 第二数据点（argmin 迁移 2026-10-14，tilelang ac0522ed + CANN 9.0.0）**：`AscendArch()` 直查三值——`get_aicore_num()` = **20**、`AscendArch().aivector_core_num` = **40**、`ub_cap` = **196608 B**（=192 KB，与 CONST-capacity 的 910B2C 名义值同）；实查入口 `python -c "from tilelang.utils.npu_arch import AscendArch; a=AscendArch(); print(a.aivector_core_num, a.ub_cap)"`（项目 venv 内执行）。**纯 Vector 核数直接读 `aivector_core_num`，无需手算 `get_aicore_num()×2`**——两者在 910B3 上互证一致（40 = 20×2），直查口径少一次心算（分核三要素的核数项）。溯源（任务工作区，未上库）：`examples/argmin/_argreduce_kernel/DESIGN.md#§0 实查表/§5.5`。
 
 ---
 id: CONST-arange-scalar-materialize

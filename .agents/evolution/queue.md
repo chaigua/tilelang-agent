@@ -45,6 +45,8 @@ decided_by: evolver / human / -   # 裁决者
 
 > **条目迁移（2026-10-14 蒸馏，max_pool1d 1D 窗口池化迁移）**：VP-2026-0172（窗口池化退化特化充分条件）/ VP-2026-0173（NPU 参考后端 golden 能力缺口）/ VP-2026-0174（容量驱动 CH 选择）第二证达标（三证均来自 task `max_pool1d-_max_pool1d_kernel-20261014T082309Z`，不同任务/不同算子/新工具链 417dae9），已分别合入 `algorithm-candidates.md` ALG-pooling / `pattern-library/traps-runtime.md` TRAP-npuir-ref-backend-golden-capability / `pattern-library/layout.md` PL-1.4-tiling-heuristic，完整记录移至下方 `## Decided` 归档区。
 
+> **条目迁移（2026-10-14 蒸馏，argmin 共享 ArgreduceKernel 迁移）**：VP-2026-0125（argreduce 边界语义三基准分野）第二证达标（第二证来自 task `argmin-_argreduce_kernel-20261014T151121Z`，不同任务/算子/设备 910B3+CANN 9.0.0）→ 合入 `pattern-library/traps-runtime.md` TRAP-argreduce-edge-semantics；VP-2026-0128（TileOPs reduce 族 pad 契约）第二证达标（同上任务）→ 合入 `algorithm-candidates.md` ALG-reduction R4 附注。完整记录移至下方 `## Decided` 归档区。
+
 ## VP-2026-0004
 
 - type: P
@@ -784,22 +786,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 提案源头（Stage 2 复盘）自标「单次观察，合入前需第二次隔离证据」——本条即按该口径入队等待。
 
-## VP-2026-0125
-- type: D
-- title: argreduce 边界语义三基准分野——torch-NPU 设备 argmax/argmin 对 ±0.0 用可区分全序（vs torch-CPU IEEE 相等首现）；NPU reduce 传播 NaN → 掩码匹配式输出哨兵 2^30（vs torch 首 NaN 索引）
-- evidence:
-  - task argmax-_argreduce_kernel-20260924T031005Z Stage 1：探针实测（DESIGN.md §9.2-R1/R2）——`[0,-0,0]`→npu argmax=0/argmin=1、`[-0,0,-0]`→argmax=1/argmin=0，CPU 全 0（三 dtype 一致复现）；NaN 行 4 位形：NPU reduce 传播 NaN 使掩码匹配全失败 → 输出哨兵 2^30，torch 返首 NaN 索引；±inf 精确
-- repro: repro-missing（知识域最小 repro 待同族任务回填；±0.0 复现 = python3 -c "import torch,torch_npu; ..." 对照 CPU/NPU——provenance 允许失效）
-- toolchain_stamp: torch 2.x npu + CPU 对照 + tilelang 0.1.2 dev root build 2026-09-24 + CANN 8.5.0 / 2026-09-24
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
-- delta: |
-    add 条目 TRAP-argreduce-edge-semantics（golden 基准选择类）：① torch-NPU 设备 argmax/argmin 对 ±0.0 用**可区分全序**（argmax 偏好 +0.0、argmin 偏好 −0.0），与 torch-CPU（IEEE 相等取首现）不一致——跨设备 golden 对齐时 ±0.0 混合行是已知分歧点；② NPU 硬件 reduce 传播 NaN，掩码匹配式 argmax（vmax/vcmp 链）在 NaN 输入下全匹配失败输出哨兵 2^30，torch 返首 NaN 索引——含 NaN 的负载须在 L2/边界用例记录行为差（记录不断言崩溃），golden 选择与容差设计据此分野（torch-CPU golden / torch-NPU 设备实现 / 硬件 reduce 语义三方各不相同，设计期逐个实测记录比统一假设更诚实）。
-- status: pending
-- confirmations: 1/2
-- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
-- decided_by: -
-- decided_note: -
-
 ## VP-2026-0126
 - type: D
 - title: multitile bm>1 组合触发编译器 SIGSEGV（触发矩阵：bm=1 任意 tile ✓ / bm>1 单 tile ✓ / bm>1 多 tile ✗）——前次任务 repro 被清理后靠 pyc 考古恢复；CG-2026-0014 互链
@@ -815,24 +801,6 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
 - decided_by: -
 - decided_note: 与 VP-2026-0141（scaffolder 清理知识保全）联动：本条是清理致知识流失的实证案例。
-
-## VP-2026-0128
-- type: P
-- title: TileOPs reduce 族 Op 层 pad 契约与 host pad 消除——kernel 声明宽度须等于 Op 层 padded 宽度（错位症状：行 0 对、行≥1 全错不报错）；高杠杆项 = `_kernel_handles_padding=True` + kernel 原始 N 契约（小 N 负载最高 64× 流量改善）；argmin 共享 kernel 时 `_pad_value` 须 +inf
-- evidence:
-  - task argmax-_argreduce_kernel-20260924T031005Z Stage 5：integration_log.md attempt-1（初次 report 17 failed 与 N_padded≠N 用例 100% 重合；最小复现：声明 (8,300) 喂 (8,300) 全对、Op 层 pad 到 (8,512) 后行 ≥1 全错——步长错位）；修复 = forward/__init__ 传 N_padded，42/42 通过
-  - host pad 消除证据：tileops/ops/reduction/reduce.py 模块注释（"until their kernels are converted"——仓库既定方向）+ DESIGN.md §0.6-R3/§5.5 + 前次任务 perf_opt/logs（3d 负载 ~195–204µs 主因 host pad，262KB/4KB 流量比）；Stage 5 集成 bench 对照：padded 路径 bm=32@N_padded=256 = 5145µs vs standalone 原始 N narrow 路径 12.5µs
-  - argmin 方向性：argmax.py wrapper __init__ 注释 + integration_log 遗留说明（-inf pad 永不赢 argmax、全 -inf 行 kernel 与 torch 同返 0；argmin 必须 +inf）
-- repro: repro-missing（集成契约需 TileOPs 环境；错位最小复现 = 构造 (8,300) fp16 输入，声明 (8,300) + Op 层 pad (8,512) 喂入 → 行≥1 错位——provenance 允许失效；知识域锚点 = cases.md CASE-argmax-argreduce-integration 已 Tier 0 合入）
-- toolchain_stamp: tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5 / 2026-09-28
-- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md
-- delta: |
-    update ALG-reduction 行 R4 追加注记：**Op 层 pad 契约**——TileOPs reduce 族 Op 层默认把输入 pad 到 align_up(N,256)（`_ReduceOpBase._prepare_input`，`_kernel_handles_padding=False` 时）；kernel jit 声明宽度须取 N_padded（raw-N 契约与 F.pad 冲突症状：行 0 正确、行 ≥1 全错且不报错）；**迁移高杠杆项** = 翻转 `_kernel_handles_padding=True` + kernel 接原始 N（规约单位元 padding 语义上不改变结果），小 N/非对齐 N 的 dim=0/中间维负载最高 64× 流量改善（harness reduce.py 注释明示为仓库既定方向）；op_kind 涉及 min/max 的共享 kernel 须核对 `_pad_value` 方向性（argmax −inf 安全 / argmin 必须 +inf）。kb_links 补 CASE-argmax-argreduce-integration。
-- status: pending
-- confirmations: 1/2
-- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
-- decided_by: -
-- decided_note: 与 VP-2026-0134（design SKILL 集成前置核对）为同一发现的知识侧/流程侧两 Tier 拆分。
 
 ## VP-2026-0129
 - type: P
@@ -2513,6 +2481,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z：op 级 RETROSPECTIVE.md Stage 5——wrapper 脚手架 `default_config`（baseline 启发式硬编码 block_n=64/num_stages=3）在 perf_opt 激活后仍显式传参，覆盖调优版 kernel 内嵌 `TUNED_DEFAULT_CONFIG(block_n=128/num_stages=2)`（custom_op 显式传参优先级更高），Stage 4 tuned config 集成态不生效；integration_log.md「Bench 观察项 #2」（bench 输出 config 与 opt_log §final 不一致）+ 工厂签名核对段（`diff <(sed -n '/^def .../,/^):/p' ...)` 输出 SIGNATURE_IDENTICAL——签名逐参一致使 wrapper 胶水零改动完成切换）
   - 〔2026-09-28 第二证（不同任务，reduction 族，wrapper 侧 GPU 启发式亚型），task argmax-_argreduce_kernel-20260924T031005Z〕Stage 5 集成：wrapper `default_config` 沿用 GPU 时代 `SHARED_MEMORY_BUDGET_BYTES=49152` smem 启发式选 bm=4，kernel 探针校准阶梯 `_select_config` 给 bm=2（含 min(block_m,M) 钳制与窄 N 预算减半，外部启发式均不掌握）——bm=4×4096 直接 `ub overflow, requires 2097408 bits while 1572864 bits available`；修复 = `default_config` 转调 `_select_config(self.M, self.N_padded, self.dtype_str)`，同一 report 42/42 通过（修复前后 run：20260928_024504 vs 20260928_030100）。诊断指纹：`ub overflow, requires N bits` 报文先查「谁传的 block_m、是否经 kernel 校准」。出处：examples/TileOPs/tileops/kernels/reduction/argmax/argmax_kernel/integration_log.md#attempt-1 + op 级 RETROSPECTIVE.md Stage 5 VP 行；工具侧联动见 VP-2026-0140（integrate_kernel.py 自动搬运 `_select_config` 成对 import——本次手工补行，翻转切换块时易漏翻）
+  - 〔2026-10-14 第三现（不同任务，reduction 族同 kernel，跨工具链/跨设备），task argmin-_argreduce_kernel-20261014T151121Z〕Stage 5 首跑 report 失败 40/42（2 失败用例 100% 落 N_padded=4096：fp16 `ub overflow, requires 2359808 bits while 1572864 bits available` / bf16 `2361856 bits`）+ lm-head `[4,102400]` 硬 `ValueError`（single row exceeds 49152-byte budget，`49152 // 204800 == 0`）——同一根因（wrapper 继承 GPU 48 KiB SMEM 启发式 override 与 kernel `_select_config` 冲突）在**与首证同源的共享 kernel、不同工具链（CANN 9.0.0 / 910B3）**上逐字节复现；修复 = `argmin.py#default_config` 转调 `from .argmin_kernel._argreduce_kernel import _select_config` 取 `["block_m"]`，kernel/tests/manifest/op 零改动，修复后 42/42 + bench 9/9（run `20261014_160246_645105_ArgminFwdOp`）。**新增两条落地细节**：① 集成侧 wrapper 的 `default_config` 委托核对可机制化为「装配后工厂 config 来源检查」——本任务人工定位≈0 成本（指纹直接命中），但**集成脚本未做该核对**（本任务失败由 bench 期暴露）；② 聚合 `argmin_kernel/__init__.py` 只 re-export kernel factory，wrapper 委托须 import 私有模块路径 `.argmin_kernel._argreduce_kernel`（暴露面缺口见 VP-2026-0140 证据链追加）。出处：examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/integration_log.md#attempt-1 + examples/argmin/RETROSPECTIVE.md Stage 5 Skill Flow Issues 首行。
 - repro: 复现条件——任一 perf_opt 激活态集成（wrapper default_config 显式传参 vs kernel TUNED_DEFAULT_CONFIG 内嵌默认的优先级差）
 - toolchain_stamp: tilelang npuir dev build（1990aa9fe4 谱系）+ CANN 8.5.0 / 2026-09-17
 - target_doc: .opencode/agents/tilelang-op-integrator.md
@@ -2562,6 +2531,7 @@ decided_by: evolver / human / -   # 裁决者
   - 有效性验证：3 轮检视均判定 stale 引用处置恰当；Stage 3 重验四项全过（pass_configs 双关闭 / UB 记账 / 旧 verified 结构首编即过 / golden）；Developer fallback 设计直接跳过（VP-2026-0091 知识生效先例）
   - 交叉引用：queue VP-2026-0089（stale 判定口径——如何判 stale；本条为判后如何消费，互补互链）
   - 〔2026-10-14 第五任务证据（不同任务，pool 族）+ 补充第三档「结构免疫登记」，task max_pool2d-_max_pool2d_kernel-20261014T062320Z〕Stage 1 Skill Flow Issues 首行：`kb_stale_check.py` 把大批 `TRAP-*` 条目标为 stale（工具链已推进到 `0d3950aa`），但 skill 未给「stale 陷阱是否仍需逐条重验」的可操作判据；本次按**设计对陷阱结构免疫**处置（不重跑 repro，在 `DESIGN.md` §9.4 第 3 条做**结构免疫登记**）。⇒ 两分法之外需第三档：**无依赖 trap 可只做结构免疫登记**（判据 = 逐条核对设计的每一实现步骤是否消费该陷阱条目；有依赖者仍走硬边界重验）。建议把该第三档并入本条 new 文本（结构性结论继承 / 硬边界列重验清单 / 无依赖 trap 结构免疫登记）
+  - 〔2026-10-14 第六任务证据（不同任务，reduction 族；第三档的实例与反向补充），task argmin-_argreduce_kernel-20261014T151121Z Stage 5〕知识预注入把 `CASE-argmax-argreduce-integration` 标为 **stale**（工具链戳 910B2C/CANN 8.5.0 ≠ 本任务 910B3/CANN 9.0.0），但其缺陷 ② 在本任务新工具链上**逐字节复现**（同报文 `ub overflow, requires … bits`、同 wrapper GPU 启发式 override 根因、同修复形态），integrator 按「共享类相同」直接消费该案例并一次闭环（attempts=1）。⇒ 对**结构性/契约类**案例（CASExx 集成契约、跨引擎结构约定），stale 标记只看工具链戳差异不足以否证其适用性——第三档「结构免疫登记」应明确覆盖**案例索引类条目**（不只 trap 条目）：消费前判据 = 该案例的失效面是否依赖具体工具链（编译器行为/容量/支配性）还是依赖契约与接口形态（多数集成契约属后者）。出处：examples/argmin/RETROSPECTIVE.md Stage 5 Skill Flow Issues 末行 + examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/integration_log.md#attempt-1；本条与 VP-2026-0089（stale 判定口径）/ VP-2026-0116（stamp diff 过滤非源码路径）构成 stale 治理三案。
 - repro: 复现条件——工具链升级后重跑已知先例的迁移/重做任务（本次 4515de8 vs 旧任务 1990aa9fe4：E-1 预注入条目全部标 stale）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+4515de8 / 2026-09-20
 - target_doc: .agents/skills/tilelang-op-design/SKILL.md
@@ -3121,6 +3091,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: integrate_kernel.py gen_kernel_source_block 检测 kernel 模块内被 wrapper 消费的模块级 helper（`_select_config` 等）自动生成成对 baseline/perf_opt import 行——当前只搬运 extracted_functions 名单内的 kernel factory
 - evidence:
   - task argmax-_argreduce_kernel-20260924T031005Z Stage 5：wrapper 胶水需要 `_select_config`（kernel 探针校准阶梯）时只能手工加行；本次手工补 `_select_config` 成对行（tileops/kernels/reduction/argmax/argmax.py import 块）；integrate_kernel.py#gen_kernel_source_block（L275 起）仅按 extracted_functions 名单生成行；perf_opt 采纳翻转时易漏翻（integration_log 遗留说明：「翻转 import 时须同步翻转 _select_config 行」——人工记忆依赖）
+  - 〔2026-10-14 第二现 + 新暴露面（不同任务，reduction 族同 kernel），task argmin-_argreduce_kernel-20261014T151121Z Stage 5〕同一手工加行形态再现：`argmin.py#default_config` 委托 `_select_config` 时须 import 私有模块路径 `from .argmin_kernel._argreduce_kernel import _select_config`——**聚合 `argmin_kernel/__init__.py` 只 re-export kernel factory**（`from ._argreduce_kernel import _argreduce_kernel` / `__all__ = ["_argreduce_kernel"]`），`_select_config` 不在 re-export 面内，因此 wrapper 胶水无法经聚合包公共路径消费该 helper。**新暴露面（建议并入本条生成逻辑）**：`gen_init_py` 在生成/维护聚合 `__init__.py` 时，对被 wrapper 消费的模块级 helper（`_select_config` 等）一并 re-export（或至少生成稳定的公共别名），避免「wrapper 依赖私有模块路径」这一脆弱形态；信息取自集成侧 `argmin_kernel/__init__.py`（集成副本，随交付件存在）+ integration_log.md 等价说明。
 - repro: 复现条件——任一 kernel 模块含模块级 helper 且 wrapper default_config 消费它的集成/翻转场景；重跑 integrate_kernel.py 覆盖集成副本后 helper import 行消失
 - toolchain_stamp: tilelang 0.1.2+ubuntu.22.4.npuir / git 013dbbf5 / 2026-09-28；integrate_kernel.py 现行版本
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
@@ -3774,6 +3745,276 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z 2026-10-14
 - decided_by: -
 - decided_note: 与已合入条目 repro/TRAP-torch-oracle-maxpool1d-empty-window 配套；仅扩形态许可，不放宽「可独立执行 + 解耦」两条硬要求。
+
+## VP-2026-0197
+
+- type: R
+- title: `gate_lint.review_lint` 的 `S2-MIG-DIM0` 用裸子串 `"n/a"` 匹配「维度 0 不适用」——迁移任务必需的源路径连写 `reduction/argreduce.py`（`reductio`+**`n/a`**+`rgreduce`）必然误触，「结论通过」的合规检视报告无法过机械门禁
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 首轮检视：`REVIEW.md` 维度 0 正文两处源路径 `ops/reduction/argreduce.py`（设计侧 Stage 1 与 reviewer 双复盘均登记）；`statectl complete 2` 机械门禁失败（`.task_timeline.jsonl` fail 事件 `stage=2 / verdict=design_revision / ts=2026-10-14T15:34:07Z`），conductor 现场定位 ≈80s 后按 `design_revision` 回退整轮；设计按「`reduction` 目录下 `argreduce.py`」分列改写后同报告门禁 0 failure——证明失败与维度 0 质量无关，纯规则误触
+  - `.agents/tools/gate_lint.py#L463-475`（`dim0_body = _dim_body(text, 0)` → `if "n/a" in dim0_body.replace(" ", "")` 触发 `S2-MIG-DIM0` fail）；机械复现：`python3 -c "import importlib.util as u; s=u.spec_from_file_location('g','.agents/tools/gate_lint.py'); m=u.module_from_spec(s); s.loader.exec_module(m); print(m.review_lint('examples/argmin/_argreduce_kernel/REVIEW.md', True))"`——含 `reduction/argreduce.py` 连写路径的训练样例返回 failure
+  - SESSION_TIMING_ANALYSIS §3 方案 1（量化：P4+P5 ≈900s 中约 460s / 12% 总墙钟为误触导致的空转修订轮，为该任务最大单项可省耗时）
+- repro: 复现命令见 evidence 末行（`gate_lint.review_lint` 可按模块 import 调用）；知识域最小复现 = 构造一份维度 0 含 `ops/reduction/argreduce.py` 连写路径的合规 REVIEW 文本跑 `review_lint(migration=True)`（provenance 允许失效）
+- toolchain_stamp: 流程规则/工具缺陷（无运行时依赖）；发生环境 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/tools/gate_lint.py
+- delta: |
+    动作: update（`S2-MIG-DIM0` 判定式改词边界/占位词形态匹配）
+    定位锚: `            if "n/a" in dim0_body.replace(" ", ""):`
+    old 文本: `if "n/a" in dim0_body.replace(" ", ""):`
+    new 文本: |
+        # 占位词形态匹配（词边界）——裸子串会误触 reduction/arg* 类源路径：
+        # "ops/reduction/argreduce.py" 连写后含 "n/a"（reductio[n/a]rgreduce）。
+        if re.search(r"(?<![A-Za-z0-9_])n/a(?![A-Za-z0-9_])", dim0_body.replace(" ", "")):
+    动机: 迁移任务（reduction 族）的维度 0「源码核对证据」典型写法就是引用 `ops/reduction/argreduce.py`/`reduction/argmax.py` 等路径——裸子串规则使**合规且必须引用源码路径**的报告必然失败，代价是整轮「通过」结论被回退 + 设计空转修订（本任务 ≈460s）。词边界匹配保留「独立占位词 `n/a` 即 fail」的原意，同时放行路径字面。备选（审批时可择一或叠加）：对已知路径前缀（`reduction/`、`ops/`）先做掩码；design/review skill 侧补「维度 0 引用 `reduction/arg*` 路径时分列书写」的写作纪律（本任务 P6 一次即过的规避形态）。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0019/0020/0066（gate lint 误报族）同批；本族已有四起以上实证且本起为「合规报告必然失败」形态，建议审批简报置顶。
+
+## VP-2026-0198
+
+- type: R
+- title: `tilelang-design-review` 写盘 REVIEW.md 后、返回前本地自跑 `gate_lint.review_lint(path, migration=True)`（可按模块 import 调用）——把 `S2-*` 全部机械门禁从 `statectl complete 2` 后移到返回前；同一步骤注明 D-1 重跑的解释器选择
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 第二轮（post-revision recheck）：reviewer 在写盘后主动 `python3 -c "... gate_lint.review_lint('examples/argmin/_argreduce_kernel/REVIEW.md', True)"` → `FAILURES: 0 WARNINGS: 0`，据此确认返回 `REVIEW_COMPLETED`——证明该自检可在 `statectl complete` 之前完成（本轮用一次即过）
+  - 上一轮（同任务 Stage 2 首轮）的对照成本：`complete 2` 才发现 `S2-MIG-DIM0` 误触 → conductor 定位 ≈80s + 整轮 `design_revision` 回退 382s + 重检视 284s（SESSION_TIMING §3 方案 1）
+  - 解释器缺口（同任务 reviewer Stage 2 首轮 Skill Flow Issues）：检视环境默认 `python3`（`/usr/bin/python3`、`/usr/local/python3.12.13/bin/python3`）**无 torch**，`verify_equiv.py` 直接 `ModuleNotFoundError`；改用 `/workspace/venv/bin/python`（torch 2.9.0+cpu）后 exit 0 ALL EQUIV_PASS——解释器选择未成文，试错成本 ≈60–120s（SESSION_TIMING §3 方案 2）
+- repro: 复现命令 = 对任一 `examples/{project}/{op}/REVIEW.md` 跑 `gate_lint.review_lint(path, migration=True)`（含 `n/a` 裸子串/维度缺失/维度 8 证据缺失各形态时返回对应 failure）；解释器探测 = `find / -maxdepth 9 -path '*site-packages/torch'`（provenance 允许失效）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed…（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（Phase 4 段落，写盘之后追加一步提交前自检）
+    定位锚: "### Phase 4：生成 REVIEW.md\n按 §5 模板写入 `examples/{project}/{op}/REVIEW.md`。"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      ### Phase 4：生成 REVIEW.md
+      按 §5 模板写入 `examples/{project}/{op}/REVIEW.md`。
+
+      **提交前本地机械门禁自检（写盘后、返回前，必做）**：`gate_lint.review_lint` 可独立于 `statectl` 直接 import 调用——`python3 -c "import importlib.util as u; s=u.spec_from_file_location('g','.agents/tools/gate_lint.py'); m=u.module_from_spec(s); s.loader.exec_module(m); print(m.review_lint('examples/{project}/{op}/REVIEW.md', True))"`；`FAILURES: 0` 方可返回 `REVIEW_COMPLETED`（迁移任务尤其核对 `S2-MIG-DIM0`/`S2-DIMS`/`S2-DIM8-EVIDENCE`/`S2-PASS-NO-ISSUES`）。该自检把机械门禁失败从 `statectl complete 2` 之后前移到返回之前（2026-10-14 argmin 实证：一次自检即过；对照上一轮直到 `complete 2` 才暴露，整轮回退 ≈750s）。**D-1 重跑的解释器**：本仓默认 `python3` 可能无 torch——先探测（`find / -maxdepth 9 -path '*site-packages/torch'` 或试 `/workspace/venv/bin/python`）并把所选解释器与版本写进 REVIEW.md「机械复核」段，避免脚本 `ModuleNotFoundError` 被误判为「脚本执行失败」（2026-10-14 argmin 实证：`/workspace/venv/bin/python` exit 0 ALL EQUIV_PASS）。
+    动机: 机械门禁的失败信息在 `statectl` 侧，检视 skill 流程不自跑则只能被动等待；本任务第二轮实测证明自检成本≈0、收益为一整轮返工。两条同属「Phase 4 提交前自检」的零成本防线，故合并为一个提案。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0199
+
+- type: R
+- title: `tilelang-design-review` 空真守卫扩「对照组判别力」——`violations=0` 不足以证明等价性脚本有判别力：须核对候选与基线不共用同一实现路径（死赋值/精确单射两类退化对照）且存在能触发差异的用例
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 首轮 + Stage 1 revision v1：`verify_equiv.py` E2 基线 `base_source_argmin` 第 85 行 `m = -((-v).max(...))` 被第 87 行 `m = nan_ignoring_min(v)` 立即覆盖（死赋值）→ 候选与基线在 NaN-free 用例上字面等价；E4 的 fp32 上抛为**精确单射**→ 两组各 264 元素全部比较却恒 PASS——机械输出 `violations=0` 与真实覆盖无法区分（REVIEW.md 维度 8-④ 独立推演确认属**覆盖缺口非结论错误**）
+  - v1 修复形态（判别力自证）：E2 基线显式保留 `-max(-x)`（fmax NaN-忽略、无覆盖）、E4 改为原生 dtype 流水 vs fp32 上抛的真实跨域对照，并加三组故意错误候选（`neg_last_occurrence`/`neg_small_sentinel`/`neg_coarse_pipeline`，`expect_pass=False`）——本轮 reviewer 亲跑输出 `CTL ... -> CONTROL_OK`（`viol>0`）方判脚本有判别力
+  - 交叉引用：现有 Phase 1 第 7 步空真守卫只覆盖「比较元素数 = 0」一种退化 PASS（max_pool2d 2026-10-14 实证）；本条是其形态扩展（**非空真但无判别力**）
+- repro: 复现条件——任一含 `verify_equiv.py` 的迁移/重做任务：检查每组候选与基线是否共用实现路径（如基线存在被后续语句覆盖的死赋值、或两侧经精确单射往返），以及是否存在 `expect_pass=False` 且 `viol>0` 的故意错误候选（provenance 允许失效）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 torch 2.9.0+cpu（脚本侧）+ tilelang 0.1.2+ac0522ed… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（Phase 1 第 7 步「空真守卫核对」条目追加第 ③ 点）
+    定位锚: "   - **空真守卫核对**：逐组核对 `verify_equiv.py` 的每组 case——① 两侧广播后**比较元素数 > 0**；② case 配置确实满足其声明的前置条件（特化条件成立 / 拒绝条件不成立）。"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      - **空真守卫核对**：逐组核对 `verify_equiv.py` 的每组 case——① 两侧广播后**比较元素数 > 0**；② case 配置确实满足其声明的前置条件（特化条件成立 / 拒绝条件不成立）；③ **结构性可证伪性（判别力自证）**——逐组确认候选与基线**结构上可证伪**：不共用同一实现路径（反例形态：基线语句被后续赋值覆盖的死赋值——两者在目标域字面等价；对照两侧经**精确单射**往返如 fp16/bf16→fp32 上抛——恒真）且存在能触发差异的用例；若脚本含 `expect_pass=False` 的故意错误候选，逐组确认其为 `CONTROL_OK`（`viol>0`），否则脚本判别力未自证。`violations=0` 在「非空真但无判别力」的对照上与真实覆盖不可区分（2026-10-14 argmin 实证：E2 死赋值 + E4 精确单射两组各 264 元素全 PASS 而无信息量；v1 以三组故意错误候选 + 真实跨域对照修复）。
+    动机: 空真守卫的现行两条判据都建立在「有比较元素数」上，而本任务暴露的是「有元素、全比较、仍无判别力」的形态——机械 `violations=0` 与「脚本能报出差异」是两件事。补第 ③ 点后可把判别力变成机器断言（`CONTROL_BROKEN` 即脚本失败），检视侧不必靠目检。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0200
+
+- type: R
+- title: `tilelang-op-design` Phase 2 D-1 生成规范补两条硬要求——每组候选与基线不得共用同一实现路径；至少一组故意错误候选须被报出（负向对照，`CONTROL_BROKEN` 即脚本失败）
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 1 first_design 产出的 `verify_equiv.py`：E2 基线死赋值（第 85 行被 87 行覆盖）+ E4 精确单射恒真 → 10 组 case 全 `EQUIV_PASS` 而两组无判别力（REVIEW.md 维度 8-④；Stage 2 首轮复盘 Value Point Proposals 第 2 行）
+  - revision v1 落地形态：`examples/argmin/_argreduce_kernel/verify_equiv.py`（v1：`base_transform_argmin` / `cand_native_argmin` / `cand_upcast_argmin` / `neg_last_occurrence` / `neg_small_sentinel` / `neg_coarse_pipeline`）+ DESIGN.md §1.6.1 结果表（5 组门禁 + 3 组对照）——执行输出 `ALL EQUIV_PASS | controls_ok=True`，exit 0
+  - 解释器约束（同任务）：设计侧机器验证须在带 torch 的解释器下运行（本任务 `/workspace/venv/bin/python`）
+- repro: 复现条件——任一含采纳优化项的迁移设计：生成的 `verify_equiv.py` 须含 ≥1 组 `expect_pass=False` 的错误候选并断言其 `viol>0`；脚本内不得出现「基线语句被后续覆盖」的死赋值或纯精确单射往返对照（provenance 允许失效）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 torch 2.9.0+cpu + tilelang 0.1.2+ac0522ed… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 5 步「等价性机器验证（D-1）」条目追加两条硬要求）
+    定位锚: "   - **内容**：每个采纳项的候选式 vs 基线式数值对照——随机张量 + 角点值（±inf/NaN/subnormal/边界 shape）上以 **fp64 参照**比对（torch CPU 实现，两式均以 fp64 计算后按目标 dtype 舍入对照）；SymPy 符号化简可选（仅限可符号化公式）；"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加两条：
+      - **判别力要求（硬）**：每组候选与基线不得共用同一实现路径——禁用形态包括「基线语句被后续赋值覆盖的死赋值」（两者在 NaN-free 域字面等价）与「对照两侧经精确单射往返」（如 fp16/bf16→fp32 上抛恒真）；本脚本须含**至少一组故意错误候选**（wrong tie-break / 过小哨兵 / 有损粗化域等）且脚本断言其被报出差异（`viol>0`，输出 `CONTROL_OK`；`CONTROL_BROKEN` 即脚本失败）——把「脚本能报出差异」变成机器断言（2026-10-14 argmin 实证：v0 10 组全 PASS 而两组无判别力，v1 补三组负向对照后 `controls_ok=True`）。
+      - **执行解释器**：脚本需 torch CPU（fp64 参照）——运行前定位带 torch 的解释器（本仓常见 `/workspace/venv/bin/python`）并把解释器与版本写入结果表，避免 `ModuleNotFoundError` 被误判为等价性失败。
+    动机: D-1 的价值在于「有判别力的机器验证」；现行规范只约束内容形态（fp64 参照 + 角点值），未约束**对照的可证伪性**——本任务该缺口导致 Stage 2 首轮两组 case 全 PASS 而无信息量（检视侧靠独立推演才发现，属覆盖缺口）。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0201
+
+- type: R
+- title: `tilelang-op-develop` 的 `templates/op_template.py` 用 `out_idx=[-1]`，与迁移 harness 的 `out_idx=[1]` 契约不一致——迁移场景照抄模板会得到错误的多输出切分
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 3 Skill Flow Issues 首行：`.agents/skills/tilelang-op-develop/templates/op_template.py:20` 为 `@tilelang.jit(out_idx=[-1], target="npuir")`，而迁移 harness 的单输出 kernel 契约用 `out_idx=[1]`（本实现 `_argreduce_kernel.py:255,403`；由 wrapper 契约决定，与 GPU 源 `@tilelang.jit(out_idx=[1])` 对齐）
+  - 交叉引用：设计模板传播面缺口家族（同族：queue VP-2026-0158 `compile_flags` 第三现 / VP-2026-0107 golden 内联）
+- repro: 复现条件——迁移场景按 `templates/op_template.py` 抄写 `out_idx=[-1]` 后与 wrapper 多输出契约对照（切分错位）（provenance 允许失效）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-develop/templates/op_template.py
+- delta: |
+    动作: update（`@tilelang.jit` 装饰行后加注释说明两种契约）
+    定位锚: `@tilelang.jit(out_idx=[-1], target="npuir")`
+    old 文本: `@tilelang.jit(out_idx=[-1], target="npuir")`
+    new 文本: |
+      # out_idx 契约：new_op 的多参数签名用 [-1]（最后一个参数为输出）；
+      # 迁移 harness 的单输出 kernel 用 [1]（与 GPU 源 @tilelang.jit(out_idx=[1]) 及
+      # wrapper 契约对齐）——照抄本模板的 [-1] 会得到错误的多输出切分。
+      @tilelang.jit(out_idx=[-1], target="npuir")
+    动机: 模板是 Stage 3 的默认起点，契约差异属「照抄即错」的静默面；一条注释即可消除（2026-10-14 argmin 实证：harness 侧实作用 `out_idx=[1]`）。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0202
+
+- type: R
+- title: AGENTS.md「Keyword to Docs Mapping」的条件操作行落点失真——`docs/Tilelang.language/条件操作/` 下只有 `T.vselect.md`，`if_then_else` 只出现在 `编译器提示操作/T.Parallel.md` 正文，按路由检索会落空并易误判「无文档/无先例」
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 1 Skill Flow Issues 首行（Info-source）：`ls docs/Tilelang.language/条件操作/` → 仅 `T.vselect.md`；`grep -rln if_then_else docs/Tilelang.language/` → 仅 `编译器提示操作/T.Parallel.md`；设计 §3.4 最终只能引 `testing/npuir/parallel_ops/test_if_then_else_cmp_cond.py` 作先例
+  - 现行 AGENTS.md L122-124 把 `if_then_else` 列在「Comparison and selection ops」映射下并指向 `比较操作/` + `条件操作/`
+- repro: 复现命令 = `ls docs/Tilelang.language/条件操作/` + `grep -rln if_then_else docs/Tilelang.language/`（provenance 允许失效）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 2026-10-14（仓库 docs 树现行状态）
+- target_doc: AGENTS.md
+- delta: |
+    动作: update（关键词映射的「条件操作」行加落点注记）
+    定位锚: "- Comparison and selection ops (vcmp/T.min/T.max/if_then_else/select):\n    docs/Tilelang.language/比较操作/\n    docs/Tilelang.language/条件操作/"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      - Comparison and selection ops (vcmp/T.min/T.max/if_then_else/select):
+          docs/Tilelang.language/比较操作/
+          docs/Tilelang.language/条件操作/   # 现仅含 T.vselect.md
+          # if_then_else 的文档落点为 docs/Tilelang.language/编译器提示操作/T.Parallel.md（正文），
+          # 条件操作/ 下无 T.if_then_else.md；按本行检索落空不等于「无文档/无先例」。
+    动机: 按路由检索落空会被误读为「无文档/无先例」，进而影响负向断言与选型（本任务设计只能引测试文件作先例）。注记是零成本修法（如需更彻底，可在 options 下新增 `docs/Tilelang.language/条件操作/T.if_then_else.md`——那属仓库文档面，另行立项）。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0203
+
+- type: R
+- title: `kb_search.py` 缺 device facet 过滤/高亮——陷阱与常数条目绑定设备/工具链戳（910B2C/CANN 8.5.0 vs 910B3/CANN 9.0.0）时，「同设备优先」筛选只能逐条人工判定
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 1 Skill Flow Issues 第二行（Info-source）：设备 Ascend910B3 / CANN 9.0.0 与同族 argmax 任务（910B2C / CANN 8.5.0）不同，argreduce 全陷阱族（§9.1 C-1..C-11）须逐条人工判定「同工具链 vs 待重验」，成本高且易漏（DESIGN.md §0 实查表 vs pattern-library 条目的 `device:`/`toolchain:` 字段；DESIGN §9.1 逐条标注）
+  - 现行 `kb_search.py` 已解析并打印 front-matter `facets`（L264-283）但无按 facet 过滤/加权的入口
+  - 交叉引用：queue VP-2026-0089（stale 判定口径）/ VP-2026-0116（stamp diff 过滤非源码路径）/ VP-2026-0101（stale 消费两分法）——本条补「判 stale 之前先按设备/工具链分域」的检索侧
+- repro: 复现条件——用 `python3 .agents/tools/kb_search.py "<query>" --json` 观察返回条目的 facets 含 device/toolchain 但无法按当前设备过滤（provenance 允许失效）
+- toolchain_stamp: 流程规则/工具增强（无运行时依赖）；证据环境 2026-10-14 蒸馏会话（kb_search.py 现行版本）
+- target_doc: .agents/tools/kb_search.py
+- delta: |
+    动作: update（新增可选参数与输出标注）
+    定位锚: `    ap.add_argument("query", nargs="*", help="search query")`
+    old 文本: （即上述定位锚原文行）
+    new 文本: |
+      `    ap.add_argument("query", nargs="*", help="search query")` 之后新增：
+      `    ap.add_argument("--device", help="filter/rank by device facet (e.g. 910B3)")`
+      `    ap.add_argument("--toolchain", help="filter/rank by toolchain facet substring (e.g. CANN 9.0.0)")`
+      行为：提供时对返回条目按 facets.device / facets.toolchain 子串命中做优先排序（命中前置并标注 `[同设备]`/`[同工具链]`），不提供时维持现状；不改变 bm25 主体与日志格式。
+    动机: 跨设备/跨工具链迁移时，「同设备条目优先、异设备条目待重验」是消费纪律（pattern-library 证伪协议第 2 条）；当前只能靠人眼扫 facets 行逐条判，条目量增长后成本线性上升（本任务 argreduce 陷阱族 11 条逐条判定）。filter/rank 是纯增量、不影响既有检索语义。
+
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: 与 VP-2026-0089/0101/0116（stale 治理三案）互补：判 stale 之前先按 device/toolchain 分域。
+
+## VP-2026-0204
+
+- type: D
+- title: pad 契约（`N_padded = align_up(N,256)`）下 tiled 路径的两条设计事实——静态尾 tile `tail ≡ 0`（不可达，非被覆盖面）；冻结 tiled `tile_n` 预算只在 bm=1 融合候选形态下自洽（显式向量链的 idx 缓冲击穿 64KB）
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 3：`_argreduce_kernel.py:344-347`（`tail = N_padded - num_full*tile_n`）+ `:186-206`（`_pick_tile_n` 自 cap 降至 256 且偏好整除）——实测 tn=5120/4096/2048 均整除 102400/32768/16384，余数列全 0（`L0/L1` 全部 tiled 用例 `tail=0`）；设计 §5.4 的「tiled 静态尾 tile」在本契约下不可达，实现按设计保留该路径（防御性、`tail_w=1` 开销可忽略）但测试无法构造 `tail>0`
+  - `_tiled_slab` 实测（`:130-165`）：fp16 5 / bf16 7 / fp32 4 个 slab 单元，恰计 x_ub/x_work/ext_brc/cand 四类 `(1,tile_n)` 大缓冲，与设计 §5.2 逐值一致；若改走驻留路径的显式 `vbrc→vcmp→vselect` 链，`idx_src`+`idx_j`（2×(1,tile_n) fp32 ≈ 4 slab 单元）直接击穿 64KB 手工预算 ⇒ tiled 候选构造须用 bm=1 融合式（`T.Parallel + T.if_then_else`，无 idx 缓冲）
+  - 复现命令（任务内，provenance 允许失效）：`python3 -c "import importlib.util as u;s=u.spec_from_file_location('k','examples/argmin/_argreduce_kernel/_argreduce_kernel.py');m=u.module_from_spec(s);s.loader.exec_module(m);print([(n,m.align_up(n,256),m.align_up(n,256)%m._pick_tile_n(m.align_up(n,256),d)) for n,d in [(102400,'float16'),(32768,'float16'),(16384,'float32')]])"`（余数列全 0）
+- repro: repro-missing（知识域最小 repro 待同族 reduce 迁移任务回填——判定式与 slab 计数自包含于条目正文；最小形态 = 一组 (N, dtype) 上的「align_up(N,256) % _pick_tile_n(...) == 0」断言 + slab 预算表）
+- toolchain_stamp: tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 条目（tiled 路径预算/可达性族，置于 TRAP-parallel2d-bm-ge2-scalarize 邻域）：**pad 契约下的 tiled 路径设计事实（argmin/argmax 共享 kernel，2026-10-14）**——① **静态尾 tile 不可达**：Op 层 pad 契约使 `N_padded` 恒为 256 倍数，而 `_pick_tile_n` 的候选集含 256 且偏好整除 ⇒ 冻结 `tile_n`（fp16 5120 / bf16 4096 / fp32 2048）下 `tail = N_padded - num_full*tile_n ≡ 0`（102400/32768/16384 三例实测余数 0）——「静态尾 tile」是死代码，不构成需覆盖的回归面（要真尾块须在工厂期强制非整除 `tile_n`）；② **冻结 `tile_n` 预算与候选构造形态耦合**：tiled slab 计数（fp16 5 / bf16 7 / fp32 4 单元）只覆盖 bm=1 融合式的四类 `(1,tile_n)` 大缓冲（x_ub/x_work/ext_brc/cand）；改用驻留路径的显式 `vbrc→vcmp→vselect` 链会新增 `idx_src`+`idx_j`（≈4 slab 单元）并击穿 64KB 手工预算——同族 kernel 复刻该 tiled 路径时，候选构造形态与 slab 预算表须成对引用（与 TRAP-parallel2d-bm-ge2-scalarize 的 bm 形态、CONST-capacity 的膨胀系数联动）。
+
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: D 类但无知识域 repro（判定式自包含于条目正文）→ 按 merge-policy §1 降级 Tier 1 入队；同族 reduce 迁移任务可顺手回填最小 repro。
+
+## VP-2026-0205
+
+- type: D
+- title: `npu_loop_vectorize` 对 `T.Parallel` 内 cast 强制 `rint` 并每次 tiled 编译发警告——依赖 `trunc`/`floor` 的索引构造被静默改成四舍五入（整数域恒等时无害，非整数假设下为静默坏值面）
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 3：编译日志 `src/transform/npu_loop_vectorize.cc:801` 每次 tiled 编译命中——「Parallel cast lowering uses fixed round mode 'rint'; non-default floor/trunc cast expectations are not preserved」（本实现 `T.cast(j,"float32")` 与索引基址 `T.cast((t+1)*tile_n,"float32")` 触发）
+  - 本任务无影响（索引为整数值，`rint` 与 `trunc` 在精确整数域恒等：`j < N_padded ≤ 2^24`、`t*tile_n` 精确）——价值在「该警告的正确解读」：它是固定 lowering 语义，不是可忽略的噪声
+  - 复现命令（任务内，provenance 允许失效）：`python examples/argmin/_argreduce_kernel/_argreduce_kernel.py --level L0`（观察 `npu_loop_vectorize.cc:801` 警告行）
+- repro: repro-missing（知识域最小 repro 待同族任务回填——最小形态 = 一个含 `T.Parallel` 内 `T.cast(float→int)` 且依赖 trunc 语义的探针，比对 rint/trunc 差异域）
+- toolchain_stamp: tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 小条目（Parallel lowering 族，置于 TRAP-parallel2d-bm-ge2-scalarize 之后并互链）：**`T.Parallel` 内的 cast 被 npuir 强制 `rint`**——编译期固定警告（`npu_loop_vectorize.cc:801`：「Parallel cast lowering uses fixed round mode 'rint'; non-default floor/trunc cast expectations are not preserved」）。含义：Parallel 体内的 fp→int / fp 舍入 cast **不保留** `trunc`/`floor` 期望，一律四舍五入。**判别**：索引在精确整数域（`|x| ≤ 2^24` 的整数运算）时 rint 与 trunc 恒等、无影响（argmin 实测）；任何依赖「向零截断/向下取整」语义的浮点派生索引（含负值域、超 2^24、或非整数中间量）在该 lowering 下静默取整方向错误。同族：本警告与 TRAP-vcast-same-dtype-rounds（vcast 同 dtype 退化 rint）同源——npuir 侧 cast/舍入语义的固定性由 lowering 决定而非 call-site。
+
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: D 类无知识域 repro（现象载体为编译警告 + 整数域恒等判别）→ 降级 Tier 1。
+
+## VP-2026-0206
+
+- type: D
+- title: `tileops.reporting.analyzer._is_smoke_record` 把 label 含 "smoke" 的 benchmark 用例从 `run.json#performance.cases` / `report.md` 静默过滤（msprof profile 有效也照样过滤）——数值须引 `benchmark.json`
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 5：passing run `20261014_160246_645105_ArgminFwdOp`——`benchmark.json` 9 条记录（含 3 条 `smoke-argmin [32,256]` fp16/bf16/fp32 = 1.8000/1.8600/1.8800 µs，msprof valid），而 `run.json#performance.cases` 只有 6 条（`summary.benchmark_passed=true`、`invalid_profile_count=0`、`profiler_fallback_count=0`）；`report.md` 同缺——过滤规则见 `tileops/reporting/analyzer.py:27-35,54-56`（`_is_smoke_record`）
+  - 判定命令（provenance 允许失效）：对任一新集成 Op 的 passing run 比对 `benchmark.json` 记录数与 `run.json#performance.cases` 条数（差值 = 被过滤的 smoke 用例数）
+  - 交叉引用：queue VP-2026-0100（report warnings ≠ benchmark 失败——同属「report 判读口径」族）；TRAP-BENCH-CONFIG-CALIBRATION（采数配置口径族）
+- repro: repro-missing（需 TileOPs + 新集成 Op 环境；判定口径自包含于条目——`benchmark.json` 记录数 vs `run.json#performance.cases` 条数）
+- toolchain_stamp: tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 小条目（采数判读族，置于 VP-2026-0100 对应条目邻域并互链）：**report 层对 smoke 标签用例的静默过滤**——`tileops.reporting.analyzer._is_smoke_record` 把任何 label 含 "smoke" 的 benchmark 用例从 `run.json#performance.cases` 与 `report.md` 中剔除，**即使其 msprof profile 有效**（2026-10-14 argmin 实证：`benchmark.json` 9 条含 3 条有效 smoke 记录，`run.json` 仅 6 条）；其数值仍完整保留在 `benchmark.json`。判读动作：小 shape 的校准锚点（smoke）数值取 `benchmark.json`；`benchmark_passed` / `invalid_profile_count` / `profiler_fallback_count` 判定不受该过滤影响（`summary` 字段照常覆盖）。这是 reporting 层约定而非采数失败。
+
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: D 类无知识域 repro（需 TileOPs 环境，判定口径自包含）→ 降级 Tier 1；消费场景在 Stage 5 integrator 侧，若审批倾向并入 integrator known-fixes 可在审批时改路由。
+
+## VP-2026-0207
+
+- type: P
+- title: 等价性脚本的判别力自证法——`violations=0` ≠ 有效验证：负向对照（故意错误候选须 `viol>0`）+ 两类退化对照反例形态（基线死赋值 / 精确单射往返）
+- evidence:
+  - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 首轮认定 + Stage 1 revision v1 修复：反例形态两类（① 基线语句被后续赋值覆盖的死赋值 → 候选与基线字面等价；② 对照两侧经**精确单射**往返如 fp16/bf16→fp32 上抛 → 恒真）；修复配方 = 基线显式保留真实语义（E2 用 `-max(-x)` 的 fmax NaN-忽略，无覆盖）、对照改为真实跨域流水（原生 dtype vs fp32 上抛），并加三组故意错误候选（wrong last-occurrence / 过小哨兵 / 有损粗化域）断言必须被报出（`expect_pass=False` → `CONTROL_OK`）
+  - 实证输出：`ALL EQUIV_PASS | controls_ok=True`，exit 0（v1）；v0 同脚本 10 组全 `EQUIV_PASS` 而两组无判别力（264 元素/组全部比较）
+  - 交叉引用：queue VP-2026-0006（精度失败定征顺序）/ VP-2026-0153（门禁通过≠机制生效——同「机械通过不等于有效」族）
+- repro: 复现条件——任一设计期的 `verify_equiv.py`：检查「候选与基线是否共用实现路径」与「是否存在 `expect_pass=False` 且 `viol>0` 的对照组」（方法形态，无固定脚本）
+- toolchain_stamp: torch 2.9.0+cpu（脚本侧，与 NPU 工具链无关）/ 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/quality-checklist.md
+- delta: |
+    add 条目「等价性脚本的判别力自证（负向对照 + 退化对照反例形态）」：把「脚本能报出差异」从人工目检变成机器断言——① **负向对照**：脚本须含 ≥1 组故意错误候选（错方向 tie-break / 过小哨兵 / 有损粗化域），断言其 `viol>0`（`CONTROL_OK`），否则脚本本身失败（`CONTROL_BROKEN`）；② **两类退化对照反例形态**（均报 PASS 且元素数 > 0，机械输出无区分度）：基线语句被后续赋值覆盖的**死赋值**（候选与基线字面等价）、对照两侧经**精确单射**往返（如 fp16/bf16→fp32 上抛恒真）；③ 正例的判别力只能靠「结构可分」的证据（如等价组真实分歧只在 NaN 语义域出现时，以 NaN 行为 INFO 行佐证两路径可分，而非用 NaN-free 违反数）。判据自包含；与 precision-patterns.md 的「门禁通过≠机制生效」互补（观测量层）。
+
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
+- decided_by: -
+- decided_note: P 类方法条目（判别力自证法）；与 VP-2026-0199（检视侧）/VP-2026-0200（设计侧）为同一发现的三 Tier 拆分（方法本体 P + 两处流程规则 R）——三案合入时互链。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 
@@ -4509,6 +4750,7 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: human
 - decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/tools/design_calc_check.py`（两处解析扩展：① §4.5「按 N 分行的驻留预算表」放行；② §5.5 workload 表格式分核表按 `ceil(M/bm)` 重算并对照声明值）。锚文本两处唯一命中、原行保留、纯增量（+147 行 / 0 删除行）。E-4 预验证 PASS：repro = design_calc_check 自身（合成 DESIGN 两表形态）——控制组 ub_budget=skip / core_split=skip，编辑组 ub_budget=pass（2 项 4.5 KB）/ core_split=pass（w1 8/8、w2 64/64 对照成立）；真实 pool DESIGN 两侧同为 skip（无回归）；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。实现说明：① 在提案文本的识别条件上补「该表存在 B/elem｜字节｜驻留 列」的表头判据（提案原条件仅扫数据行，对「描述符只在表头」的常见形态不生效）；② 采用表头列语义映射实现对照。残留边界（未出提案范围，记 apply 报告 issues）：描述符列缺失时 ① 仍 skip；`_section(text,'5')` 会先命中 §4.5 编号，纯 Vector 设计的 §5.5 表多不可达。
   - 〔2026-10-14 **第八现（修复后仍复发）**，task max_pool1d-_max_pool1d_kernel-20261014T082309Z Stage 2〕本任务 08:16 起运行（晚于本条 apply commit `ddf4255` 08:10），对纯 Vector 1D 设计仍 `ub_budget`/`l0c_budget`/`core_split` 三 skip、仅 `r3_metrics` pass——本次表形态为「单行总计式 UB 预算（`G = CH·LSPAN·(2·eb+9) + BL·CH·(25+2·eb)`，无 `B/elem` 列）」+ 任务维分核，正落在上述**残留边界**（描述符列缺失 / `_section(text,'5')` 先命中 §4.5）。检视侧独立兜底位另立 queue **VP-2026-0184**；本条不重开（merged 终态），复发事实记 stats.md §3。
+  - 〔2026-10-14 **第九现（apply 后仍复发；不同任务，reduction 族第二次）**，task argmin-_argreduce_kernel-20261014T151121Z Stage 2〕本任务 15:25 起运行（晚于 apply commit `ddf4255` 08:10），`design_calc_check` 对 §4.5/§5.5 的 **Markdown 表格式预算表与分核表** 三项全 skip（`ub_budget: skip`〔detail `no per-level buffer tables parsed`〕/ `core_split: skip`〔detail `insufficient parsed dims {}`〕/ `l0c_budget: skip`），仅 `r3_metrics` 生效——与第四现（argmax，reduction 族首现）同形态，reduction 族内第二次；检视侧全部转人工复算并在 REVIEW.md 机械复核段记录（`examples/argmin/_argreduce_kernel/REVIEW.md` 机械复核段 + RETROSPECTIVE.md Stage 2 Skill Flow Issues 第三行）。属「修复覆盖的表形态之外」的复发（本任务 §4.5 为逐 buffer 表 + §5.5 分核表，非 apply 时新增识别的「N 分行驻留表 / workload 表格式分核表」形态）——本条不再重开，复发事实与残留边界一并记 stats.md §3。
 
 ## VP-2026-0020
 - type: R
@@ -4790,3 +5032,44 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task max_pool1d-_max_pool1d_kernel-20261014T082309Z 2026-10-14
 - decided_by: evolver
 - decided_note: 2026-10-14 蒸馏：第二证（同一 1D 长轴结构形态在**输出个数不同的变体**上复现）成立后合入 `.agents/skills/tilelang-op-design/references/algorithm-candidates.md` ALG-pooling **「窗口池化域的必需空间分块形态（长轴 / 1D）」**段（判定式 / 钳制载入形态 / `BL` 取最大 / **访存削减正确口径**（吸收本任务 C1 更正：非「读次数降 k_W 倍」）/ 轴数前提清单 / 尾块三类）。
+
+
+## VP-2026-0125
+
+- type: D
+- title: argreduce 边界语义三基准分野——torch-NPU 设备 argmax/argmin 对 ±0.0 用可区分全序（vs torch-CPU IEEE 相等首现）；NPU reduce 传播 NaN → 掩码匹配式输出哨兵 2^30（vs torch 首 NaN 索引）
+- evidence:
+  - task argmax-_argreduce_kernel-20260924T031005Z Stage 1：探针实测（DESIGN.md §9.2-R1/R2）——`[0,-0,0]`→npu argmax=0/argmin=1、`[-0,0,-0]`→argmax=1/argmin=0，CPU 全 0（三 dtype 一致复现）；NaN 行 4 位形：NPU reduce 传播 NaN 使掩码匹配全失败 → 输出哨兵 2^30，torch 返首 NaN 索引；±inf 精确
+  - 〔2026-10-14 第二证（不同任务/不同算子/不同设备与 CANN；覆盖 ②），task argmin-_argreduce_kernel-20261014T151121Z Stage 3〕`examples/argmin/_argreduce_kernel/_argreduce_kernel.py:927-946`（L2 NaN record）两次独立实测：`kernel=[1073741824, 63, 33, 152]` vs `torch=[100, 63, 33, 152]`、`kernel=[1073741824, 234, 105, 186]` vs `torch=[100, 234, 105, 186]`——首元素恒为哨兵 `2**30 = 1073741824`，证实 `reduce_min` 的 NaN 传播（非 fmin 忽略语义）；同一行同时证明「掩码链 vs torch 首-NaN 索引」结构可分。910B3 / CANN 9.0.0（首证环境为 910B2C / CANN 8.5.0）。① ±0.0 全序在第二证未复测（保持单源）。
+- repro: repro-missing（知识域最小 repro 待同族任务回填；±0.0 复现 = python3 -c "import torch,torch_npu; ..." 对照 CPU/NPU——provenance 允许失效）
+- toolchain_stamp: 首证 torch 2.x npu + CPU 对照 + tilelang 0.1.2 dev root build 2026-09-24 + CANN 8.5.0 + Ascend910B2C / 2026-09-24；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    add 条目 TRAP-argreduce-edge-semantics（golden 基准选择类）：① torch-NPU 设备 argmax/argmin 对 ±0.0 用**可区分全序**（argmax 偏好 +0.0、argmin 偏好 −0.0），与 torch-CPU（IEEE 相等取首现）不一致——跨设备 golden 对齐时 ±0.0 混合行是已知分歧点；② NPU 硬件 reduce 传播 NaN，掩码匹配式 argmax（vmax/vcmp 链）在 NaN 输入下全匹配失败输出哨兵 2^30，torch 返首 NaN 索引——含 NaN 的负载须在 L2/边界用例记录行为差（记录不断言崩溃），golden 选择与容差设计据此分野（torch-CPU golden / torch-NPU 设备实现 / 硬件 reduce 语义三方各不相同，设计期逐个实测记录比统一假设更诚实）。
+- status: merged
+- confirmations: 2/2
+- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
+- confirmed_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14（不同任务 / 不同算子 / 不同设备与 CANN：NaN→哨兵 `2^30` 两次独立实测复现 ②；① ±0.0 全序未复测）
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证来自不同任务（argmin 共享 kernel 迁移，910B3 / CANN 9.0.0），达 Tier 1 阈值 2/2，本周期合入 `pattern-library/traps-runtime.md` 条目 **TRAP-argreduce-edge-semantics**（位于 TRAP-index-reduce-extremum-direction 之后；正文把「判读与处置」并入：`2^30` 恒值列 = 匹配链全失败指纹，须与「匹配链断裂」缺陷指纹区分——本语义行是分野而非缺陷）。合入文本已标注「② 两证、① 单源」，防对 ① 过度泛化。此条目为 `TRAP-pool-index-contract-dual-output` 中「三方分野」段的悬空前向引用（合入后引用闭合）。INDEX.md 同步新增一行。
+
+## VP-2026-0128
+
+- type: P
+- title: TileOPs reduce 族 Op 层 pad 契约与 host pad 消除——kernel 声明宽度须等于 Op 层 padded 宽度（错位症状：行 0 对、行≥1 全错不报错）；高杠杆项 = `_kernel_handles_padding=True` + kernel 原始 N 契约（小 N 负载最高 64× 流量改善）；argmin 共享 kernel 时 `_pad_value` 须 +inf
+- evidence:
+  - task argmax-_argreduce_kernel-20260924T031005Z Stage 5：integration_log.md attempt-1（初次 report 17 failed 与 N_padded≠N 用例 100% 重合；最小复现：声明 (8,300) 喂 (8,300) 全对、Op 层 pad 到 (8,512) 后行 ≥1 全错——步长错位）；修复 = forward/__init__ 传 N_padded，42/42 通过
+  - host pad 消除证据：tileops/ops/reduction/reduce.py 模块注释（"until their kernels are converted"——仓库既定方向）+ DESIGN.md §0.6-R3/§5.5 + 前次任务 perf_opt/logs（3d 负载 ~195–204µs 主因 host pad，262KB/4KB 流量比）；Stage 5 集成 bench 对照：padded 路径 bm=32@N_padded=256 = 5145µs vs standalone 原始 N narrow 路径 12.5µs
+  - argmin 方向性：argmax.py wrapper __init__ 注释 + integration_log 遗留说明（-inf pad 永不赢 argmax、全 -inf 行 kernel 与 torch 同返 0；argmin 必须 +inf）
+  - 〔2026-10-14 第二证（不同任务/不同算子/不同设备），task argmin-_argreduce_kernel-20261014T151121Z Stage 1/3〕`examples/argmin/_argreduce_kernel/DESIGN.md#§0.2` 双契约对照表 + 实读 `examples/TileOPs/tileops/ops/reduction/argmin.py:76-78`（`_pad_value() → +inf`）与 `reduce.py:91,460-472`（默认 `False` + `F.pad`）；**+inf 方向确认**（方向反向 → pad 列在 argmin 中胜出、静默错值）。新增两点：① **pad 契约下的索引中性**（`verify_equiv.py` E5 组 264 行含全 `+inf`/tie/`±inf` 混合 0 违反：实列索引恒 `< N ≤` pad 列索引 ⟹ 全域计算 ≡ 实列计算 ⟹ 无需掩码/尾 tile 特化）；② **高杠杆翻转的负载画像边界**——argmin manifest 以大 N 负载为主、无窄 N 用例时保留 pad 契约（零 Op 层/wrapper 契约改动）优于 raw-N 翻转；同源推论：`N_padded` 恒 256 倍数 + `_pick_tile_n` 候选含 256 且偏好整除 ⟹ tiled 静态尾 tile `tail ≡ 0`（设计 §5.4 的静态尾 tile 在 pad 契约下不可达）。
+- repro: repro-missing（集成契约需 TileOPs 环境；错位最小复现 = 构造 (8,300) fp16 输入，声明 (8,300) + Op 层 pad (8,512) 喂入 → 行≥1 错位——provenance 允许失效；知识域锚点 = cases.md CASE-argmax-argreduce-integration 已 Tier 0 合入）
+- toolchain_stamp: 首证 tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5 / 2026-09-28；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md
+- delta: |
+    update ALG-reduction 行 R4 追加注记：**Op 层 pad 契约**——TileOPs reduce 族 Op 层默认把输入 pad 到 align_up(N,256)（`_ReduceOpBase._prepare_input`，`_kernel_handles_padding=False` 时）；kernel jit 声明宽度须取 N_padded（raw-N 契约与 F.pad 冲突症状：行 0 正确、行 ≥1 全错且不报错）；**迁移高杠杆项** = 翻转 `_kernel_handles_padding=True` + kernel 接原始 N（规约单位元 padding 语义上不改变结果），小 N/非对齐 N 的 dim=0/中间维负载最高 64× 流量改善（harness reduce.py 注释明示为仓库既定方向）；op_kind 涉及 min/max 的共享 kernel 须核对 `_pad_value` 方向性（argmax −inf 安全 / argmin 必须 +inf）。kb_links 补 CASE-argmax-argreduce-integration。
+- status: merged
+- confirmations: 2/2
+- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
+- confirmed_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14（不同任务 / 不同算子 / 不同设备与 CANN：+inf 方向确认 + 索引中性机器验证 + 负载画像边界）
+- decided_by: evolver
+- decided_note: 2026-10-14 蒸馏：第二证来自不同任务（argmin 共享 kernel 迁移初例的同一 pad 契约裁决），达 Tier 1 阈值 2/2，本周期合入 `.agents/skills/tilelang-op-design/references/algorithm-candidates.md` ALG-reduction 行 R4 的 **「R4 附注：TileOPs reduce 族的 Op 层 pad 契约（两证）」**段——按原提案 delta 的四个要点展开（契约与声明宽度 / pad 单位元方向 / **pad 契约下的索引中性**〔第二证新增，机器验证〕/ **高杠杆翻转的边界**〔第二证修正：负载画像决定收益，argmin 无窄 N 负载时保留契约优于翻转〕），front-matter `kb_links` 同步补 CASE-argmax-argreduce-integration。原提案「高杠杆项最高 64×」的表述在合入文本中按第二证加负载画像前提，防无条件泛化。

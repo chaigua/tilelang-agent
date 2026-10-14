@@ -287,3 +287,25 @@ repro: repro-missing
 - **last-NaN 方向**：末写生效（无条件覆写）= NaN 位置集合的**最大值** `max{iw : isnan(x[iw])}`（两证一致）。
 - **D-1 用例形态要求**：须含「多个严格递增破纪录元素」的窗口（2D `H*W ≫ 1` 的 `rand`；1D 长 `k`）；`all_equal`/`zeros`/`all_neg_inf` 形态在错误方向下也可能全过。
 - 溯源：首证 `examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{DESIGN.md#§1.6.1 N2/N3, REVIEW.md#问题 1}`；第二证 `examples/max_pool1d_with_indices/_max_pool1d_with_indices_kernel/{DESIGN.md#§0.6 R3, §1.6.1 N2/N3(-ord), verify_equiv.py N2N3/N2N3-ord}`（均任务工作区，未上库，provenance 允许失效）。
+
+---
+
+id: TRAP-argreduce-edge-semantics
+kind: trap
+family: [reduction, argmax, argmin, pool]
+apis: [T.reduce_min, T.max, T.vcmp, T.vselect]
+dtype: [fp16, bf16, fp32]
+device: 910B2C, 910B3
+status: verified
+origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0；覆盖 ②）
+toolchain: 首证 tilelang 0.1.2 dev root build 2026-09-24 + torch 2.x（npu 与 CPU 对照）+ CANN 8.5.0 + Ascend910B2C / 2026-09-24；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro-missing
+---
+
+### argreduce 边界语义三基准分野——±0.0 全序、NaN 传播→哨兵 `2^30`、±inf 精确
+
+- **① ±0.0（单源，第二证未复测）**：torch-NPU 设备 argmax/argmin 对 `±0.0` 用**可区分全序**（argmax 偏好 `+0.0`、argmin 偏好 `-0.0`），与 torch-CPU（IEEE 相等取首现）不一致——cross-device golden 对齐时 `±0.0` 混合行是已知分歧点。首证实测（三 dtype 一致）：`[0,-0,0]` → npu argmax=0 / argmin=1；`[-0,0,-0]` → argmax=1 / argmin=0；CPU 全 0。
+- **② NaN 传播 → 哨兵 `2^30`（两证）**：NPU 硬件 reduce **传播 NaN**（非 fmin/fmax 的 NaN-忽略语义），掩码匹配式 argreduce（`reduce_min`/`vmax` + `vcmp` 链）在 NaN 输入行上全匹配失败 → 输出**恰为哨兵 `BIG = 2**30 = 1073741824`**；torch 返首 NaN 索引（如 100）。首证为 4 位形 `2^30`（910B2C / CANN 8.5.0）；第二证为两次独立实测（910B3 / CANN 9.0.0）：`kernel=[1073741824, 63, 33, 152]` vs `torch=[100, 63, 33, 152]` 与 `kernel=[1073741824, 234, 105, 186]` vs `torch=[100, 234, 105, 186]`——同一实测行同时证明「掩码链 vs torch 首-NaN 索引」结构可分（即该行可作结构区分器）。
+- **③ ±inf**：精确（无舍入分歧）。
+- **判读与处置**：`2^30` 恒值 / 全哨兵列是「匹配链全失败」的指纹（与竞态的非确定行数、步长错位的固定行错并列，见 precision-patterns.md 索引失配指纹族）；含 NaN 的负载在 L2/边界用例以 **INFO 记录**行为差（记录不断言崩溃，golden 选择与容差设计据此分野——torch-CPU golden / torch-NPU 设备实现 / 硬件 reduce 语义三方各不相同，设计期逐个实测记录比统一假设更诚实）。哨兵恒值行不可与「匹配链断裂」的缺陷指纹混判：本行是**语义分野**而非 kernel 缺陷。
+- 溯源（任务工作区，未上库，允许失效）：首证 `examples/argmax/_argreduce_kernel/DESIGN.md#§9.2-R1/R2`；第二证 `examples/argmin/_argreduce_kernel/{DESIGN.md#§9.2-R1, _argreduce_kernel.py:927-946（L2 NaN record）}`。与 TRAP-index-reduce-extremum-direction（方向由候选集决定）、TRAP-pool-index-contract-dual-output（池化索引契约）同属索引/语义分野族。

@@ -90,6 +90,7 @@
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
 | TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
+| TRAP-npuir-reshape-dst-buffer-shadow | npuir 分支 `T.reshape` 被 `npuir_reshape(src,dst)` 覆盖（第二参 = 目标 buffer，非 shape list）；通用形 `T.reshape(A,[m,n])` 语义漂移（含 repro） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -108,6 +109,7 @@
 | TRAP-torch-oracle-maxpool1d-empty-window | 空窗口池化 regime（`d≥2 ∧ p>0`）torch 索引越界、源给 `(-inf,0)`、哨兵给 `L_in` 三方互异——该域 torch 不可作 oracle（含纯 torch repro） | verified |
 | TRAP-pool-index-contract-dual-output | 带索引池化源语义契约：索引 = 空间域展平位置（2D 扁平 / 1D 单轴）、tie 取首个、NaN 取最后命中、padding 全 `-inf` 窗取首个有效元素 | verified |
 | TRAP-index-reduce-extremum-direction | 索引归约极值方向由「写入语义 + 候选集」决定——单遍破纪录集取 max / 两遍等式集取 min，混搭即静默错值 | verified |
+| TRAP-argreduce-edge-semantics | argreduce 边界语义三基准分野：±0.0 可区分全序（NPU）/ NaN 传播→掩码全失败输出哨兵 `2^30`（两证）/ ±inf 精确——golden 选择与容差设计据此分野 | verified |
 
 ### constants.md — 硬件常数表（D-2，设计期 roofline 口径）
 
@@ -139,7 +141,7 @@
 | CASE-attention-gqa-expert-full | Expert attention 迁移完整档案（设计修订链 + debug_log D1–D6） | verified |
 | CASE-attention-expert-stage4 | attention expert Stage 4 三轮调优档案（含 [DESIGN_LIMIT] 修正闭环） | verified |
 | CASE-argmax-argreduce-stage4 | argmax Stage 4 档案（C6 预注册裁决翻转 2.2×/2.6× + 标量化归因证伪更正；几何 11.5×） | verified |
-| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad） | verified |
+| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad；argmax 首证 + **argmin 第二证**〔910B3/CANN 9.0.0 逐字节复现 + 胶水代码 + bench 数值〕） | verified |
 | CASE-attention-developer-stage4 | developer 谱系同门对照档案 | verified |
 | CASE-deepseek-v4-highperf | Expert 跨引擎结构先例（vcmp/flag 协议） | verified |
 | CASE-ref-flash-attn-npuir | **参考实现集首条**：两相位结构参照锚点（[DESIGN_LIMIT] 强制对照） | verified |

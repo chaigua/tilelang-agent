@@ -346,16 +346,26 @@ kind: case
 family: [reduction]
 apis: []
 dtype: [fp16, bf16, fp32]
-device: 910B2C
+device: 910B2C, 910B3
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z
-toolchain: tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5
+origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0）
+toolchain: 首证 tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（20 AICore / 40 Vector）/ 2026-10-14
 repro: repro-missing
 ---
 
-### TileOPs reduce 族集成契约参考（argmax 首集成的胶水修复档案）
+### TileOPs reduce 族集成契约参考（argmax 首集成的胶水修复档案 + argmin 共享 kernel 第二证）
 
 `examples/TileOPs/tileops/kernels/reduction/argmax/argmax_kernel/`（任务级溯源，允许失效——集成包为任务交付件，未随知识库演进存活；integration_log.md + wrapper `argmax.py` + history_version/argmax_s5_attempt1.py 修复前备份）。触发条件：任一 reduce 族算子接入 TileOPs（ArgminFwdOp 等共享 ArgreduceKernel 的迁移单元前置阅读）。要点：① Op 层 `_ReduceOpBase._prepare_input` 在 `_kernel_handles_padding=False` 时 pad 到 align_up(N,256)——kernel jit 声明宽度须取 N_padded（raw-N 契约与 Op 层 F.pad 冲突的症状：行 0 正确、行 ≥1 全错且不报错，初次 report 17 failed 与 N_padded≠N 用例 100% 重合）；② wrapper `default_config` 转调 kernel 模块 `_select_config`（GPU 时代 smem 启发式选出的 block_m 在新 kernel 上直接 `ub overflow, requires 2097408 bits while 1572864 bits available`）；③ argmax 语义 -inf pad 与首现索引兼容（全 -inf 行 kernel 与 torch 同返 0），argmin 共享 kernel 时 `_pad_value` 须为 +inf；④ 修复后 42/42 + benchmark 5 case 全有效（run.json 20260928_030100_974855）。
+
+#### 第二证（argmin 共享 kernel 迁移，910B3 / CANN 9.0.0，2026-10-14）——同 kernel 先例的胶水点复用与跨工具链复现
+
+`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/`（任务工作区/集成包，未上库，允许失效——`ArgminFwdOp`，与 ArgmaxFwdOp 共享 `ArgreduceKernel`；integration_log.md + `history_version/argmin_s5_attempt1.py`）。**要点 ② 逐字节复现**：本任务 Stage 5 首跑 report `20261014_160039_216067_ArgminFwdOp` 失败 40/42（2 个失败用例 100% 落在 N_padded=4096，fp16 `ub overflow, requires 2359808 bits while 1572864 bits available` / bf16 `2361856 bits`），另有 lm-head `[4,102400]` 的硬 `ValueError`（single row exceeds 49152-byte budget，`49152 // 204800 == 0`）——根因同为首证要点 ②：Stage-0 wrapper 继承的 GPU 48 KiB SMEM 启发式 `SHARED_MEMORY_BUDGET_BYTES // (N_padded*elem)` 选出 `block_m=4` 并以 override 传入工厂，而 kernel 内 `_select_config` 校准阶梯给 fp16 `block_m=2` / bf16 `1`（含 `min(block_m,M)` 钳制与窄 N 预算减半，外部启发式均不掌握）。**修复形态（可直接复用的胶水代码）**：wrapper `argmin.py#default_config` 转调 `from .argmin_kernel._argreduce_kernel import _select_config` 后取 `_select_config(self.M, self.N, self.dtype_str)["block_m"]`；kernel / tests / manifest / op 零改动。修复后 42/42 正确性 + benchmark 9/9（6/6 report performance case 有效 msprof，`invalid_profile_count=0`/`profiler_fallback_count=0`），report run `20261014_160246_645105_ArgminFwdOp`，attempts=1。
+- **诊断指纹（跨两族/两工具链复现）**：编译期 `ub overflow, requires N bits` 恰好命中**某一个** N_padded（此处 4096）而更小 shape 全过 → 先查「谁传的 block_m、是否经 kernel 校准」，而非 kernel 算法缺陷。
+- **要点 ①/③ 的第二证与边界修正**：argmin 迁移的 Stage 1 做了双契约对照（`_kernel_handles_padding=False` + `_pad_value=+inf` 保留 vs 翻转为 raw-N），结论**保留 pad 契约、零 Op 层改动**——原因是 argmin manifest 无窄 N 负载（大 N 为主），pad 契约的流量代价不显著，而 raw-N 翻转触及 wrapper/Op 契约面更大；pad 方向反向（`-inf`）会让 pad 列在 argmin 中胜出并静默错值。pad 契约下 `N_padded` 恒为 256 倍数（`_pick_tile_n` 候选含 256 且偏好整除 ⇒ tiled 路径静态尾 tile `tail ≡ 0`）；且在 `N_padded` 全域计算 argmin 候选是**索引中性**的（实列索引恒小于 pad 列索引）——pad 契约下 kernel 无需掩码/尾 tile 特化，N 向控制流最简（`verify_equiv.py` E5 组 264 行含全 `+inf`/tie/`±inf` 混合，0 违反）。
+- **跨工具链重验（新设备/新 CANN）**：设计 §9.1 的 argreduce 陷阱族 C-1..C-8（全部绑定 910B2C / CANN 8.5.0）在 910B3 / CANN 9.0.0 + 本任务规避形态下**未复现**（resident bm=1/2/8 × fp16/bf16/fp32 与 tiled bm=1 融合式首跑编译+精度 0 失败；L0 20 / L1 11 / L2 3 / Boundary 3 全过、`torch.equal` 精确 max_diff=0）；设备常数复验与设计逐值一致（aicore=20 / `aivector_core_num`=40 / `ub_cap`=196608）。**本 CASE 在 kb_stale_check 中被标 stale（工具链戳不同）但其缺陷 ② 在新工具链上逐字节复现**——「stale 标记」不构成对该类共享类知识的否定（消费口径见 queue VP-2026-0101 两分法）。
+- **实测（910B3，msprof Task Duration，集成态）**：smoke `[32,256]` 1.80/1.86/1.88 µs（fp16/bf16/fp32，bm=8）；lm-head `[4,102400]` 26.08/31.68 µs（fp16/bf16，tiled bm=1 tn=5120）；hidden-state `[2048,4096]` 31.16/54.10 µs（fp16 bm=2 / bf16 bm=1）；non-aligned `[256,300]` 3.10/3.32 µs（fp16/bf16，bm=8）。3 条 smoke 记录仅存在于 `benchmark.json`（`tileops/reporting/analyzer._is_smoke_record` 把 label 含 "smoke" 的用例从 `run.json#performance.cases` 与 `report.md` 过滤，即使 msprof profile 有效）——数值引用走 `benchmark.json`。
+- **durable 载体**：argreduce 边界语义（±0.0 全序 / NaN→哨兵 `2^30`）自包含于 traps-runtime.md TRAP-argreduce-edge-semantics；`T.reshape` 被 `npuir_reshape(src,dst)` 覆盖自包含于 traps-compiler.md TRAP-npuir-reshape-dst-buffer-shadow（含知识域 repro）；索引失配指纹见 error-fixer references/precision-patterns.md。
+- 溯源（任务工作区，未上库，允许失效）：`examples/argmin/_argreduce_kernel/{DESIGN.md#§0.2/§5.6/§1.6.1-E5/§9.1, RETROSPECTIVE.md Stage 1/2/3}` + `examples/argmin/RETROSPECTIVE.md Stage 5` + 集成侧 integration_log.md。
 
 ---
 

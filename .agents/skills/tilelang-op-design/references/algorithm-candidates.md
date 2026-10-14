@@ -81,10 +81,19 @@ R1：avg pool = 常数权重卷积；sum pool × 常数 = avg pool。R2：滑窗
 id: ALG-reduction
 family: [reduction, statistics]
 known_impl: [examples/TileOPs/tileops/kernels/reduction/logsumexp/_logsumexp_kernel_single/]
-kb_links: [CASE-reduction-logsumexp, CASE-norm-adalayern-stage4（persistent 形态调优档案）]
+kb_links: [CASE-reduction-logsumexp, CASE-norm-adalayern-stage4（persistent 形态调优档案）, CASE-argmax-argreduce-integration（TileOPs 集成 pad 契约档案）]
 ---
 
 R1：max + sum 合并扫描；和与平方和一次扫描。R2：分块归约 + 合并（两阶段 / 树形）；Welford。R3：扫描遍数；跨核归并代价。R4：水平 vs 垂直 lane 映射；跨核 sync 代价。row-reduction 族迁移基准形态（全 N 驻留 UB + M 行块分核 + 尾块 T.min 双显式 slice——logsumexp grid 形态 / ada_layer_norm persistent 形态两任务实测，详见 ALG-layernorm R4）。
+
+**R4 附注：TileOPs reduce 族的 Op 层 pad 契约（两证：argmax 2026-09-28 + argmin 2026-10-14，不同算子/不同设备）**
+
+- **契约与声明宽度**：TileOPs reduce 族 Op 层默认把输入 pad 到 `align_up(N,256)`（`_ReduceOpBase._prepare_input`，`_kernel_handles_padding=False` 时）；kernel jit 声明宽度须等于 `N_padded`。raw-N 契约与 Op 层 `F.pad` 冲突的症状：**行 0 正确、行 ≥1 全错且不报错**（步长错位），初次 report 的失败用例与 `N_padded≠N` 用例 100% 重合。
+- **pad 单位元方向**：`op_kind` 涉及 min/max 的共享 kernel 须核对 `_pad_value`——argmax 侧 `-inf` 安全（永不赢且全 `-inf` 行与 torch 同返 0），argmin 侧必须 `+inf`（反向会让 pad 列在 argmin 中胜出 → 静默错值）。argmin 第二证：`examples/argmin/_argreduce_kernel/DESIGN.md#§0.2` 双契约对照表 + `examples/TileOPs/tileops/ops/reduction/argmin.py:76-78`（`_pad_value() → +inf`）实读。
+- **pad 契约下的索引中性（第二证新增，机器验证）**：在 `N_padded` **全域**计算 argmin 候选 ≡ 只在实列范围计算——实列索引恒 `< N ≤` pad 列索引，故 pad 契约下 kernel **无需掩码/尾 tile 特化**，N 向控制流最简（`verify_equiv.py` E5 组 264 行含全 `+inf` / tie / `±inf` 混合，0 违反；torch CPU fp64 参照 + dtype 舍入仿真）。同源推论：`N_padded` 恒为 256 倍数且 `_pick_tile_n` 候选含 256 并偏好整除 ⇒ tiled 路径静态尾 tile `tail ≡ 0`（该路径属防御性保留，不构成需覆盖的回归面；要真尾块须在工厂期强制非整除 `tile_n`）。
+- **高杠杆翻转的边界（第二证修正）**：`_kernel_handles_padding=True` + kernel 接原始 N（规约单位元 padding 语义上不改变结果）在小 N/非对齐 N 的 dim=0/中间维负载最高 64× 流量改善（harness `reduce.py` 注释明示为仓库既定方向）；但**负载画像决定收益**——argmin manifest 以大 N 负载为主、无窄 N 用例时，保留 pad 契约（零 Op 层/wrapper 契约改动）优于 raw-N 翻转（第二证即按此裁决）。翻转前先核 manifest 的 N 分布。
+- kb_links 补 CASE-argmax-argreduce-integration（集成契约与胶水修复档案）+ CONST-vector-launch-overhead（小 N 大 M 的发射主导预算另见 queue VP-2026-0137 设计规则集）。
+- 溯源（任务工作区，上库部分见 kb_links；集成契约胶水修复形态见 CASE）：首证 `examples/argmax/_argreduce_kernel` + `integration_log.md#attempt-1`；第二证 `examples/argmin/_argreduce_kernel/{DESIGN.md#§0.2/§1.6.1-E5/§5.6, verify_equiv.py E5 组}` + `examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/integration_log.md`（允许失效）。
 
 ---
 id: ALG-topk

@@ -390,3 +390,24 @@ repro: repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py
 - **退路形态**：改用与通用路径同构的「行扫描 + 无 pattern」机制；构造 argmax 型索引时对 pattern 做 **standalone 精确 + in-chain 精确**双向断言（单向不足）。
 - **证明**：`python repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py`（exit 0；control 精确 + trap 损坏 + 派生 first-hit 与真值不等三段断言，int32 与 fp32 载体各一遍）。
 - 溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py}`；关联 CONST-arange-scalar-materialize（`T.arange` 物化代价）与 TRAP-vcast-shape-and-gm-source（同族 reshape/形状约束）。
+
+---
+id: TRAP-npuir-reshape-dst-buffer-shadow
+kind: trap
+family: [general, reduction]
+apis: [T.reshape]
+dtype: []
+device: 910B3
+status: verified
+origin_task: argmin-_argreduce_kernel-20261014T151121Z
+toolchain: tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-npuir-reshape-dst-buffer-shadow.py
+---
+
+### `T.reshape` 在 npuir 分支被 `npuir_reshape(src, dst)` 覆盖——第二参是目标 buffer，不是 shape list
+
+- **现象**：`tilelang.language` 对 `reshape` 导出两次——`tilelang/language/__init__.py:68` 的通用 `customize.reshape(src, shape_list)` 与 `:196` 的 `npuir_reshape as reshape`（后者生效）。因此**生效的** `T.reshape` 是 `npuir_reshape(src, dst)`：第二参是**目标 buffer**（其形状即目标形状），函数签名实测 `(src, dst)`、`T.reshape.__name__ == 'npuir_reshape'`。按通用形态写的 `T.reshape(A, [N // M, M])`（仓内 `testing/python/language/test_tilelang_language_reshape.py` 演示的写法）在 npuir 上语义不同——把 Python list 当 `dst` 传会走 `_to_region` 失败。属两个同名符号共存的静默语义漂移面。
+- **实测来源**：本算子（argmin 迁移，`_argreduce_kernel`）的实现按 npuir 形态书写并通过全部门禁——`T.reshape(first, first_flat)`（(bm,1)→(bm,)）、`T.reshape(idx_src, idx_row)`（(N,)→(1,N)），fp16/bf16/fp32 × resident(bm=1/2/8) × tiled 全部 L0 20 / L1 11 / L2 3 / Boundary 3 用例 PASS。
+- **证明**：`python repro/TRAP-npuir-reshape-dst-buffer-shadow.py`（exit 0；三段断言：生效符号名 == `npuir_reshape`、签名参数 == `['src','dst']`、通用形 `customize.reshape(src, shape)` 仍以原名存在——未来工具链恢复通用签名或移除 alias 时断言触发，而非静默改变存量 kernel 代码的含义）。**纯前端符号检查，无设备依赖**（`T.reshape` 语义与是否编译/上机无关）。
+- **族内位置**：与 TRAP-vcast-shape-and-gm-source（`T.vcast` 不承担 reshape）、TRAP-npuir-arange-pattern-with-whole-plane-reduce（`T.arange → T.reshape → T.vbrc → T.reshape` 链）同属 reshape/形状约束族。
+- 溯源（任务工作区，未上库，允许失效）：`examples/argmin/_argreduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-reshape-dst-buffer-shadow.py, _argreduce_kernel.py:281,309}`；文档面缺口（`docs/Tilelang.language/shape操作/T.reshape.md` 未述 npuir 语义）已在源任务登记。
