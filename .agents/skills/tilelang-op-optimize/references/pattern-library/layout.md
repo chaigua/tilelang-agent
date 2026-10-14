@@ -48,6 +48,34 @@ repro: repro-missing
 - **实测收益**：AvgPool2d kernel 级 1.98–13.2x（vs 同代 H-collapse 版本）。
 
 ---
+id: PL-1.22-maxreduce-nan-tracking
+kind: pattern
+family: [pooling, window, reduction, general]
+apis: [T.transpose, T.vmax, T.vcmp, T.vcast, T.vmul, T.vbrc, T.reduce_min, T.reduce_max, T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证，行级掩码细化 + 窗口池化域）
+toolchain: 首证 tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；均 dev root build + CANN 9.0.0 + Ascend910B3
+repro: repro-missing
+---
+
+### 1.22 max 池化/归约的 NPU 向量实现形态（NaN 追踪 + 无代数化简）✅ 已验证
+
+> 由 queue VP-2026-0152 在两任务独立证据后合入（adaptive_max_pool2d 迁移 2026-10-13 / max_pool2d 窗口池化迁移 2026-10-14）。两任务为**不同任务、不同算子**（AdaptiveMaxPool2dFwdOp / MaxPool2dFwdOp），各自独立执行 Stage 3 分层门禁（前者全用例过且 worst max_diff=0.0；后者 L0 31 / L1 23 / L2 7 / Boundary 8 全过、fp16/bf16/fp32 三 dtype `max_diff=0.000e+00`、`atol=rtol=0` 成立）。保守限定同 queue VP-2026-0143 先例（max 为纯选择无累加，逐位判据可成立）。**repro**：本条按 ED-B「无法当场最小化时显式 `repro-missing`」处置（P 类允许）——③ 的 NaN 追踪合法式已有可执行载体 `repro/TRAP-vcmp-ne-ordered-nan.py`（属 traps-compiler.md 条目，两侧互相引用，故不重复登记为本条 repro）；②/③'/③''/④/⑤/⑥ 部分的专属最小 repro 待同族任务回填。
+
+- **① 向量轴 = C 轴**：核内 NHWC 二轴 `T.transpose` 重排后沿 C 轴 `T.vmax` 归约，与 avg 池化同构（PL-1.2），差异仅在归约算子与 NaN 追踪。窗口池化的窗口形状由 `k/s/p/d` 固定（非 adaptive 的变长 bin），但向量轴结论相同。
+- **② 比较与掩码在 fp32 域**：bf16 先 `T.vcast` 到 fp32（`vmax`/`reduce_max`/`vsub` 不支持 bf16）。**注意源本身是 fp32 时不能**用 `T.vcast` 做同 dtype 搬运（退化为 round-to-integer，见 traps-compiler.md TRAP-vcast-same-dtype-rounds）——按 dtype 在 trace 期分派 `T.copy` / `T.vcast`，且该分派使 fp32 的 UB 预算与 fp16/bf16 不同档。
+- **③ NaN 追踪用 IEEE 正确的 `eq` 掩码乘性累积**：`cond = T.vcmp(x, x, "eq")` → `T.vcast(cond, f32)` 得 {0,1} 掩码 → in-place `T.vmul(flag, mask, flag)`（`flag` 初值 1：0 吸收 / 1 中性）→ 末尾 `T.vcmp(flag, 0, "eq")` 或整平面 `reduce_min` 判决。**不用 `T.vcmp(...,"ne")`**（ordered 不等，NaN 恒假——见 traps-compiler.md TRAP-vcmp-ne-ordered-nan）。
+- **③' 掩码按行级而非逐元素**（第二证细化）：每输入行一次 `T.vcmp(row,row,"eq") + T.vcast` 得 `(W_in, CH)` 掩码，窗口内按列切片 `T.vmul` 乘性累积；逐元素重算掩码会把 op 数放大 `out_W·k_W` 倍（第二证实测 `out_W` 达 56，是该设计自登记的头号发射风险）。行级形态下三 dtype 端到端逐位精确。
+- **③'' 掩码归约算子 = 判决的集合语义**：0/1 掩码上「`reduce_min` 与 0 比较」=「存在 0」，「`reduce_max` 与 0 比较」=「全部为 0」；`x==x` 掩码上 0 意味着 NaN，故「任一 NaN」必须用 `reduce_min + ==0`——写成 `reduce_max + ==0` 只在全 NaN 平面成立（第二证 Stage 3 首版即 `reduce_max` 配注释「1.0 iff 窗口无 NaN」的自相矛盾形态；改 `reduce_min` 后部分含 NaN 的平面正确返回 NaN）。自然语言注释与算式不符时以数学推演为准并回写设计。
+- **④ 累加器单位元为 `-inf`**：`T.vbrc(-T.infinity("float32"), acc)`；`T.clear` 置 0 在全负窗口产生错误输出。`T.vbrc` 的 destination 须为整 buffer、标量 operand 须为 typed PrimExpr（region/裸标量形态见 TRAP-npuir-vbrc-region-dropped）。
+- **⑤ max 无代数化简**：非线性 → 常数权重卷积/GEMM 不等价；无逆元 → 前缀最大值差分对多条递增记录不可行。可分离 2D→1D 对窗口池化**亦不降运算量**（第二证 manifest 三档复算比 1.00 / 1.50 / 1.01 ≥ 基线；adaptive 侧见 queue VP-2026-0144）——「数学等价优化」对本形态只余**结构特化**（全局池化整平面 `reduce_max` / 恒等纯拷贝，见 queue VP-2026-0143）与**归约融合**（max + NaN 同轮扫描）。
+- **⑥ 窗口池化的边界守卫可外提**（第二证）：`ih` 只依赖 `(o_h, k_h)`，H 维判据可提升为每行一次（`k_H` 次/单元而非每元素）；`iw` 依赖 `(o_w, k_w)` 无法再提。零风险 CSE 类优化，可直接写进通用路径。
+- **负向依赖**：结论不依赖 `T.vmax`/`T.reduce_max` 的 NaN 传播行为（未文档化）——实现须显式追踪 NaN 以保证正确，不得依赖该行为兜底（首证 Stage 3 near-miss：靠 `vmax` 传播「顺带修对」致语义门禁假阳性通过）。
+- **provenance（允许失效）**：首证 `examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{DESIGN.md#0.6-R2, RETROSPECTIVE.md}`；第二证 `examples/max_pool2d/_max_pool2d_kernel/{DESIGN.md#3.3, _max_pool2d_kernel.py, RETROSPECTIVE.md Stage 3}`（任务工作区，未上库）。
+
+---
 id: PL-1.3-host-permute
 kind: pattern
 family: [layout]

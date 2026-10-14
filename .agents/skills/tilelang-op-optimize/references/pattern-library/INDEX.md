@@ -38,6 +38,7 @@
 | PL-1.15-broadcast-perf-tax | vsub/vmul 未文档化列广播可编译可算对但 +12~16% 性能税——合法化≠可用，列因子仍走 vbrc 展开 | verified |
 | PL-1.17-subfp32-fp32-transit | sub-fp32 逐元素 fp32 中转模式（bf16 v-prefix 缺失 + fp16 golden 对齐双触发；lerp+ssd 两证） | verified |
 | PL-1.21-vector-persistent-split | 纯 Vector persistent 分核模板（num_kernels=min(num_logical, aicore×2) + T.serial 静态界 + 尾任务守卫；lerp+adaptive-pool 两证） | verified |
+| PL-1.22-maxreduce-nan-tracking | max 池化/归约向量实现形态：C 轴向量轴 + fp32 比较域 + 行级 eq 掩码乘性 NaN 追踪（`reduce_min+==0` 才是任一 NaN）+ `-inf` 单位元 + 无代数化简（adaptive_max + 窗口 max 两证） | verified |
 
 ### elementwise.md — 多输入搬运效率
 
@@ -87,6 +88,7 @@
 | TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro） | verified |
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
+| TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -146,6 +148,7 @@
 | CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例） | verified |
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例） | verified |
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7 + bench 3 例） | verified |
+| CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

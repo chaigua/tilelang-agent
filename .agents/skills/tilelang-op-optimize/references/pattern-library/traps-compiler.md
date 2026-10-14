@@ -303,6 +303,29 @@ repro: repro/TRAP-vcast-shape-and-gm-source.py
 - **证明**：`python repro/TRAP-vcast-shape-and-gm-source.py`（exit 0：两条 trap 报文匹配 + 合法形态 `max_diff<1e-3` + 3D reduce 链通过）。文档侧：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` §2.3/§2.4 未覆盖这两条约束。与 TRAP-C12-copy-dtype-cast（`T.copy` 跨 dtype 静默 cast）构成 `T.copy`/`T.vcast` 的互补边界：copy 管搬运（跨 dtype 静默转换），vcast 管转换（形状/源位置受限）。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`。
 
 ---
+
+id: TRAP-vcast-same-dtype-rounds
+kind: trap
+family: [general, elementwise, pooling, migration]
+apis: [T.vcast, T.copy]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证，含知识域 repro）/ argmax-_argreduce_kernel-20260924T031005Z 与 argreduce 前身任务 2026-09-23（首证，pyc 考古恢复——见 queue VP-2026-0127）
+toolchain: 第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；首证 tilelang 0.1.2 dev build + CANN 8.5.0 + Ascend910B2C / 2026-09-23（跨工具链复现）
+repro: repro/TRAP-vcast-same-dtype-rounds.py
+---
+
+### `T.vcast` 同 dtype（f32→f32）不是搬运，而是退化为「四舍五入到整数」
+
+- **现象**：`T.vcast(src_f32, dst_f32, round_mode="rint")`（同 dtype、同 shape）逐元素给出 `round(src)` 并静默销毁小数部分（-1.1258→-1.0、0.8487→1.0、-0.4339→0.0）——既不是 no-op 也不报错；`round_mode` 操作数在两侧同为 f32 时仍按「整数转换」施加。合法的同 dtype 搬运形态 = `T.copy(src_f32, dst_f32)`（逐位一致）；真正的 dtype 变化（f16/bf16→f32）`T.vcast` 正常工作——陷阱**只**出现在同 dtype 形态，不是 `vcast` 的普遍性质。
+- **后果（静默错值）**：凡「fp32 比较/累加域」的 kernel 需要把 fp32 输入行搬进 UB 时，最自然的写法就是 f32→f32 `vcast`，而它会静默量化数据。实测两任务：`_max_pool2d_kernel` C4 整平面分支 8/8 元素错（最大绝对差 0.488、相对差 0.194），换 `T.copy` 后逐位一致；argreduce 族同款 ~0.5 量级 diff（首证，独立任务、跨工具链）。识别信号：fp32 用例整片错、相对误差 ~0.1–0.2 量级且视觉上「像」被量化到整数。
+- **合法形态（本工具链实测）**：按 dtype 在 trace 期分派——`is_f32 = (dtype == "float32")`，同 dtype 走 `T.copy`、真 dtype 变化走 `T.vcast`；`_max_pool2d_kernel` 对 fp32 路径三处采用该分派（该分派同时使 fp32 的 UB 预算与 fp16/bf16 不同档——CH 由 32 落到 16，实现形式一改容量结论须重算）。
+- **族内位置**：与 TRAP-vcast-shape-and-gm-source（形状须一致 + 源须为 UB）同族互补——本条补第三条约束「同 dtype 不是恒等」；与 TRAP-C12-copy-dtype-cast（`T.copy` 跨 dtype 静默转换）构成镜像对：「copy 换 cast 会静默变值」vs「cast 当 copy 用会静默坏值」。
+- **证明**：`python repro/TRAP-vcast-same-dtype-rounds.py`（exit 0：f32→f32 `vcast == round(src)` 且 `!= src` 复现；`T.copy` 逐位一致（control）；f16→f32 `vcast` 正确）。文档侧：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` 未说明同 dtype 行为。
+- 溯源（任务工作区，未上库，允许失效）：`examples/max_pool2d/_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcast-same-dtype-rounds.py}`；首证见 queue VP-2026-0127（argmax `_argreduce_kernel` 2026-09-24 经 pyc 考古恢复的 Transferable Lessons）。
+
+---
 id: TRAP-vcmp-ne-ordered-nan
 kind: trap
 family: [general, pooling, reduction]

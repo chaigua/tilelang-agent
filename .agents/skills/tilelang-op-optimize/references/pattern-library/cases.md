@@ -417,3 +417,27 @@ repro: none
 pool 家族第三个 TileOPs 迁移算子（AdaptiveMaxPool2dIndicesFwdOp，Developer 模式、纯 Vector、Stage 4 跳过；同族追加）。要点：①**双输出（values + int64 扁平索引）**——索引 = H×W 平面行主序扁平下标 `ih*W_in+iw`，并列取**首个命中**，窗口含 NaN 时值 NaN + 索引取**最后命中的 NaN**，`{+inf,-inf}` 同窗 → 值 `+inf`（§0.1 12 行 torch 2.9.0 CPU 实测）；②**first-hit 的向量化极值方向**：把「严格 `>` 顺序覆写」改写为集合取极值时取**破纪录集合扁平最大值**（`vselect(gt, fv, -1)` + `vmax`）——误用 `vmin`（"第一个破纪录"）静默给出窗口内首个局部峰值的索引（v0 版本 N3 首轮 20426 mismatch，修正后 340 例全 `EQUIV_PASS`）；③**共享累加器的比较-更新次序是正确性字段**：`vmax(acc, v)` 先于 `v > acc` 时判据恒假、索引静默退化为窗口首元素（v0 §3.3 缺陷，公式级 D-1 6 项全 PASS 未覆盖；v1 新增 `N3-ord` 次序守卫 342 checks）；④**Stage 1 设计修订 1 轮**（Stage 2 检视 #1 不通过：first-hit 次序 + 退化路径 UB 预算低报 ≈46% → v1 `CH_deg=min(C,32)` + 逐 buffer 复算 + N3-ord；#2 通过）；⑤**Stage 3 两条 API 陷阱**（`T.vbrc` 标量→region 静默丢弃〔int32 形态向量核 fault 507034〕；`arange` 平面下标 pattern in-chain 读回损坏——values 全对而 14050/16384 索引错，`out=1×1` 交回一般路径）——均转正为 `repro/*.py` 并机械入知识域；⑥**Stage 5 integrate 一次成功**（`integrate_kernel.py` 聚合 `__init__.py` 非幂等第三现，单次运行规避——同 VP-2026-0150）；⑦int32 载体元素级链（transpose/vcast/vmax/vcmp/vselect/rank-2 slice 累加）实测逐位可用，「无 int32 转置先例」不构成能力缺口。
 
 **实测**：Stage 3 内嵌分层测试 L0/L1/L2/Boundary 全过、`[PRECISION_PASS]`——values `max_diff = 0`（fp16/bf16；max 是选择、无累加，`atol=rtol=0` 判据成立），int64 索引 `torch.equal` 精确（0/104487 mismatch）；TileOPs 单算子 report `status=passed`、本算子 rollup **7/7**（`avg_max_abs_err = 0.00e+00`，文件级 `correctness_tests=17` 含兄弟算子 avg 6 + max 4）、benchmark 12/12 通过、9 msprof case 全有效（`invalid_profile_count=0`、`profiler_fallback_count=0`）；本算子 3 例 msprof——global-1x1 `[8,2048,7,7]→(1,1)` fp16 **151.60 µs** / Ratio 2.54% / BW 1.75 TB/s、spp-6x6 `[2,128,56,56]→(6,6)` fp16 **85.36 µs** / 4.57%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 **81.60 µs** / 2.56%（smoke 5.92µs）。Session 墙钟 184.3 min（op 级 10963s elapsed）：Stage 3 开发 62.8%（6944.7s，含两陷阱探针）+ Stage 1 首次设计 12.0% + 设计修订 6.6%。**适用触发条件**：双输出/带索引归约类迁移（索引语义 + 极值方向 + 次序守卫）；`vbrc`/`arange` pattern 形态的落点与 in-chain 消费风险排查；池化族追加迁移的同族骨架复用（Stage 3 占墙钟 62.8% → 复用语料）；池化族集成（共享测试文件 → 读 per-operator rollup）。
+
+---
+
+id: CASE-pool-maxpool2d-migration
+kind: case
+family: [pool, pooling, window]
+mode: [developer]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: max_pool2d-_max_pool2d_kernel-20261014T062320Z（函数级；op 级 max_pool2d-max_pool2d-20261014T061506Z）
+toolchain: tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: none
+---
+
+### `examples/max_pool2d/_max_pool2d_kernel/` + `examples/TileOPs/tileops/kernels/pool/max_pool2d/`（任务工作区/集成包，未上库）
+
+**durable 载体**：`T.vcast` 同 dtype 陷阱与合法分派形态自包含于 traps-compiler.md TRAP-vcast-same-dtype-rounds（含知识域 repro）；max 归约 NaN 追踪实现形态见 layout.md PL-1.22；C 轴向量轴 / tiling / 纯 Vector persistent 分核见 layout.md PL-1.2/PL-1.4/PL-1.21；**窗口池化退化特化条件与 adaptive 不可平移**见 queue VP-2026-0172；**NPU reference 后端（torch_npu）能力缺口 + 纯选择类 CPU golden 回退**见 queue VP-2026-0173。本任务 `RETROSPECTIVE.md`（op 级 / 函数级，四个 Stage 章节）与 `SESSION_TIMING_ANALYSIS.md` 为 provenance（允许失效）。
+
+pool 家族**第四个** TileOPs 迁移算子、**同族追加**（AdaptiveAvgPool2dFwdOp → AdaptiveMaxPool2dFwdOp → AdaptiveMaxPool2dIndicesFwdOp → MaxPool2dFwdOp；Developer 模式、纯 Vector、Stage 4 跳过）。与前三个的族内差异：本条是**窗口池化**（窗口形状由 `k/s/p/d` 固定）而非自适应池化（变长 bin）。要点：
+
+①**退化特化条件不可从 adaptive 家族平移**——`out==1×1` 只约束输出网格、**不**保证窗口覆盖整平面（`d>1` 时窗口仅取等差子集 `{k·d}`）；Stage 2 首轮独立推演 + torch 数值反例（`H=W=5,k=2,s=1,p=0,d=4`：正确 0.0 vs 特化 1.0）拦下 v0 的充分条件缺口，设计修订 v1 补 `d_H==d_W==1` 六处同步 + 加机器反例组（C4x，69 case-group 全 PASS 含负向控制守卫）；②**设计修订 1 轮**（Stage 2 首轮 1 阻塞 + 4 建议 → v1 闭合后复检通过；`retry_count=1`）；③**Stage 3 首轮即 `[PRECISION_PASS]`**（一次成稿、零精度轮次）——但首轮暴露 `T.vcast` 同 dtype 陷阱（C4 整平面 fp32 分支 8/8 元素错，相对差 0.194），改用按 dtype 的 `T.copy`/`T.vcast` 分派后逐位一致，并转正 repro；④**容量驱动 CH 选择**（`CH` = 满足 `ub_bytes(CH,W_in,out_W,dtype)×1.7 ≤ 192KB` 的最大 8 的倍数；`W_in=112` 的 resnet-stem 被压到 CH=32、fp32 更落到 CH=16，小 `W_in` 保持 CH=64）；⑤**Stage 5 集成 attempt 1 `[INTEGRATE_FAIL]`**（根因 = **NPU 参考后端能力缺口**：torch_npu 的 `F.max_pool2d` 经 `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1`，`dilation=(2,1)` 用例在 op 执行前抛 `AclNN_Parameter_Error(EZ1001)`）→ attempt 2 受控闭环内把该用例 `ref_program` 回退 CPU golden（纯选择无累加 → 逐位一致、`atol=rtol=0` 保持、用例与 `dilation>1` 覆盖全保留）→ `INTEGRATE_COMPLETED`；⑥**轮次结构特征**：Stage 3 一次成稿（19.7% 墙钟）使 Stage 1（含修订，26.2%）与 Stage 5（含一轮失败重试，21.8%）合计反超——「公式等价验证 PASS ≠ 条件充分」与「精度一次过 ≠ 集成一次过」两条边界同时出现。
+
+**实测**（Session 墙钟 76.7 min / 4603s；op 级 elapsed 4508s、函数级 2981s）：Stage 3 内嵌分层测试 **L0 31 / L1 23 / L2 7 / Boundary 8 全过**、`[PRECISION_PASS]`，fp16/bf16/fp32 三 dtype `max_diff = 0.000e+00`（max 是选择无累加，`atol=rtol=0` 成立；含 NaN / ±inf / 全 NaN 窗用例）；TileOPs 单算子 report `status=passed`、本算子 rollup **22/22**（`max_abs_err = 0.00e+00`，文件级 `correctness_tests=36` 含 adaptive 兄弟算子）、benchmark **24/24**、9 msprof case 全有效（`invalid_profile_count=0`）。本算子 3 workload × 3 dtype msprof（Ratio = roofline 利用率）：resnet-stem `[32,64,112,112]` k3s2p1 fp16 **1390.3 µs**（13.63%）/ bf16 1391.4 / **fp32 2646.5**；vgg-block `[16,128,56,56]` k2s2p0 fp16 **113.6 µs**（14.25%）/ bf16 116.4 / fp32 190.9；alexnet-ceil `[32,64,55,55]` k3s2p0 ceil fp16 **201.8 µs**（13.55%）/ bf16 202.1 / fp32 365.6——per-op Ratio 区间 12.11–14.25%、带宽 1.75 TB/s（≈ fabric 聚合上限，算子带宽受限）。**适用触发条件**：窗口池化（max/avg pool2d/3d）迁移设计（退化特化条件重推 + 容量驱动 CH）；fp32 比较域算子的同 dtype 通路分派（TRAP-vcast-same-dtype-rounds）；含编译期特化分支的 kernel 的「分支归属断言」设计；池化族 TileOPs 集成的 NPU golden 能力边界处置（reference 后端缺口 → CPU golden 回退，queue VP-2026-0173）。
