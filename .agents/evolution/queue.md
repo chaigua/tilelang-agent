@@ -33,6 +33,8 @@ decided_by: evolver / human / -   # 裁决者
 
 ## Pending
 
+> **条目迁移（2026-10-14 apply）**：VP-2026-0176/0177/0178/0179 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
+
 ### Tier 1（P 类，2 次独立证据后合入）
 
 > **条目迁移（2026-10-13 蒸馏）**：VP-2026-0003 第二证达标（adaptive_avg_pool2d 迁移），已合入 `pattern-library/layout.md` PL-1.21-vector-persistent-split，完整记录移至下方 `## Decided` 归档区。
@@ -3718,124 +3720,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 定位锚为「核心原则」段内该 bullet（唯一）；机器侧备选方案（门禁 S1 增「交付件目录名 == conductor 指定名」校验，需在 `gate_lint.py` 落地）本次未成提案——如审批倾向工具侧拦截，可在同一批准批次追加工具侧提案。
 
-## VP-2026-0176
-- type: R
-- title: design-review Phase 1 机械复核增「空真守卫」核对——重跑等价性验证后须核对每组 case 的比较元素数 > 0 且 case 确实满足其声明的前置条件（空真 PASS 视为覆盖缺失）
-- evidence:
-  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 2 复检：`verify_equiv.py` 的 C4 组有 1 条配置 `((1,8,5,6), k=8, s=2, p=0)` 输出 `(0,0)`——两侧广播后比较 0 个元素，仍输出 `viol=0 EQUIV_PASS`，与真实通过不可区分（`REVIEW.md#问题 2`；v0 基线 57 组中含 3 条空真行）（任务工作区，未上库，provenance 允许失效）
-  - 同任务 Stage 1 revision v1 的处置：新增「边界不成立用例」组（C4x）与负向控制断言，使条件本身可执行；但空真守卫属**脚本结构**要求而非用例内容要求，现行 skill 无对应检查位
-  - 交叉引用：queue VP-2026-0028（修订版重审工作流）/ VP-2026-0092（复检 grep + md5）/ VP-2026-0142（D-1 判据分档）
-- repro: repro-missing（检视流程规则；复现条件 = 任一含「两侧形状可能不一致」比较的等价性脚本——构造输出尺寸为 0 的 case 观察 `EQUIV_PASS`）
-- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .agents/skills/tilelang-design-review/SKILL.md
-- delta: |
-    动作: update（Phase 1 第 7 步「机械复核」的重跑等价性验证条目后追加一句）
-    定位锚: "   - **重跑等价性验证**（`DESIGN.md` §1.6.1 含采纳优化项时）：`python examples/{project}/{op}/verify_equiv.py`——执行结果须与 §1.6.1 内嵌结果表一致且全部 `EQUIV_PASS`；脚本缺失、执行失败或与内嵌表不一致 → 维度 8 fail（等价性机器验证失效）；"
-    old 文本: （即上述定位锚原文）
-    new 文本: |
-      上述原文 + 追加一句：
-      「**空真守卫核对**：逐组核对 `verify_equiv.py` 的每组 case——① 两侧广播后**比较元素数 > 0**；② case 配置确实满足其声明的前置条件（特化条件成立 / 拒绝条件不成立）。`viol=0` 在 0 元素比较上无信息量（与真实通过不可区分），空真 PASS 记为覆盖缺失（建议级→阻塞级按缺失占比判），并在 REVIEW.md 机械复核段列出空真行序号（max_pool2d 2026-10-14 实证：C4 组 1 条 `((1,8,5,6), k=8,s=2,p=0)` 输出 `(0,0)` 仍报 EQUIV_PASS；v0 基线 57 组含 3 条空真行）。」
-    动机: 空真 PASS 使「条件型/形状敏感」等价性脚本给出虚假的覆盖面证据（本任务 Reviewer 手工核对元素数才发现）；在 Phase 1 机械复核处加一句零成本核对即可拦截，且不依赖脚本作者自觉。
-- status: pending
-- confirmations: -/-
-- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0028（重审工作流）/ VP-2026-0092（复检 grep+md5）互补；锚文本为 Phase 1 第 7 步原文唯一片段，apply 时按锚后追加执行。
-
-## VP-2026-0177
-- type: R
-- title: design-review 维度 8 增「编译期特化谓词的充分条件」核对行——列出谓词依赖变量全集 + 逐变量验证覆盖集合关系（含 `d` 这类被忽略参数）+ 子句隔离覆盖自检
-- evidence:
-  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 2 首轮（1 阻塞）：v0 §0.6 R4 的整平面归约充分条件漏 `d`——反例 `H=W=5,k=2,s=1,p=0,d=4`（`out=1×1` 且四合取项全成立，窗口仅 4 个角点 → 归约 1.0 vs 正确 0.0）；现行 `design_calc_check.py` 只覆盖容量/核数/r3 算术、`verify_equiv.py` 只验公式数值一致而**不验适用条件是否充分**，该缺口只能靠 Reviewer 手工枚举谓词依赖变量 + 逐变量推演窗口覆盖集合才发现（`REVIEW.md#问题 1`）（任务工作区，未上库，provenance 允许失效）
-  - 同任务 Stage 2 复检：C4x 两配置均对称 dilation（`dH==dW`），Reviewer 实跑确认「只删 `dW==1` 子句时断言不触发」——子句隔离覆盖缺口（设计自述「移除任一轴即失败」仅对 H 轴成立）
-  - 交叉引用：queue VP-2026-0147（维度 8 跨节/伪代码类增补）/ VP-2026-0166（维度 8 比较-累加次序核对，同一维度不同检查面）/ VP-2026-0164（op-design 侧 D-1 实现次序守卫）
-- repro: repro-missing（检视流程规则；复现条件 = 设计含条件型编译期特化谓词时，按本条逐变量枚举 + 子句隔离测试）
-- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .agents/skills/tilelang-design-review/SKILL.md
-- delta: |
-    动作: update（维度 8 检查项表插入新行）
-    定位锚: "| 与下游章节一致 | §3.1 公式拆解以 §1.6.1 优化后公式为输入；§6 循环结构与 §1.6.2 结论一致（判定向量化的点不得再出现对应逐元素标量循环） | §3.1 仍用优化前公式；§6 出现 §1.6.2 未论证的标量循环 |"
-    old 文本: （即上述定位锚原文）
-    new 文本: |
-      （在该行**之前**插入新行）
-      | **编译期特化谓词的充分条件** | 对 §1.6.1/§3.3/§5 中每个编译期特化谓词（`IS_GLOBAL`/`out==1×1`/`out==in`/恒等轴等），① 列出其**依赖变量全集**（`out/k/s/p/d/in` 等，含「看似不相关」的轴参数）并逐变量验证其断言的**集合关系**（覆盖/等价）——尤其窗口类：窗口输入覆盖集合 = `{k·d}` 受 `p` 平移与 `s` 取窗约束，「输出网格退化」**不**蕴含「覆盖整平面」；② 谓词应「定义一次、引用多处」（目标：§3.3 单一定义源，其余节引用）；③ 负向守卫用例须对条件中**每个子句**有隔离覆盖（至少一条用例仅违反该子句、其余成立），否则「移除任一子句即失败」为空真 | 充分条件漏参数（如漏 `d` 致 `d>1` 时静默错值——反例 `H=W=5,k=2,s=1,p=0,d=4` 正确 0.0 / 特化 1.0）；同一谓词多处重复书写且漂移；守卫用例组对称违反多个子句使单子句断言不触发 |
-    动机: 本任务唯一的 Stage 2 阻塞即该检查面缺口（设计 v0 已在自己的复盘里写下「须验证窗口输入覆盖集合」却在同文档再犯）——`design_calc_check.py`/`verify_equiv.py` 均不覆盖「条件充分性」，检视侧加固定动作可把该类缺口从「靠 Reviewer 灵光一现」变为可复核步骤。
-- status: pending
-- confirmations: -/-
-- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0147（同维度跨节/伪代码类增补）/ VP-2026-0166（同维度次序核对）/ VP-2026-0164（设计侧 D-1 守卫）互链；定位锚为维度 8 表末行原文，apply 时在该行前插入。
-
-## VP-2026-0178
-- type: R
-- title: add-npu-op Stage 0/S5 增「NPU 参考实现（golden）可用性自检」——对本算子全部 fixture 参数在 NPU 上跑一次最小 golden smoke，已知受限参数直接用 CPU golden 回退模板
-- evidence:
-  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5 attempt 1 `[INTEGRATE_FAIL]`（402s）→ 根因核对（23s）→ attempt 2 修复并重跑全量 report（622s）：总往返 ≈1025s / op 级 22.3%——修复本身很小（`ref_program` 的 CPU 回退），成本在「首次诊断 → conductor 扩权 → 重跑全量」的往返（`examples/max_pool2d/SESSION_TIMING_ANALYSIS.md` §3/§4；`integration_log.md#调试历史`）
-  - 直接根因：Stage 0 按 GPU 用例逐字移植时未校验 `torch_npu` 参考实现能力（`F.max_pool2d` 经 aclnn 仅支持 `dilation == 1`）——该缺陷可在 Stage 0 以约 0.5 min 的 golden smoke 暴露（知识侧事实见 queue VP-2026-0173）
-  - 交叉引用：queue VP-2026-0151（add-npu-op Stage 5 前置 env.sh + S5-REPORT-STALE 口径——同为 Stage 0/S5 前置自检，本条补 golden 侧）/ VP-2026-0150（integrate_kernel.py 缺陷）
-- repro: repro-missing（流程规则；复现条件 = 迁移算子的 fixture 含 NPU 参考后端不支持的参数组合时跑 golden smoke）
-- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
-- delta: |
-    动作: update（Tier 1 structural verification 段末尾追加第 5 项）
-    定位锚: "All Tier 1 checks must pass. This confirms the 7 files are structurally
-      correct and the extracted kernel functions are properly imported — ready
-      for the NPU kernel component to reimplement for `target=\"npuir\"`."
-    old 文本: （即上述定位锚原文）
-    new 文本: |
-      上述原文 + 追加一段：
-      ```
-      # 5. NPU reference (golden) availability smoke — for every fixture param combo
-      python - <<'PY'
-      import itertools, torch, torch_npu  # noqa
-      import torch.nn.functional as F
-      # iterate the S5 fixture param table (k/s/p/d/ceil/dtype) with a >=2^13-element input
-      # and call the reference op on an NPU tensor; record every combo that raises
-      for params in FIXTURE_PARAMS:
-          try:
-              F.max_pool2d(torch.randn(2, 8, 33, 33, device="npu"), **params)
-          except Exception as e:  # AclNN_Parameter_Error(EZ1001) etc.
-              print("GOLDEN-UNAVAILABLE", params, type(e).__name__, e)
-      PY
-      ```
-      Any combo whose NPU reference raises **before the kernel runs** (stack inside
-      `torch.nn.functional`, `AclNN_*_Error`) must be recorded now and handled in
-      `ref_program` with the **CPU-golden fallback template** for pure-selection ops
-      (`F.x(input.cpu(), **kwargs).to(input.device)` — bit-identical for max/min/
-      argmax/sort, `atol=rtol=0` kept; NOT applicable to accumulating ops). Doing
-      this at S5 costs ~0.5 min and avoids a Stage 5 fail/diagnose/authorize/re-run
-      round trip (≈17 min measured, max_pool2d 2026-10-14).
-    动机: 本任务 Stage 5 首轮失败的根因是 Stage 0 未校验 NPU 参考实现能力（`dilation>1` 的 aclnn 缺口），而该缺口与迁移正确性无关、代价却落在集成回合；前置自检把该类缺陷挡在 Stage 0（成本 0.5 min vs 往返 17 min）。
-- status: pending
-- confirmations: -/-
-- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0151（Stage 5 前置 env.sh / S5-REPORT-STALE）同属前置自检面；target 为 TileOPs 仓内 add-npu-op skill（apply 时以用户批准为准）。
-
-## VP-2026-0179
-- type: R
-- title: integrator 失败分类表新增子类「NPU reference 后端能力缺口」——异常在 ref_program 内且 op 未执行时，在受控闭环内把该用例 reference 回退 CPU 计算（保留用例与严格判据），仅当调度未授权改 tests 时回交
-- evidence:
-  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5 attempt 1：`test_max_pool2d[full-default-stride-dilation-fp16]` FAILED，按现行分类表只能落到「测试/用例自身问题」→ `[INTEGRATE_FAIL]`（当时 `tests/` 不在授权范围）；但该子类的正确处理是「在受控闭环内修复脚手架测试用例的 reference 计算路径」而非无条件回交——attempt 2 经 conductor 显式授权后修 `MaxPool2dTest.ref_program`（`dilation != 1` 回退 CPU golden），报告一次通过（`examples/TileOPs/reports/tileops/20261014_072101_015168_MaxPool2dFwdOp/run.json`：status=passed、本算子 22/22、`max_abs_err=0.00e+00`、benchmark 24/24）（op 级 `RETROSPECTIVE.md` Skill Flow Issues 首行；`integration_log.md`）
-  - 已有专属知识条目（知识侧）：queue VP-2026-0173（torch_npu `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1` + 纯选择类 CPU golden 回退逐位一致）
-  - 交叉引用：queue VP-2026-0157（report CLI `--op` 共享文件兄弟算子用例判定口径→add-npu-op，已 apply）/ VP-2026-0178（Stage 0 golden 可用性自检——上游拦截，本条为集成期兜底）
-- repro: repro-missing（流程规则；复现条件 = 集成用例的 NPU reference 在 op 执行前抛 `AclNN_*_Error`）
-- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
-- target_doc: .opencode/agents/tilelang-op-integrator.md
-- delta: |
-    动作: update（失败分类表插入新行）
-    定位锚: "| 测试/用例自身问题 | 失败根因在 tests/workloads/manifest | 不修改，如实报告，`[INTEGRATE_FAIL]` + 建议 |"
-    old 文本: （即上述定位锚原文）
-    new 文本: |
-      （在该行**之前**插入新行，原行保留）
-      | NPU reference 后端能力缺口 | 异常出现在 `ref_program` 内、**op 尚未执行**（堆栈落在 `torch.nn.functional`）且报 `AclNN_*_Error`（如 `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1`） | **受控闭环内修复脚手架测试用例的 reference 计算路径**（本算子新增段）：`dilation != 1` 等受限参数走 CPU golden 回退 `F.x(input.cpu(), **kwargs).to(input.device)`；**仅限纯选择类算子**（max/min/argmax/排序，无累加——逐位一致、`atol=rtol=0` 保持）；用例与其严格判据全保留，禁止 skip/xfail/删例/放宽容差；只改 reference 路径，不动 op/kernel/判据/容差；备份 `history_version/{name}_s5_attempt{N}.bak` 并记入 integration_log；**调度方未授权改 tests 时**按「测试/用例自身问题」回交 `[INTEGRATE_FAIL]` + 建议（含本方案） |
-    动机: 现行分类表把「参考后端能力缺口」并入「测试/用例自身问题 → 无条件回交」，导致一次可闭环的小修复走成 fail→扩权→重跑（max_pool2d 实测往返 ≈17 min / op 级 22.3% 墙钟）；分列出该子类并写明处理与边界（纯选择类限定）可让 integrator 在授权范围内一次修对。
-- status: pending
-- confirmations: -/-
-- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
-- decided_by: -
-- decided_note: 与 VP-2026-0178（Stage 0 上游拦截）上下游互补；target 为 conductor agent 目录下的 integrator 定义（Tier 2 写域，apply 时按用户批准执行）。
-
 ---
 
 ## Decided（merged / rejected / expired / conflict 归档）
@@ -4374,3 +4258,129 @@ decided_by: evolver / human / -   # 裁决者
 - decided_note: 2026-10-14 蒸馏：第二证来自不同任务/不同算子（AdaptiveMaxPool2dFwdOp → MaxPool2dFwdOp 窗口池化），达 Tier 1 阈值 2/2，本周期合入 layout.md **PL-1.22-maxreduce-nan-tracking**（含第二证细化：③' 掩码按行级而非逐元素〔逐元素放大 op 数 out_W·k_W 倍〕、③'' 掩码归约算子 = 判决集合语义〔`reduce_max+==0` 只在全 NaN 平面成立，须 `reduce_min+==0`〕、⑥ 窗口池化 H 维守卫可外提）。**保守限定**：两证为同族不同算子且第二证对照了首证骨架（同 queue VP-2026-0143 先例），机器可验证部分（Stage 3 分层门禁）两任务各自独立执行（首证 worst max_diff=0.0；第二证三 dtype max_diff=0.000e+00）。
 
 ---
+
+---
+
+## VP-2026-0176
+- type: R
+- title: design-review Phase 1 机械复核增「空真守卫」核对——重跑等价性验证后须核对每组 case 的比较元素数 > 0 且 case 确实满足其声明的前置条件（空真 PASS 视为覆盖缺失）
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 2 复检：`verify_equiv.py` 的 C4 组有 1 条配置 `((1,8,5,6), k=8, s=2, p=0)` 输出 `(0,0)`——两侧广播后比较 0 个元素，仍输出 `viol=0 EQUIV_PASS`，与真实通过不可区分（`REVIEW.md#问题 2`；v0 基线 57 组中含 3 条空真行）（任务工作区，未上库，provenance 允许失效）
+  - 同任务 Stage 1 revision v1 的处置：新增「边界不成立用例」组（C4x）与负向控制断言，使条件本身可执行；但空真守卫属**脚本结构**要求而非用例内容要求，现行 skill 无对应检查位
+  - 交叉引用：queue VP-2026-0028（修订版重审工作流）/ VP-2026-0092（复检 grep + md5）/ VP-2026-0142（D-1 判据分档）
+- repro: repro-missing（检视流程规则；复现条件 = 任一含「两侧形状可能不一致」比较的等价性脚本——构造输出尺寸为 0 的 case 观察 `EQUIV_PASS`）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（Phase 1 第 7 步「机械复核」的重跑等价性验证条目后追加一句）
+    定位锚: "   - **重跑等价性验证**（`DESIGN.md` §1.6.1 含采纳优化项时）：`python examples/{project}/{op}/verify_equiv.py`——执行结果须与 §1.6.1 内嵌结果表一致且全部 `EQUIV_PASS`；脚本缺失、执行失败或与内嵌表不一致 → 维度 8 fail（等价性机器验证失效）；"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      上述原文 + 追加一句：
+      「**空真守卫核对**：逐组核对 `verify_equiv.py` 的每组 case——① 两侧广播后**比较元素数 > 0**；② case 配置确实满足其声明的前置条件（特化条件成立 / 拒绝条件不成立）。`viol=0` 在 0 元素比较上无信息量（与真实通过不可区分），空真 PASS 记为覆盖缺失（建议级→阻塞级按缺失占比判），并在 REVIEW.md 机械复核段列出空真行序号（max_pool2d 2026-10-14 实证：C4 组 1 条 `((1,8,5,6), k=8,s=2,p=0)` 输出 `(0,0)` 仍报 EQUIV_PASS；v0 基线 57 组含 3 条空真行）。」
+    动机: 空真 PASS 使「条件型/形状敏感」等价性脚本给出虚假的覆盖面证据（本任务 Reviewer 手工核对元素数才发现）；在 Phase 1 机械复核处加一句零成本核对即可拦截，且不依赖脚本作者自觉。
+- status: merged
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/skills/tilelang-design-review/SKILL.md` Phase 1 第 7 步「机械复核」——在「重跑等价性验证」条目之后追加「空真守卫核对」子项（锚文本唯一命中；原句与其后条目保留）。E-4 预验证 PASS（副本应用 + 锚点唯一 + standards_check 控制组/编辑组 delta 零新增 failure〔两侧同为 SC-HASH-MISMATCH hardware-cost-model.md + SC-INLINE-DUP tilelang-op-develop/SKILL.md 两项既有 failure，stats 全等〕+ kb_lint 0 failures〔19 warnings 两侧一致〕+ `.agents/tools/tests` 3 failed/109 passed 与对照逐节点相同；repro 为检视流程规则、会话级条件 → 回归 SKIPPED）。
+
+---
+
+## VP-2026-0177
+- type: R
+- title: design-review 维度 8 增「编译期特化谓词的充分条件」核对行——列出谓词依赖变量全集 + 逐变量验证覆盖集合关系（含 `d` 这类被忽略参数）+ 子句隔离覆盖自检
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 2 首轮（1 阻塞）：v0 §0.6 R4 的整平面归约充分条件漏 `d`——反例 `H=W=5,k=2,s=1,p=0,d=4`（`out=1×1` 且四合取项全成立，窗口仅 4 个角点 → 归约 1.0 vs 正确 0.0）；现行 `design_calc_check.py` 只覆盖容量/核数/r3 算术、`verify_equiv.py` 只验公式数值一致而**不验适用条件是否充分**，该缺口只能靠 Reviewer 手工枚举谓词依赖变量 + 逐变量推演窗口覆盖集合才发现（`REVIEW.md#问题 1`）（任务工作区，未上库，provenance 允许失效）
+  - 同任务 Stage 2 复检：C4x 两配置均对称 dilation（`dH==dW`），Reviewer 实跑确认「只删 `dW==1` 子句时断言不触发」——子句隔离覆盖缺口（设计自述「移除任一轴即失败」仅对 H 轴成立）
+  - 交叉引用：queue VP-2026-0147（维度 8 跨节/伪代码类增补）/ VP-2026-0166（维度 8 比较-累加次序核对，同一维度不同检查面）/ VP-2026-0164（op-design 侧 D-1 实现次序守卫）
+- repro: repro-missing（检视流程规则；复现条件 = 设计含条件型编译期特化谓词时，按本条逐变量枚举 + 子句隔离测试）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 8 检查项表插入新行）
+    定位锚: "| 与下游章节一致 | §3.1 公式拆解以 §1.6.1 优化后公式为输入；§6 循环结构与 §1.6.2 结论一致（判定向量化的点不得再出现对应逐元素标量循环） | §3.1 仍用优化前公式；§6 出现 §1.6.2 未论证的标量循环 |"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      （在该行**之前**插入新行）
+      | **编译期特化谓词的充分条件** | 对 §1.6.1/§3.3/§5 中每个编译期特化谓词（`IS_GLOBAL`/`out==1×1`/`out==in`/恒等轴等），① 列出其**依赖变量全集**（`out/k/s/p/d/in` 等，含「看似不相关」的轴参数）并逐变量验证其断言的**集合关系**（覆盖/等价）——尤其窗口类：窗口输入覆盖集合 = `{k·d}` 受 `p` 平移与 `s` 取窗约束，「输出网格退化」**不**蕴含「覆盖整平面」；② 谓词应「定义一次、引用多处」（目标：§3.3 单一定义源，其余节引用）；③ 负向守卫用例须对条件中**每个子句**有隔离覆盖（至少一条用例仅违反该子句、其余成立），否则「移除任一子句即失败」为空真 | 充分条件漏参数（如漏 `d` 致 `d>1` 时静默错值——反例 `H=W=5,k=2,s=1,p=0,d=4` 正确 0.0 / 特化 1.0）；同一谓词多处重复书写且漂移；守卫用例组对称违反多个子句使单子句断言不触发 |
+    动机: 本任务唯一的 Stage 2 阻塞即该检查面缺口（设计 v0 已在自己的复盘里写下「须验证窗口输入覆盖集合」却在同文档再犯）——`design_calc_check.py`/`verify_equiv.py` 均不覆盖「条件充分性」，检视侧加固定动作可把该类缺口从「靠 Reviewer 灵光一现」变为可复核步骤。
+- status: merged
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/skills/tilelang-design-review/SKILL.md` 维度 8 检查项表——在「与下游章节一致」行之前插入「编译期特化谓词的充分条件」行（锚文本唯一命中；原表行保留）。E-4 预验证 PASS（同批副本应用 + 锚点唯一 + standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure；repro 为检视流程规则、会话级条件 → 回归 SKIPPED）。
+
+---
+
+## VP-2026-0178
+- type: R
+- title: add-npu-op Stage 0/S5 增「NPU 参考实现（golden）可用性自检」——对本算子全部 fixture 参数在 NPU 上跑一次最小 golden smoke，已知受限参数直接用 CPU golden 回退模板
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5 attempt 1 `[INTEGRATE_FAIL]`（402s）→ 根因核对（23s）→ attempt 2 修复并重跑全量 report（622s）：总往返 ≈1025s / op 级 22.3%——修复本身很小（`ref_program` 的 CPU 回退），成本在「首次诊断 → conductor 扩权 → 重跑全量」的往返（`examples/max_pool2d/SESSION_TIMING_ANALYSIS.md` §3/§4；`integration_log.md#调试历史`）
+  - 直接根因：Stage 0 按 GPU 用例逐字移植时未校验 `torch_npu` 参考实现能力（`F.max_pool2d` 经 aclnn 仅支持 `dilation == 1`）——该缺陷可在 Stage 0 以约 0.5 min 的 golden smoke 暴露（知识侧事实见 queue VP-2026-0173）
+  - 交叉引用：queue VP-2026-0151（add-npu-op Stage 5 前置 env.sh + S5-REPORT-STALE 口径——同为 Stage 0/S5 前置自检，本条补 golden 侧）/ VP-2026-0150（integrate_kernel.py 缺陷）
+- repro: repro-missing（流程规则；复现条件 = 迁移算子的 fixture 含 NPU 参考后端不支持的参数组合时跑 golden smoke）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
+- delta: |
+    动作: update（Tier 1 structural verification 段末尾追加第 5 项）
+    定位锚: "All Tier 1 checks must pass. This confirms the 7 files are structurally
+      correct and the extracted kernel functions are properly imported — ready
+      for the NPU kernel component to reimplement for `target=\"npuir\"`."
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      上述原文 + 追加一段：
+      ```
+      # 5. NPU reference (golden) availability smoke — for every fixture param combo
+      python - <<'PY'
+      import itertools, torch, torch_npu  # noqa
+      import torch.nn.functional as F
+      # iterate the S5 fixture param table (k/s/p/d/ceil/dtype) with a >=2^13-element input
+      # and call the reference op on an NPU tensor; record every combo that raises
+      for params in FIXTURE_PARAMS:
+          try:
+              F.max_pool2d(torch.randn(2, 8, 33, 33, device="npu"), **params)
+          except Exception as e:  # AclNN_Parameter_Error(EZ1001) etc.
+              print("GOLDEN-UNAVAILABLE", params, type(e).__name__, e)
+      PY
+      ```
+      Any combo whose NPU reference raises **before the kernel runs** (stack inside
+      `torch.nn.functional`, `AclNN_*_Error`) must be recorded now and handled in
+      `ref_program` with the **CPU-golden fallback template** for pure-selection ops
+      (`F.x(input.cpu(), **kwargs).to(input.device)` — bit-identical for max/min/
+      argmax/sort, `atol=rtol=0` kept; NOT applicable to accumulating ops). Doing
+      this at S5 costs ~0.5 min and avoids a Stage 5 fail/diagnose/authorize/re-run
+      round trip (≈17 min measured, max_pool2d 2026-10-14).
+    动机: 本任务 Stage 5 首轮失败的根因是 Stage 0 未校验 NPU 参考实现能力（`dilation>1` 的 aclnn 缺口），而该缺口与迁移正确性无关、代价却落在集成回合；前置自检把该类缺陷挡在 Stage 0（成本 0.5 min vs 往返 17 min）。
+- status: merged
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `examples/TileOPs/.agents/skills/add-npu-op/SKILL.md` Tier 1 structural verification 段——在「All Tier 1 checks must pass…」之后追加第 5 项「NPU reference (golden) availability smoke」代码块与处置段（锚文本唯一命中；原文保留；代码围栏平衡校验 PASS）。E-4 预验证 PASS（同批副本应用 + 锚点唯一 + standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure；repro 为 Stage 0 流程规则、需带 NPU 参考后端的环境 → 回归 SKIPPED）。
+
+---
+
+## VP-2026-0179
+- type: R
+- title: integrator 失败分类表新增子类「NPU reference 后端能力缺口」——异常在 ref_program 内且 op 未执行时，在受控闭环内把该用例 reference 回退 CPU 计算（保留用例与严格判据），仅当调度未授权改 tests 时回交
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261014T062320Z Stage 5 attempt 1：`test_max_pool2d[full-default-stride-dilation-fp16]` FAILED，按现行分类表只能落到「测试/用例自身问题」→ `[INTEGRATE_FAIL]`（当时 `tests/` 不在授权范围）；但该子类的正确处理是「在受控闭环内修复脚手架测试用例的 reference 计算路径」而非无条件回交——attempt 2 经 conductor 显式授权后修 `MaxPool2dTest.ref_program`（`dilation != 1` 回退 CPU golden），报告一次通过（`examples/TileOPs/reports/tileops/20261014_072101_015168_MaxPool2dFwdOp/run.json`：status=passed、本算子 22/22、`max_abs_err=0.00e+00`、benchmark 24/24）（op 级 `RETROSPECTIVE.md` Skill Flow Issues 首行；`integration_log.md`）
+  - 已有专属知识条目（知识侧）：queue VP-2026-0173（torch_npu `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1` + 纯选择类 CPU golden 回退逐位一致）
+  - 交叉引用：queue VP-2026-0157（report CLI `--op` 共享文件兄弟算子用例判定口径→add-npu-op，已 apply）/ VP-2026-0178（Stage 0 golden 可用性自检——上游拦截，本条为集成期兜底）
+- repro: repro-missing（流程规则；复现条件 = 集成用例的 NPU reference 在 op 执行前抛 `AclNN_*_Error`）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+0d3950aa + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .opencode/agents/tilelang-op-integrator.md
+- delta: |
+    动作: update（失败分类表插入新行）
+    定位锚: "| 测试/用例自身问题 | 失败根因在 tests/workloads/manifest | 不修改，如实报告，`[INTEGRATE_FAIL]` + 建议 |"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      （在该行**之前**插入新行，原行保留）
+      | NPU reference 后端能力缺口 | 异常出现在 `ref_program` 内、**op 尚未执行**（堆栈落在 `torch.nn.functional`）且报 `AclNN_*_Error`（如 `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1`） | **受控闭环内修复脚手架测试用例的 reference 计算路径**（本算子新增段）：`dilation != 1` 等受限参数走 CPU golden 回退 `F.x(input.cpu(), **kwargs).to(input.device)`；**仅限纯选择类算子**（max/min/argmax/排序，无累加——逐位一致、`atol=rtol=0` 保持）；用例与其严格判据全保留，禁止 skip/xfail/删例/放宽容差；只改 reference 路径，不动 op/kernel/判据/容差；备份 `history_version/{name}_s5_attempt{N}.bak` 并记入 integration_log；**调度方未授权改 tests 时**按「测试/用例自身问题」回交 `[INTEGRATE_FAIL]` + 建议（含本方案） |
+    动机: 现行分类表把「参考后端能力缺口」并入「测试/用例自身问题 → 无条件回交」，导致一次可闭环的小修复走成 fail→扩权→重跑（max_pool2d 实测往返 ≈17 min / op 级 22.3% 墙钟）；分列出该子类并写明处理与边界（纯选择类限定）可让 integrator 在授权范围内一次修对。
+- status: merged
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.opencode/agents/tilelang-op-integrator.md` 失败分类表——在「测试/用例自身问题」行之前插入「NPU reference 后端能力缺口」子类行（锚文本唯一命中；原行保留）。E-4 预验证 PASS（同批副本应用 + 锚点唯一 + standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure；repro 为集成期流程规则、会话级条件 → 回归 SKIPPED）。

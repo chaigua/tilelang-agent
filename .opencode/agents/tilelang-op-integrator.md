@@ -111,6 +111,7 @@ python -m tileops.reporting.cli run --op {op_name} --prof-mode msprof
 | 编译/运行失败 | stderr lowering/codegen/段错误 | 闭环修复（调 debug-helper） |
 | shape 不匹配 | `shape mismatch` / `size mismatch` | 闭环修复 |
 | wrapper 胶水错误 | 参数传递/dtype/配置错误 | 闭环修复（只改 wrapper） |
+| NPU reference 后端能力缺口 | 异常出现在 `ref_program` 内、**op 尚未执行**（堆栈落在 `torch.nn.functional`）且报 `AclNN_*_Error`（如 `aclnnMaxPool2dWithMask` 仅支持 `dilation == 1`） | **受控闭环内修复脚手架测试用例的 reference 计算路径**（本算子新增段）：`dilation != 1` 等受限参数走 CPU golden 回退 `F.x(input.cpu(), **kwargs).to(input.device)`；**仅限纯选择类算子**（max/min/argmax/排序，无累加——逐位一致、`atol=rtol=0` 保持）；用例与其严格判据全保留，禁止 skip/xfail/删例/放宽容差；只改 reference 路径，不动 op/kernel/判据/容差；备份 `history_version/{name}_s5_attempt{N}.bak` 并记入 integration_log；**调度方未授权改 tests 时**按「测试/用例自身问题」回交 `[INTEGRATE_FAIL]` + 建议（含本方案） |
 | 测试/用例自身问题 | 失败根因在 tests/workloads/manifest | 不修改，如实报告，`[INTEGRATE_FAIL]` + 建议 |
 | 设计层错误 | 修复 2 次以上仍失败且根因指向 kernel 设计（API 不可用/内存层级/同步冲突） | 返回 `[DESIGN_ERROR]` + 原因（conductor 走设计修订） |
 | 环境问题 | ImportError 系统级 / 未 source set_env.sh | `[INTEGRATE_FAIL]` + BLOCKED_ENVIRONMENT 建议 |

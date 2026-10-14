@@ -514,6 +514,29 @@ All Tier 1 checks must pass. This confirms the 7 files are structurally
 correct and the extracted kernel functions are properly imported — ready
 for the NPU kernel component to reimplement for `target="npuir"`.
 
+```
+# 5. NPU reference (golden) availability smoke — for every fixture param combo
+python - <<'PY'
+import itertools, torch, torch_npu  # noqa
+import torch.nn.functional as F
+# iterate the S5 fixture param table (k/s/p/d/ceil/dtype) with a >=2^13-element input
+# and call the reference op on an NPU tensor; record every combo that raises
+for params in FIXTURE_PARAMS:
+    try:
+        F.max_pool2d(torch.randn(2, 8, 33, 33, device="npu"), **params)
+    except Exception as e:  # AclNN_Parameter_Error(EZ1001) etc.
+        print("GOLDEN-UNAVAILABLE", params, type(e).__name__, e)
+PY
+```
+
+Any combo whose NPU reference raises **before the kernel runs** (stack inside
+`torch.nn.functional`, `AclNN_*_Error`) must be recorded now and handled in
+`ref_program` with the **CPU-golden fallback template** for pure-selection ops
+(`F.x(input.cpu(), **kwargs).to(input.device)` — bit-identical for max/min/
+argmax/sort, `atol=rtol=0` kept; NOT applicable to accumulating ops). Doing
+this at S5 costs ~0.5 min and avoids a Stage 5 fail/diagnose/authorize/re-run
+round trip (≈17 min measured, max_pool2d 2026-10-14).
+
 **Helper completeness check** (mandatory, Part A continuation): After
 Tier 1 passes, scan `{extracted_file}` for every callable name invoked
 by the extracted kernel functions (any `name(...)` call whose `name` is
