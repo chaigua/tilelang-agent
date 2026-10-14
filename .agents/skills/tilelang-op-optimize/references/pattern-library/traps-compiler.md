@@ -321,3 +321,49 @@ repro: repro/TRAP-vcmp-ne-ordered-nan.py
 - **后果（静默失效加假阳性通过）**：以 `v != v` 作 NaN 掩码时掩码恒假（标志位永不触发），而端到端 NaN 用例仍可能"通过"——因为 `T.vmax` / `T.reduce_max` 在本工具链会传播 NaN，"窗口内任一 NaN 胜出"被该未文档化行为顺带修对。adaptive_max_pool2d 迁移 Stage 3 首版即此形态（`vcmp(...,"ne")` + `vmax` 累积），L0-10 NaN/±inf 语义门禁首轮假阳性通过；经 5 组最小探针逐层剥离定位，改用 `eq` 取反后语义判定变为确定性路径、全部用例复跑仍全过且 `max_diff=0`。
 - **合法绕法（本工具链实测，逐位正确）**：NaN 探测走 IEEE 正确的 `"eq"`（或 `"le"`/`"ge"`）取反——行级 `cond = T.vcmp(x, x, "eq")` → `T.vcast(cond, f32)` 得 {0,1} 掩码 → 逐元素 **in-place `T.vmul(flag, mask, flag)`**（`flag` 初值 1：0 吸收、1 中性）→ 末尾 `vcmp(flag, 0, "eq")` 即 `has_nan`（整平面 C4 路径以 `T.reduce_min` 收尾）。全程只用 IEEE 正确的比较模式，不依赖 `T.vmax`/`T.reduce_max` 的 NaN 行为。文档侧：`docs/Tilelang.language/比较操作/T.vcmp.md` §2.3 只列合法枚举，未说明 NaN 行为。
 - **证明**：`python repro/TRAP-vcmp-ne-ordered-nan.py`（exit 0：`ne` 自比 NaN 行全 0 复现 + `eq` 为 `isnan` 的 IEEE 补集断言 + eq-mask 乘性累积 `flag==0 ⟺ 列含 NaN` 断言 + NaN-free 操作数对 `ne` 正常）。与 TRAP-expert-v-operands（vcmp 操作数形态与 int16 标量化）互补：前者管操作数形态与执行代价，本条管比较模式的 NaN 语义。溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcmp-ne-ordered-nan.py}`。
+
+---
+id: TRAP-npuir-vbrc-region-dropped
+kind: trap
+family: [general, pooling, migration]
+apis: [T.vbrc, T.copy]
+dtype: [int32, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z
+toolchain: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-npuir-vbrc-region-dropped.py
+---
+
+### `T.vbrc` 的 destination 为 buffer region 时写入被静默丢弃（UB region 形态）
+
+- **现象**：标量 `T.vbrc(scalar, buf[a:b, 0:ch])`（destination 是带**运行时偏移**的 UB region、且位于 `T.serial` 循环内）在本工具链**静默丢弃**——destination 保持旧值，既不报错也不崩溃；写整 buffer（或写 `(1, ch)` staging buffer + `T.copy(staging, region)`）则逐元素落位（ch = 8 / 32 / 64、int32 / fp32 全测）。
+- **int32 形态的额外后果**：region 从未被写入 → 后续读命中**未初始化 UB** → 向量核 fault（acl 507034 "Vector core execution timed out"）——表现为进程级 core dump 而非错值，是本条陷阱最初被命中的形态（首次命中时整文件运行被 core dump 吞掉 stdout，须一 case 一子进程才定性）。
+- **标量 operand 形态**：裸 Python 数（`1.0` / `H_in*W_in`）命中前端 rank 断言（`tilelang/language/customize_npuir.py::npuir_brc` 的 `if not isinstance(src, tir.PrimExpr): assert len(src_extent) == len(dst_extent)`，报 "The input vector and output vector must have same rank"）；typed `T.float32(1.0)` / `T.int32(-1)` 通过。
+- **后果（静默错值）**：`_adaptive_max_pool2d_with_indices_kernel` 的 first-hit 索引累加器按输出列 seed 运行时值（`ih0*W_in + iw0(ow)`），region 形态下 seed 静默丢失——全 `-inf` 窗口返回索引 0 而不是首个被访问元素的扁平下标；**values 侧不受影响**，故值-only 门禁看不到该损坏。
+- **合法等价形态（本工具链实测逐位正确）**：逐 `ow` 填不同标量 = 标量写整个 `(1, ch)` staging buffer → `T.copy(staging, buf[ow:ow+1, 0:ch])` 三件套（probe5/6/7/8 定性，probe9 全链 ch=8/32/64 OK）。
+- **族内位置**：与 TRAP-vbrc-scalar-shared（标量→shared 不可用）、TRAP-vbrc-same-shape-empty-broadcast（同形 src/dst → 空广播维 verify fail）、TRAP-expert-v-operands（Expert v 算子标量源须 let 绑定局部量、字面量触发 rank 断言）共同构成 vbrc 落点/操作数形态族——本条管 **UB region destination**（前两条管 shared 与同形）。
+- **证明**：`python repro/TRAP-npuir-vbrc-region-dropped.py`（exit 0；region 形态 seed 丢失、staging 形态逐 ch 生效、裸标量被前端拒绝三段断言，ch=8/32/64 全过）。
+- 溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-vbrc-region-dropped.py}`；设计伪代码 `DESIGN.md#3.3` 中 `T.vbrc(ih0*W_in+iw0, max_idx[ow:ow+1,:])` / `T.vbrc(1.0, h_flag)` / `T.vbrc(H_in*W_in, bigk)` 三条形态全部不可用（Stage 3 逐条改写）。
+
+---
+id: TRAP-npuir-arange-pattern-with-whole-plane-reduce
+kind: trap
+family: [general, pooling, reduction]
+apis: [T.arange, T.reshape, T.vbrc, T.vselect, T.vcmp, T.reduce_min]
+dtype: [int32, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z
+toolchain: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py
+---
+
+### `arange` 派生的平面下标 pattern 在「整平面 vselect + reduce」链内被读回损坏（standalone 精确 ≠ in-chain 精确）
+
+- **现象**：`T.arange(1-D) → T.reshape → T.vbrc → T.reshape` 构造 `(CH, H, W)` 平面下标 `k = h*W + w`，**standalone**（pattern + `T.copy` 落 GM）逐位精确；同一 kernel 内再以 `T.vcmp(f32, gbrc, "eq") → T.vselect(eqb, kj, bigk, cand) → T.reduce_min(dim=2) → T.reduce_min(dim=1)` 消费该 pattern 时，pattern 被读回为「w 逐行重复」（H=3, W=4 得 `[0,1,2,3,0,1,2,3,0,1,2,3]`），派生的 first-hit 索引退化为列号。
+- **无关变量（全部排除）**：pattern 构造方式（2D 链 / 4D 链 / `vbrc` 直写 3D）、载体 dtype（int32 / fp32）、reshape 方向、是否插入 `T.pipe_barrier("PIPE_ALL")`——损坏稳定复现。
+- **后果（值-only 门禁不可见）**：**values 仍精确**，只有 index 静默错——本算子整平面（`out_H == out_W == 1`）argmax 特化路径的 first-hit / last-NaN 索引正由该 pattern 派生，`--level all` 时 values 全对而 14050/16384 条索引错；仅因 int64 索引 oracle 精确（`torch.equal`）才被发现。处置 = `out=1×1` 交回一般路径（`is_identity` 保留、整平面 reduce 链停用，语义不变的回退）。
+- **退路形态**：改用与通用路径同构的「行扫描 + 无 pattern」机制；构造 argmax 型索引时对 pattern 做 **standalone 精确 + in-chain 精确**双向断言（单向不足）。
+- **证明**：`python repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py`（exit 0；control 精确 + trap 损坏 + 派生 first-hit 与真值不等三段断言，int32 与 fp32 载体各一遍）。
+- 溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py}`；关联 CONST-arange-scalar-materialize（`T.arange` 物化代价）与 TRAP-vcast-shape-and-gm-source（同族 reshape/形状约束）。

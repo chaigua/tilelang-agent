@@ -85,6 +85,8 @@
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
 | TRAP-vcast-shape-and-gm-source | `T.vcast` 形状须一致（无 broadcast/reshape）+ 源须为 UB（GM 源 BiShengHIR pipeline 失败）；伴随：runtime let-bound 标量可作 vmul src2 | verified |
 | TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro） | verified |
+| TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
+| TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -143,6 +145,7 @@
 | CASE-ssd-chunkscan-migration | mamba/SSD 族 MixCV Expert 迁移完整档案（模式切换 + 六轮 2.91× + 首过集成 + 4515de8 重跑 + 二轮 1.078× + 重建会话 repro 骨架重推导 +9.7%） | verified |
 | CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例） | verified |
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例） | verified |
+| CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7 + bench 3 例） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

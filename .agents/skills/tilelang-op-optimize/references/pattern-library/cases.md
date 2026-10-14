@@ -396,3 +396,24 @@ repro: none
 **durable 载体**：max 归约的 NaN 探测陷阱与其合法绕法自包含于 traps-compiler.md TRAP-vcmp-ne-ordered-nan（含知识域 repro）；C 轴向量轴 / 纯 Vector persistent 分核模板见 layout.md PL-1.2/PL-1.4/PL-1.21；几何特化路径模式见 queue VP-2026-0143。本任务函数级 `RETROSPECTIVE.md` 与 `SESSION_TIMING_ANALYSIS.md` 为 provenance（允许失效）。
 
 pool 家族第二个 TileOPs 迁移算子（AdaptiveMaxPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过；同族追加——结构骨架直接对照前作 `examples/adaptive_avg_pool2d/`（同族前作任务工作区，未上库，允许失效））。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴 `T.vmax` 归约），与 avg 同构，差异仅在归约算子（max vs sum）与 NaN 追踪；②**max 无代数化简**（非线性 → 常数权重卷积/GEMM 不等价；无逆元 → 前缀差分不可用），"数学等价优化"只余结构特化（C4 全局整平面 `reduce_max` / C4b 恒等纯拷贝）与归约融合；③**NaN 语义显式追踪**（"窗口内任一 NaN → 输出 NaN" + `{+inf,-inf}` 同窗输出 `+inf` 非 NaN）——不能用求和类探测，改用 `eq` 掩码乘性累积（详情见 TRAP-vcmp-ne-ordered-nan）；max 累加器单位元为 `-inf`（`T.clear` 置 0 在全负窗口出错）；④**Stage 3 near-miss**：首版按 DESIGN 字面用 `vcmp(...,"ne")` 做 NaN 探测，L0-10 语义门禁**假阳性通过**（靠 `vmax`/`reduce_max` 的 NaN 传播兜底），5 组最小探针定位后改 `eq` 取反，全部用例复跑仍全过且 `max_diff=0`；⑤**Stage 1 gate-1 重试 1 次**（`S1-REF-PATHS`：ASCII `:行号`/`:函数名` 紧贴路径 + `…` 缩写 token——见 queue VP-2026-0020 证据链追加）；⑥**Stage 5 integrate 一次成功**（`integrate_kernel.py` 对生成 `__init__.py` 仍非幂等，单次运行规避——同 VP-2026-0150）。**实测**：L0 10/10、L1 17 项、L2 7/7、Boundary 8/8 全过；worst `max_diff` fp16 = bf16 = **0.0**（max 是选择、无累加，`atol=rtol=0` 判据成立；同族 avg 为 1.221e-04）；TileOPs 集成 correctness 5/5（max abs err 0.00e+00），msprof 有效 bench 3 例——global-1x1 `[8,2048,7,7]→(1,1)` fp16 322.11µs / Ratio 5.38%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 20.42µs / 7.77%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 17.98µs / 4.69%（smoke 4.02µs）。Session 墙钟 ≈55min：Stage 3 40.3%（含 NaN 陷阱探针）+ Stage 1 20.9%。适用触发条件：max/归约类算子迁移（NaN 语义追踪 + 单位元 + 无化简边界）；同族追加以对照前作降风险的设计路径；池化族集成（共享 `tests/ops/test_pool.py` → 单算子 report 计兄弟算子用例，见 queue VP-2026-0152）。
+
+---
+id: CASE-pool-adaptivemaxpool2dindices-migration
+kind: case
+family: [pool, pooling]
+mode: [developer]
+dtype: [fp16, bf16]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z（函数级）
+toolchain: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: none
+---
+
+### `examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/` + `examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/`（任务工作区/集成包，未上库）
+
+**durable 载体**：两条 API 陷阱与其合法绕法自包含于 traps-compiler.md TRAP-npuir-vbrc-region-dropped / TRAP-npuir-arange-pattern-with-whole-plane-reduce（均含知识域 repro）；索引语义判据与「比较-更新次序」见 queue VP-2026-0159/0160/0161；同族骨架与 NaN 追踪见 layout.md PL-1.2/PL-1.21 + traps-compiler.md TRAP-vcmp-ne-ordered-nan + CASE-pool-adaptivemaxpool2d-migration。本任务 `RETROSPECTIVE.md`（op 级/函数级）与 `SESSION_TIMING_ANALYSIS.md` 为 provenance（允许失效）。
+
+pool 家族第三个 TileOPs 迁移算子（AdaptiveMaxPool2dIndicesFwdOp，Developer 模式、纯 Vector、Stage 4 跳过；同族追加）。要点：①**双输出（values + int64 扁平索引）**——索引 = H×W 平面行主序扁平下标 `ih*W_in+iw`，并列取**首个命中**，窗口含 NaN 时值 NaN + 索引取**最后命中的 NaN**，`{+inf,-inf}` 同窗 → 值 `+inf`（§0.1 12 行 torch 2.9.0 CPU 实测）；②**first-hit 的向量化极值方向**：把「严格 `>` 顺序覆写」改写为集合取极值时取**破纪录集合扁平最大值**（`vselect(gt, fv, -1)` + `vmax`）——误用 `vmin`（"第一个破纪录"）静默给出窗口内首个局部峰值的索引（v0 版本 N3 首轮 20426 mismatch，修正后 340 例全 `EQUIV_PASS`）；③**共享累加器的比较-更新次序是正确性字段**：`vmax(acc, v)` 先于 `v > acc` 时判据恒假、索引静默退化为窗口首元素（v0 §3.3 缺陷，公式级 D-1 6 项全 PASS 未覆盖；v1 新增 `N3-ord` 次序守卫 342 checks）；④**Stage 1 设计修订 1 轮**（Stage 2 检视 #1 不通过：first-hit 次序 + 退化路径 UB 预算低报 ≈46% → v1 `CH_deg=min(C,32)` + 逐 buffer 复算 + N3-ord；#2 通过）；⑤**Stage 3 两条 API 陷阱**（`T.vbrc` 标量→region 静默丢弃〔int32 形态向量核 fault 507034〕；`arange` 平面下标 pattern in-chain 读回损坏——values 全对而 14050/16384 索引错，`out=1×1` 交回一般路径）——均转正为 `repro/*.py` 并机械入知识域；⑥**Stage 5 integrate 一次成功**（`integrate_kernel.py` 聚合 `__init__.py` 非幂等第三现，单次运行规避——同 VP-2026-0150）；⑦int32 载体元素级链（transpose/vcast/vmax/vcmp/vselect/rank-2 slice 累加）实测逐位可用，「无 int32 转置先例」不构成能力缺口。
+
+**实测**：Stage 3 内嵌分层测试 L0/L1/L2/Boundary 全过、`[PRECISION_PASS]`——values `max_diff = 0`（fp16/bf16；max 是选择、无累加，`atol=rtol=0` 判据成立），int64 索引 `torch.equal` 精确（0/104487 mismatch）；TileOPs 单算子 report `status=passed`、本算子 rollup **7/7**（`avg_max_abs_err = 0.00e+00`，文件级 `correctness_tests=17` 含兄弟算子 avg 6 + max 4）、benchmark 12/12 通过、9 msprof case 全有效（`invalid_profile_count=0`、`profiler_fallback_count=0`）；本算子 3 例 msprof——global-1x1 `[8,2048,7,7]→(1,1)` fp16 **151.60 µs** / Ratio 2.54% / BW 1.75 TB/s、spp-6x6 `[2,128,56,56]→(6,6)` fp16 **85.36 µs** / 4.57%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 **81.60 µs** / 2.56%（smoke 5.92µs）。Session 墙钟 184.3 min（op 级 10963s elapsed）：Stage 3 开发 62.8%（6944.7s，含两陷阱探针）+ Stage 1 首次设计 12.0% + 设计修订 6.6%。**适用触发条件**：双输出/带索引归约类迁移（索引语义 + 极值方向 + 次序守卫）；`vbrc`/`arange` pattern 形态的落点与 in-chain 消费风险排查；池化族追加迁移的同族骨架复用（Stage 3 占墙钟 62.8% → 复用语料）；池化族集成（共享测试文件 → 读 per-operator rollup）。
