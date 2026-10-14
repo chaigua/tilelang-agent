@@ -104,6 +104,28 @@ def check_ub_budget(text: str) -> dict:
         joined = " ".join(cells)
         if set(joined.replace(" ", "")) <= {"-", " "}:
             continue
+        if (
+            level is not None
+            and cells
+            and re.match(r"^\d", cells[0])
+            and (
+                any(("B/elem" in c or "字节" in c or "驻留" in c) for c in cells)
+                or any(
+                    ("B/elem" in c or "字节" in c or "驻留" in c)
+                    for ln2 in sec.splitlines()
+                    if ln2.lstrip().startswith("|")
+                    for c in ln2.strip().strip("|").split("|")
+                )
+            )
+        ):
+            # Row-N residence tables (N / block_m / 驻留字节 columns): a bare
+            # numeric first cell (N) plus a per-elem-bytes or 驻留 column is a
+            # footprint row, not a header row -- parse it instead of dropping
+            # it (VP-2026-0047) so mixed-dtype byte widths are still caught.
+            vals = _parse_sizes(joined)
+            if vals:
+                buckets[level].extend(vals)
+            continue
         if not any(re.match(r"^[a-zA-Z_]", c) or "缓冲" in c for c in cells):
             continue  # header rows
         if level is None:
@@ -205,6 +227,97 @@ def check_l0c_budget(text: str) -> dict:
     }
 
 
+def _parse_workload_rows(sec: str) -> list:
+    """Per-workload core-split table rows (VP-2026-0047).
+
+    The first cell is the workload name.  Column semantics are taken from the
+    table header when present (an ``MxN`` shape column / a block_m-family
+    column / a declared logical-core column) and otherwise inferred from the
+    cell contents.  A row is recognised when at least one of those three is
+    found.
+    """
+    shape_kind = re.compile(r"shape|形状|配置|尺寸|m\s*[x,、]\s*n", re.I)
+    bm_kind = re.compile(r"\bbm\b|block_?m|row_?blocks?|num_row", re.I)
+    declared_kind = re.compile(r"logical|逻辑核数|核数|num_?kernels?|kernels?|cores?", re.I)
+    header_names = {"workload", "config", "配置", "shape", "用例", "case", "item", "项目"}
+    shape_re = re.compile(r"(\d+)\s*[x×*]\s*(\d+)")
+    bm_re = re.compile(r"\b(?:bm|block_?m|num_row_blocks?|row_?blocks?)\b[^\d\n]{0,8}(\d+)", re.I)
+    declared_re = re.compile(
+        r"(?:逻辑核数|num_kernels?|核数|kernels?|num_logical)[^\d\n]{0,6}(\d+)", re.I
+    )
+
+    table = [
+        [c.strip() for c in ln.strip().strip("|").split("|")]
+        for ln in sec.splitlines()
+        if ln.lstrip().startswith("|")
+    ]
+    table = [
+        cells
+        for cells in table
+        if cells and set("".join(cells).replace(" ", "")) - {"-", " "}
+    ]
+    kinds = None
+    rows = []
+    for cells in table:
+        first = cells[0].lower()
+        if first in header_names or (
+            kinds is None
+            and any(
+                shape_kind.search(c) or bm_kind.search(c) or declared_kind.search(c)
+                for c in cells
+            )
+            and not any(re.fullmatch(r"\d+(?:\.\d+)?", c) for c in cells[1:])
+        ):
+            kinds = [
+                "shape"
+                if shape_kind.search(c)
+                else "bm"
+                if bm_kind.search(c)
+                else "declared"
+                if declared_kind.search(c)
+                else None
+                for c in cells
+            ]
+            continue
+        shape_m = bm = declared = None
+        if kinds and len(kinds) == len(cells):
+            for i, c in enumerate(cells):
+                if kinds[i] == "shape" and shape_m is None:
+                    m = shape_re.search(c)
+                    if m:
+                        shape_m = int(m.group(1))
+                elif kinds[i] == "bm" and bm is None:
+                    m = re.search(r"\d+", c)
+                    if m:
+                        bm = int(m.group(0))
+                elif kinds[i] == "declared" and declared is None:
+                    m = re.search(r"\d+", c)
+                    if m:
+                        declared = int(m.group(0))
+        if shape_m is None:
+            for c in cells:
+                m = shape_re.search(c)
+                if m:
+                    shape_m = int(m.group(1))
+                    break
+        if bm is None:
+            for c in cells:
+                m = bm_re.search(c)
+                if m:
+                    bm = int(m.group(1))
+                    break
+        if declared is None:
+            for c in cells:
+                m = declared_re.search(c)
+                if m:
+                    declared = int(m.group(1))
+                    break
+        if shape_m is None and bm is None and declared is None:
+            continue
+        rows.append({"name": cells[0], "M": shape_m, "bm": bm, "declared": declared})
+    return rows
+
+
 def check_core_split(text: str) -> dict:
     sec = _section(text, "Tiling") or _section(text, "5") or text
     nums = {}
@@ -225,6 +338,40 @@ def check_core_split(text: str) -> dict:
     )
     if m:
         declared = int(m.group(1))
+    # Workload-table core-split rows (VP-2026-0047): a per-workload table
+    # whose cells carry an "MxN" shape plus a block_m-family column lets the
+    # logical-core count be recomputed per row (ceil(M / bm)) and compared
+    # with the declared value when the M/bm patterns above find nothing.
+    workload_rows = (
+        [] if all(k in nums for k in ("M", "bm")) else _parse_workload_rows(sec)
+    )
+    workload_compared = []
+    workload_details = []
+    for idx, row in enumerate(workload_rows, start=1):
+        m_val, bm_val = row["M"], row["bm"]
+        logical = math.ceil(m_val / bm_val) if m_val and bm_val else None
+        workload_details.append(
+            f"row{idx} {row['name']}: ceil({m_val}/{bm_val})"
+            + (f" = {logical}" if logical is not None else " = ?")
+            + (f" vs declared {row['declared']}" if row["declared"] is not None else "")
+        )
+        if logical is not None and row["declared"] is not None:
+            workload_compared.append(row["declared"] == logical)
+    if not all(k in nums for k in ("M", "bm")) and workload_compared:
+        return {
+            "check": "core_split",
+            "status": "pass" if all(workload_compared) else "fail",
+            "detail": "workload-table recompute: "
+            + "; ".join(workload_details)
+            + f"; declared logical cores = {declared}",
+        }
+    if not all(k in nums for k in ("M", "bm")) and workload_rows:
+        return {
+            "check": "core_split",
+            "status": "skip",
+            "detail": f"insufficient parsed dims {nums}; declared logical "
+            f"cores = {declared}; recognised workload rows = {len(workload_rows)}",
+        }
     if not all(k in nums for k in ("M", "bm")):
         return {
             "check": "core_split",

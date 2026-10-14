@@ -35,6 +35,8 @@ decided_by: evolver / human / -   # 裁决者
 
 > **条目迁移（2026-10-14 apply）**：VP-2026-0176/0177/0178/0179 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 
+> **条目迁移（2026-10-14 apply 批次 2）**：VP-2026-0150 / 0047 / 0020 / 0054 / 0116 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
+
 ### Tier 1（P 类，2 次独立证据后合入）
 
 > **条目迁移（2026-10-13 蒸馏）**：VP-2026-0003 第二证达标（adaptive_avg_pool2d 迁移），已合入 `pattern-library/layout.md` PL-1.21-vector-persistent-split，完整记录移至下方 `## Decided` 归档区。
@@ -1220,38 +1222,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: -
 
-## VP-2026-0020
-- type: R
-- title: gate 1 S1-REF-PATHS 路径存在性核对未剥离 `#`/`::` 锚后缀与省略号——`DESIGN.md::修订记录`/`.py#L345` 类合法引用被判「引用的仓库路径不存在」
-- evidence:
-  - examples/multi_head_attention/_gqa_prefill_fwd_kernel/.task_timeline.jsonl（同 VP-2026-0019 的两次 Stage 1 runtime fail）
-  - .agents/tools/gate_lint.py#L64-84（_ref_path_failures：REF_PATH_RE 的排除字符类不含 ASCII `:`/`#`，token 连同锚后缀一起做 os.path.exists 判定）+ #L42-44（REF_PATH_RE 定义）
-  - 正则行为机械复现（2026-09-07 蒸馏会话）：`examples/.../DESIGN.md::修订记录` 与 `examples/deepseek_v4/example_sparse_attn_kernel_highperf.py#L345` 两个 token 均含锚后缀导致 exists 判 false；发生账户同 VP-2026-0019（conductor 终态钩子输入 + 复盘缺口）
-  - 〔2026-10-13 第五现（不同任务，pool 族）+ 两个提案原文未覆盖的形态，task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z〕Stage 1 gate-1 `S1-REF-PATHS` 失败 1 次（3 处 token 误判），新增形态：① `examples/TileOPs/tests/ops/test_pool.py:130`——ASCII `:行号` 紧贴路径（本提案 `rstrip(".,;:!?、。】")` 只剥**尾部**冒号，`:` 处于 token 中段，未被覆盖）；② `.../bench_pool.py:test_adaptive_max_pool2d_bench`——`...` 缩写与 `:函数名` 并存（本提案 `"/..." in token` 可覆盖 `...`，但 `:函数名` 后缀仍在）；③ `docs/…/T.transpose.md`——**全角省略号 `…`（U+2026）**，本提案只匹配 ASCII `...` 故不覆盖。仅修 5 处引用格式即通过（设计逐字保留，SESSION_TIMING_ANALYSIS §3 估 ≈105s）。**本条修复须扩为**：token 内嵌 ASCII `:` 后接数字/标识符的锚后缀剥离（或改用「路径须以已知扩展名/目录结尾」的正向识别）+ `…` 与 `...` 双省略号形态；设计侧写作自检另立 **VP-2026-0154**（两案互补）。
-  - 〔2026-09-15 任务登记的同主题复发（S1-PLACEHOLDER/S1-REF-PATHS 误报系列，见 stats.md §3）与本条合并计数：本条提案 pending 期间已积累 ≥5 起实证，建议审批简报置顶〕
-- repro: python3 -c "import re; print([m.group(0) for m in re.finditer(r'(?:docs|examples|testing|\.agents)/[^\s\`\x27\"<>()\[\]（）【】：，。；、！？]+', '见 examples/multi_head_attention/_gqa_prefill_fwd_kernel/DESIGN.md::修订记录')])"
-- toolchain_stamp: gate_lint.py 现行版本；误判发生于 2026-09-07 expert 迁移任务
-- target_doc: .agents/tools/gate_lint.py
-- delta: |
-    动作: update（替换 token 清理两行）
-    定位锚: |
-      (于 _ref_path_failures 函数体内)
-          token = m.group(0).rstrip(".,;:!?、。】")
-    old 文本: |
-          token = m.group(0).rstrip(".,;:!?、。】")
-    new 文本: |
-          # Strip anchor suffixes (path#heading / path::section) before the
-          # existence check; elided paths (examples/foo/...) are not concrete.
-          token = re.split(r"#|::", m.group(0), maxsplit=1)[0].rstrip(".,;:!?、。】")
-          if token.endswith("...") or "/..." in token:
-              continue
-    动机: 设计文档以 `path#heading`/`path::section` 引用仓库工件是合法引证形态（本任务 DESIGN/REVIEW 多处使用）；现行正则把锚后缀并入 token 判不存在——已验证修复后 `DESIGN.md::修订记录` → `DESIGN.md`、`.py#L345` → `.py` 正确判定，尾部省略号路径 rstrip 后落到父目录存在性判定。
-- status: pending
-- confirmations: -/-
-- created_by: task multi_head_attention-_gqa_prefill_fwd_kernel-20260907T115424Z 2026-09-07
-- decided_by: -
-- decided_note: -
-
 ## VP-2026-0023
 - type: R
 - title: DESIGN 伪代码单一权威源规则——伪代码与实现注/设计步骤矛盾时必须先消歧再冻结（单边权威声明不够）
@@ -1842,53 +1812,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: -
 
-## VP-2026-0047
-- type: R
-- title: design_calc_check.py 补两类表格形态解析——「按 N 分行的驻留预算表」（§4.5）与「workload 表格式分核表」（§5.5）当前均 skip，VP-2026-0009 混合字节口径类错误的机械拦截位在这些形态上失效
-- evidence:
-  - examples/ada_layer_norm/_ada_layer_norm_kernel/RETROSPECTIVE.md（Stage 2 Skill Flow Issues 首行：ub_budget=skip、core_split=skip 的机械复核 JSON + REVIEW.md 人工逐行复算补位记录）
-  - .agents/tools/design_calc_check.py#L100-103（check_ub_budget 行过滤 `^[a-zA-Z_]|缓冲` 把 N 值数字行当 header 跳过）+ #L156-158（skip detail "no per-level buffer tables parsed"）+ #L231-233（core_split skip "insufficient parsed dims"）
-  - 交叉引用：queue VP-2026-0009（UB 预算混合字节口径——本条是其机械拦截位的形态扩展）
-  - 〔2026-09-17 第二证（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕design_calc_check 对该 DESIGN.md **两轮（v0/v1）均 skip 3/4**（ub_budget / l0c_budget / core_split），且 v1 §4.5 已含逐行 Bytes 列与「稳态峰值合计」行、§5.2 有 bl/bs/bp/bn 代码块、§5.5 有 w1–w4 逻辑核数列表仍全部无法解析——与 ada_layer_norm（N 分行驻留表形态）构成**两类表格形态的独立第二证**；REVIEW 只能人工复算（UB 115.25KB 逐项加和、L0C 16KB、逻辑核数 8/768/2560/16384）。机械拦截位（VP-2026-0009 类）连续两任务不生效，建议审批时把本条的 §5.5 workload 分核表解析与 ssd 的 w1–w4 列表形态并入 new 文本 2 的识别范围
-  - 〔2026-09-20 第三现 + 新子缺陷，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕4 项检查 3 skip（ub_budget/l0c_budget/core_split——该任务 §4.3 多张 buffer 表 + §5.2 block 常量代码块 + §5.5 分核三要素列表均无法解析，仅 r3_metrics 生效，全靠人工复算兜底）；**新子缺陷**：l0c_budget 解析取 "block 64x128"（bn=128 被当 block_N），与真实 L0C acc [bl,bp]=[64,64] 不符（结论 pass 侥幸同向）——GEMM 类多 block 参数文档的维度取用需语义识别而非首个数值对，建议并入 new 文本 2 识别范围（优先匹配 alloc_L0C/L0C 容量句上下文中的 [bl,bp] 组合）
-  - 〔2026-09-28 第四现（不同任务，reduction 族）+ 两类新表形态，task argmax-_argreduce_kernel-20260924T031005Z〕design_calc_check 对该 DESIGN v0/v1 两轮检视 + v1 复审（同一任务三轮）ub_budget/core_split 全 skip，仅 r3_metrics 生效；人工复算 ~20 组数字（含 12 组分核算术）是发现膨胀系数数据点混用与 C1 缓冲区间漏 fp32 bm=1 的唯一途径。**两类新表形态**（建议并入识别范围）：① §4.5「B/elem 表 + 逐配置预算表」（列名含 手工预算/×2 双缓冲/结论）；② §5.5「逐 workload 分核表」（列名含 num_row_blocks/num_kernels/核内任务数）。REVIEW.md v0/v1 机械复核表（skip 三行 + 人工复算结论）。**合入优先级建议上调**：四任务（ada/ssd×2/argmax）连续命中，reduction 族最严重的阻塞项（workload (M,N) 差 1024×）正落在 skip 的 core_split 域——与 VP-2026-0136（--manifest 真值推导模式）互补：本条修「表解析」，该条补「真值来源」
-  - 〔2026-10-13 第五现（不同任务，pool 族首个迁移）+ 新子缺陷，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z〕纯 Vector、**任务维 Tiling**的设计几乎必然全部 skip：`design_calc_check.py` 四项中三项 skip（`ub_budget`/`l0c_budget`/`core_split`），仅 `r3_metrics=pass`；`core_split` 按 GEMM 形状（`M/bm`、`N/bn`）解析，对任务维命名（`(n, o_H, c_block)`）恒 skip。**新子缺陷**：`core_split` 的 skip detail 把 §5.5 的小节编号「5」误当 declared logical cores（输出 `"insufficient parsed dims {}; declared logical cores = 5"`）——识别器对小节编号与逻辑核数不做语义区分。`ub_budget` 因 §4.5 表用「**总计（spp CH=64）**」粗体行 + 纯文本层级描述而 skip（第三种未覆盖表形态：单行总量行 + 文本层级）。检视侧后果：纯 Vector 设计的 UB 逐 buffer 求和、`num_logical` 逐 workload 复算、物理核数实查全部落人工；「skip 不得当 pass」已由检视者手工写「机械跳过，人工已核」。建议识别范围并入：① 任务维（非 M/bm）分核表；② §5.5 编号与逻辑核数区分；③ 单行总量 UB 表形态
-  - 〔2026-10-13 第六现（不同任务，pool 族同族追加），task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z〕纯 Vector、任务维 Tiling 的设计**再次三项全 skip**（`ub_budget`/`l0c_budget`/`core_split`），仅 `r3_metrics=pass`——与第五现（adaptive_avg_pool2d）同形态：`§4.5` 用「**总计（spp CH=64）**」单行总量行 + 纯文本层级描述（UB 逐 buffer 复算 ≈34.4KB / resnet C4 ≈38.5KB 的手工求和）、`num_logical` 逐 shape 复算落人工（256/24/14/1）。纯 Vector 池化/归约类设计连续两任务全 skip，机械拦截位不生效——建议识别范围并入前述 ①②③（两任务独立佐证，pool 族为第二族证据）
-  - 〔2026-10-14 第七现（不同任务，pool 族第三个算子、纯 Vector 任务维 Tiling），task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z〕与第五/第六现**同形态第三次**（pool 族三连）：`design_calc_check.py` 对 §4.5「逐 buffer 清单 + 按编译期分支分路径」的表**三项全 skip**（`ub_budget`/`l0c_budget`/`core_split`，仅 `r3_metrics=pass`）——退化路径 UB 预算的机器拦截位持续不生效，人工复算成为唯一途径，且本次人工复算正是 Stage 2 唯一发现「C4 低报 ≈46%、C4b 漏计模式构造 buffer ≈51KB」（v0 记 90KB/64KB vs 实算 132.8KB/112.1KB）的手段（`REVIEW.md#问题 2`；v1 改逐 buffer 复算 + `CH_deg=min(C,32)` 收窄，见 hardware-cost-model.md §5 第三数据点）。pool 族三连 + reduction/ada 已累计七现，本条修复优先级与 VP-2026-0136（`--manifest` 真值推导）同档。
-- repro: 复现条件——DESIGN.md 采用「按 N 分行的驻留预算表」（§4.5）或「workload 表格式分核表」（§5.5）形态时跑 design_calc_check 两个检查项（当前均 skip）
-  - 〔provenance，允许失效〕任务内复现命令：python3 .agents/tools/design_calc_check.py check --design examples/ada_layer_norm/_ada_layer_norm_kernel/DESIGN.md
-- toolchain_stamp: design_calc_check.py 现行版本；失效环境 tilelang 0.1.2+a83118285a / 2026-09-10
-- target_doc: .agents/tools/design_calc_check.py
-- delta: |
-    动作: update（两处解析扩展）
-    定位锚 1: |
-      (check_ub_budget 函数体内)
-          if not any(re.match(r"^[a-zA-Z_]", c) or "缓冲" in c for c in cells):
-              continue  # header rows
-    old 文本 1: （即上述定位锚 1 原文）
-    new 文本 1: |
-          if not any(re.match(r"^[a-zA-Z_]", c) or "缓冲" in c for c in cells):
-              # Row-N residence tables (N / block_m / 驻留字节 columns):
-              # numeric first cell (N) + a per-elem-bytes or 驻留 column ->
-              # parse as per-N footprint rows (bytes_per_elem * N) for the
-              # UB budget check, so mixed-dtype byte widths are still caught.
-              if not (cells and re.match(r"^\d", cells[0]) and any(
-                  ("B/elem" in c or "字节" in c or "驻留" in c) for c in cells
-              )):
-                  continue  # header rows
-    定位锚 2: |
-      (check_core_split 函数体内，skip 分支)
-              "detail": f"insufficient parsed dims {nums}; declared logical "
-    old 文本 2: （即上述定位锚 2 原文所在 skip 分支）
-    new 文本 2: |
-      同分支前增加 workload 表格式识别：首列为 workload 名、含 "MxN"/shape 与 bm 列的表格行，从 (M, bm) 重算 num_logical = ceildiv(M, bm) 与表中声明值对照（无法解析全部维度时保留 skip，但 detail 注明已识别的 workload 行数）
-    动机: ada_layer_norm 的 §4.5/§5.5 采用「N 分行驻留表 + workload 分核表」形态，两项机械检查双双 skip，混合字节口径错误只能靠人工逐行复算拦截——正是 VP-2026-0009 定义的机械拦截位，扩展解析使该防线对常见表格形态生效。
-- status: pending
-- confirmations: -/-
-- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T132324Z 2026-09-10
-- decided_by: -
-- decided_note: -
-
 ## VP-2026-0048
 - type: R
 - title: core-split-strategy.md §2.2 reviewer 侧物理核数实查的替代验证条款——reviewer 无 NPU 设备连接时以「实查记录存在 + 常数表交叉 + 同款先例」三证放行，设备变更场景标注复核责任在 Stage 3/4
@@ -2002,40 +1925,6 @@ decided_by: evolver / human / -   # 裁决者
     new 文本: |
       6. 每个实验分支跑 L0 精度回归，按分支类型分层：**参数分支**（同 kernel 仅改 config，如 bm/num_kernels 扫描）可用 bench 内嵌 golden check（精确 (shape, dtype, config) 比对，如 bench.py `--check`）等价替代完整 L0 套件——内嵌 L0 表不覆盖被扫的 config 值；**结构分支**（kernel 代码改动）必须全量 `--level all`（ada_layer_norm 2026-09-10 实证形态：round 1 参数扫描 18 行全 --check、round 2 结构改动全量 + 分支 `--level all`）。
     动机: 「每个实验分支跑 L0」对参数分支语义模糊（L0 表按基准 config 参数化，不覆盖扫描值）——显式分层消除歧义，避免参数分支误跑不覆盖的全量（浪费）或结构分支误用单点 check（漏检）。
-- status: pending
-- confirmations: -/-
-- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T145715Z 2026-09-10
-- decided_by: -
-- decided_note: -
-
-## VP-2026-0054
-- type: R
-- title: ab_test.py 输出目录创建后内置 chmod 700——msprof 权限校验拒绝 group-writable 目录，工具自建目录不 chmod 时采集必失败（需 umask 077 前置调用才可避开）
-- evidence:
-  - examples/TileOPs/tileops/kernels/norm/ada_layer_norm/ada_layer_norm_kernel/perf_opt/opt_log.md#Skill-Retrospective-工具/环境问题（ab_test.py 建目录未 chmod 700，msprof 拒写 "writable by any other users or group users"——需 umask 077 前置调用）
-  - .agents/tools/ab_test.py#L50-51（os.makedirs 两处，无 chmod）
-  - 交叉引用：queue VP-2026-0037（msprof 父目录权限规则——profile-collection.md 规则侧，本条为工具侧互补修复）
-- repro: 复现条件——默认 umask 002 的共享 checkout 下以默认权限建 msprof 输出目录后执行采集（本任务实证形态；VP-2026-0037 的 8/8 首采失败为同机制父目录侧实证）
-  - 〔2026-09-17 第三现（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕opt_log §9.4——ab_test.py 的 msprof 输出目录 group-writable 拒采再现（R5 蛇形裁决 pair 采集），本任务以预创建 pair 目录规避；两提案（0037 规则侧 / 0054 工具侧）均 pending 未 apply 期间的第三次发生
-- toolchain_stamp: CANN 8.5.0 msprof / Ascend910B2C / 2026-09-10
-- target_doc: .agents/tools/ab_test.py
-- delta: |
-    动作: update（两处 makedirs 后追加 chmod）
-    定位锚: |
-      (run_pair 函数体内)
-          os.makedirs(out_dir, exist_ok=True)
-          os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    old 文本: |
-          os.makedirs(out_dir, exist_ok=True)
-          os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    new 文本: |
-          os.makedirs(out_dir, exist_ok=True)
-          os.makedirs(os.path.dirname(log_path), exist_ok=True)
-          # msprof refuses to write into group/world-writable dirs (same
-          # check as VP-2026-0037's parent-dir rule); self-created dirs
-          # must be tightened explicitly regardless of umask.
-          os.chmod(out_dir, 0o700)
-    动机: msprof 权限校验覆盖输出目录自身；工具自建目录依赖调用方 umask 077 是隐式契约——内置 chmod 消除对调用环境的依赖（规则侧 VP-2026-0037 已覆盖「须 700」，本条使工具自身满足该规则）。
 - status: pending
 - confirmations: -/-
 - created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T145715Z 2026-09-10
@@ -3088,65 +2977,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: -
 
-## VP-2026-0116
-- type: R
-- title: kb_stale_check.py 的 stamp diff 过滤非源码路径——repo HEAD（含 .agents/docs 知识库 commit）被当作 tilelang 工具链戳产生全库假阳性（stale_count=125，实际 tilelang 源码零改动）
-- evidence:
-  - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260921T120526Z：opt_log.md §0 E-5 段（启动时 kb_stale_check 报 stale_count=125 几乎全库，本 kernel 直接相关条目全部标「待重验」——五项结构否决的 carry-over 论证本可直接成立，被迫逐条 git diff 自证）+ Skill Retrospective Skill Flow Issues 第 2 行
-  - 机械复核（2026-09-21 蒸馏会话）：`git diff --stat 15ad002..96f287e` = 7 个文件全部位于 .agents/（queue/stats/INDEX/attention/cases/constants/repro——evolution commit），tilelang/ 源码零改动；kb_stale_check 现跑 stale_count=124——假阳性复现
-  - 根因：.agents/tools/kb_stale_check.py detect_current_stamp() 以 `git rev-parse --short=10 HEAD`（repo HEAD）为 tilelang_commit——知识库文档 commit 也推进 HEAD，使全部旧工具链戳条目批量失配
-  - 交叉引用：queue VP-2026-0089（消费侧口径——全局 stale_count 不作单条目判定依据，已三现）/ VP-2026-0101（消费侧两分法）——本条为工具侧根因修复，三案互补建议同批审批
-- repro: python3 .agents/tools/kb_stale_check.py（观察 stale_count）；git diff --stat 15ad002..96f287e（docs-only delta 复现命令——两相对照即假阳性证据）
-- toolchain_stamp: kb_stale_check.py 现行版本；发生环境 tilelang 0.1.2+96f287eeaa / CANN 8.5.0 / Ascend910B2C / 2026-09-21
-- target_doc: .agents/tools/kb_stale_check.py
-- delta: |
-    动作: update（detect_current_stamp 的 HEAD 查询替换为源码树过滤查询）
-    定位锚: |
-      (detect_current_stamp 函数体内)
-          try:
-              head = subprocess.run(
-                  ["git", "rev-parse", "--short=10", "HEAD"],
-                  cwd=REPO_ROOT,
-                  capture_output=True,
-                  text=True,
-                  timeout=10,
-              )
-              if head.returncode == 0:
-                  stamp["tilelang_commit"] = head.stdout.strip()
-          except Exception:  # noqa: BLE001 -- advisory tool
-              pass
-    old 文本: （即上述定位锚原文）
-    new 文本: |
-          try:
-              # The stamp must track the tilelang SOURCE tree, not repo HEAD:
-              # knowledge-base/doc-only commits (.agents/, docs/, examples/)
-              # also advance HEAD and would flip the stamp, producing
-              # whole-library false positives (2026-09-21 ssd rebuild task:
-              # stale_count=125 while `git diff --stat 15ad002..96f287e`
-              # showed 7 .agents files and zero tilelang source changes).
-              head = subprocess.run(
-                  [
-                      "git", "log", "-1", "--format=%h",
-                      "--",
-                      "tilelang/", "src/", "tilelangir/", "3rdparty/",
-                      "pyproject.toml", "CMakeLists.txt",
-                  ],
-                  cwd=REPO_ROOT,
-                  capture_output=True,
-                  text=True,
-                  timeout=10,
-              )
-              if head.returncode == 0 and head.stdout.strip():
-                  stamp["tilelang_commit"] = head.stdout.strip()
-          except Exception:  # noqa: BLE001 -- advisory tool
-              pass
-    动机: stale 检测的语义是「tilelang 行为可能变了」；文档 commit 不改变编译器行为，却使每次蒸馏后的全库条目批量假阳性——optimizer Phase 0 被迫逐条 git diff 自证（本任务实证），或更糟：照单全收「待重验」清单浪费调优预算。源码树过滤（tilelang/ src/ tilelangir/ 3rdparty/ + 构建文件——路径集 apply 时可复核增删）使 stamp 只随真实工具链变更推进。
-- status: pending
-- confirmations: -/-
-- created_by: task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260921T120526Z 2026-09-21
-- decided_by: -
-- decided_note: -
-
 ## VP-2026-0117
 - type: R
 - title: conductor 终态钩子前置「任务产物保全」步骤——DONE 前对算子目录未提交产物做零工作树影响的 git 保全（临时索引 write-tree + update-ref），防 perf_opt 外部删除致算子断裂与调优档案永久丢失
@@ -3493,30 +3323,6 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
 - decided_by: -
 - decided_note: ①的知识侧数据条目已 Tier 0 合入 traps-compiler.md TRAP-tir-range-loop-not-unrolled（含 repro）；本条为开发 skill 的前置核对流程侧。
-
-## VP-2026-0150
-- type: R
-- title: integrate_kernel.py 两缺陷——① 聚合 `__init__.py` 生成非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢掉 helper re-export）；② `sync_wrapper_ascend_mode` 在两层类继承时把 `ascend_mode` 写到子类而非直接继承 `Kernel` 的基类
-- evidence:
-  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/RETROSPECTIVE.md Stage 5 attempt 1/2（Skill Flow Issues + Value Point Proposals）——attempt 1 二次运行 `integrate_kernel.py` 后 `ImportError: cannot import name 'adaptive_bin' from ...adaptive_avg_pool2d_kernel`（修复链见 `examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/integration_log.md` Debug history + `history_version/__init___s5_attempt1.py`）；attempt 2 gate `S5-ASCEND-MODE` 失败（两层类 `AdaptivePool2dKernelBase(Kernel)` + `AdaptiveAvgPool2dKernel(Base)`，`meta.kernel_class_name` 指子类 → 直接 `Kernel` 基类无字面量 → `len(class_modes)!=1`），gate_lint 只看直接基类为 `Kernel` 的类（任务工作区/集成包，未上库）
-  - 交叉引用：queue VP-2026-0055（同文件 gen_init_py 静默降级）/ VP-2026-0064（幂等剥离注释行）/ VP-2026-0012（幂等重跑覆盖集成侧补丁）——同缺陷集群
-  - 〔2026-10-13 第二现（不同任务，pool 族同族追加），task adaptive_max_pool2d-adaptive_max_pool2d-20261013T103402Z〕同缺陷在本任务 Stage 5 再现：`examples/adaptive_max_pool2d/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢失 helper re-export），本任务以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 `__init__.py` re-export 全 3 名：`_adaptive_max_pool2d_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`；`smoke-ok`）。两任务独立再现 ⟹ ① 的修复（持久化 wrapper 契约名 / already integrated 时跳过 `__init__.py` 重生成）证据链增强——建议审批简报置顶（跨任务第二现）。
-  - 〔2026-10-14 第三现（连续第三个 pool 族算子，不同任务），task adaptive_max_pool2d_with_indices-AdaptiveMaxPool2dIndicesFwdOp-20261014T005659Z〕同缺陷第三度出现：`examples/adaptive_max_pool2d_with_indices/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行 + `examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/integration_log.md` Issues 第 1 条——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 重写后 `parse_wrapper_imports()` 返回空 → `gen_init_py()` 只按 integrated-file keys 重建 → 丢 helper re-export）；本任务同样以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 3 名 re-export：`_adaptive_max_pool2d_with_indices_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`，`smoke-ok`）。**连续三任务（avg → max → max-with-indices）独立再现，无一次被修复，两次靠同一句人工纪律规避**——① 的修复已积压三起实证，强烈建议审批简报置顶（与 VP-2026-0064「幂等检查剥离注释行」/ VP-2026-0055「产物侧校验」同批）。
-- repro: repro-missing（集成脚本规则；复现条件 = 已重写 wrapper 后重跑 integrate_kernel.py 观察 __init__.py 丢失 helper re-export；或对两层 Kernel 继承 wrapper 跑 `statectl gate 5` 观察 S5-ASCEND-MODE）
-- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
-- target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
-- delta: |
-    动作: update（两处）
-    定位锚 1: "def parse_wrapper_imports(wrapper_path: Path, extracted_module: str) -> list[str]:"
-    new 文本 1: 在 `gen_init_py` 调用侧（main 流程）持久化 wrapper 契约名：首次运行把 `parse_wrapper_imports` 得到的名字清单写入 `.migration_meta.json`（如 `wrapper_import_names`）；重跑时该字段非空则以其为 `gen_init_py` 的输入（不再从已重写的 wrapper 重新解析），或在 `rewrite_wrapper_import` 报「already integrated」时跳过 `__init__.py` 重生成——消除「wrapper 已重写 → 解析为空 → `__init__.py` 只剩 `integrated_files` keys → helper re-export 丢失 → import smoke ImportError」。
-    定位锚 2: "def sync_wrapper_ascend_mode(wrapper_path: Path, kernel_class: str | None, mode: str) -> bool:"
-    new 文本 2: `kernel_class` 给出时把目标类的选择从「名字等于 `kernel_class` 的类」改为「`meta.kernel_class_name` 的 MRO 中直接继承 `Kernel` 的类」（或在无 `kernel_class` 时对全部 bases 含 `Kernel` 的 wrapper 类写值）——两层 wrapper（`Base(Kernel)` + `Subclass(Base)`）场景下 gate_lint `S5-ASCEND-MODE` 只度量直接继承 `Kernel` 的类，把字面量写到子类会留下 direct-`Kernel` 基类无字面量而门禁失败。
-    动机: 两缺陷在本任务各消耗一次 Stage 5 返工（attempt 1 幂等重跑破坏 import、attempt 2 gate 失败 + 行为中性修复的时间戳对账 164.9s）；同一脚本内两处，独立于既有 VP-2026-0055（产物侧校验）的根因。
-- status: pending
-- confirmations: -/-
-- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
-- decided_by: -
-- decided_note: 与 VP-2026-0055/0064/0012 同缺陷集群，审批简报时建议同批；②的另一可行解在 gate_lint 侧（解析 `meta.kernel_class_name` 的 MRO），审批时可选路由。
 
 ## VP-2026-0151
 - type: R
@@ -4384,3 +4190,200 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task max_pool2d-_max_pool2d_kernel-20261014T062320Z 2026-10-14
 - decided_by: human
 - decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.opencode/agents/tilelang-op-integrator.md` 失败分类表——在「测试/用例自身问题」行之前插入「NPU reference 后端能力缺口」子类行（锚文本唯一命中；原行保留）。E-4 预验证 PASS（同批副本应用 + 锚点唯一 + standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure；repro 为集成期流程规则、会话级条件 → 回归 SKIPPED）。
+
+## VP-2026-0150
+- type: R
+- title: integrate_kernel.py 两缺陷——① 聚合 `__init__.py` 生成非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢掉 helper re-export）；② `sync_wrapper_ascend_mode` 在两层类继承时把 `ascend_mode` 写到子类而非直接继承 `Kernel` 的基类
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z：examples/adaptive_avg_pool2d/RETROSPECTIVE.md Stage 5 attempt 1/2（Skill Flow Issues + Value Point Proposals）——attempt 1 二次运行 `integrate_kernel.py` 后 `ImportError: cannot import name 'adaptive_bin' from ...adaptive_avg_pool2d_kernel`（修复链见 `examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/integration_log.md` Debug history + `history_version/__init___s5_attempt1.py`）；attempt 2 gate `S5-ASCEND-MODE` 失败（两层类 `AdaptivePool2dKernelBase(Kernel)` + `AdaptiveAvgPool2dKernel(Base)`，`meta.kernel_class_name` 指子类 → 直接 `Kernel` 基类无字面量 → `len(class_modes)!=1`），gate_lint 只看直接基类为 `Kernel` 的类（任务工作区/集成包，未上库）
+  - 交叉引用：queue VP-2026-0055（同文件 gen_init_py 静默降级）/ VP-2026-0064（幂等剥离注释行）/ VP-2026-0012（幂等重跑覆盖集成侧补丁）——同缺陷集群
+  - 〔2026-10-13 第二现（不同任务，pool 族同族追加），task adaptive_max_pool2d-adaptive_max_pool2d-20261013T103402Z〕同缺陷在本任务 Stage 5 再现：`examples/adaptive_max_pool2d/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢失 helper re-export），本任务以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 `__init__.py` re-export 全 3 名：`_adaptive_max_pool2d_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`；`smoke-ok`）。两任务独立再现 ⟹ ① 的修复（持久化 wrapper 契约名 / already integrated 时跳过 `__init__.py` 重生成）证据链增强——建议审批简报置顶（跨任务第二现）。
+  - 〔2026-10-14 第三现（连续第三个 pool 族算子，不同任务），task adaptive_max_pool2d_with_indices-AdaptiveMaxPool2dIndicesFwdOp-20261014T005659Z〕同缺陷第三度出现：`examples/adaptive_max_pool2d_with_indices/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行 + `examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/integration_log.md` Issues 第 1 条——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 重写后 `parse_wrapper_imports()` 返回空 → `gen_init_py()` 只按 integrated-file keys 重建 → 丢 helper re-export）；本任务同样以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 3 名 re-export：`_adaptive_max_pool2d_with_indices_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`，`smoke-ok`）。**连续三任务（avg → max → max-with-indices）独立再现，无一次被修复，两次靠同一句人工纪律规避**——① 的修复已积压三起实证，强烈建议审批简报置顶（与 VP-2026-0064「幂等检查剥离注释行」/ VP-2026-0055「产物侧校验」同批）。
+- repro: repro-missing（集成脚本规则；复现条件 = 已重写 wrapper 后重跑 integrate_kernel.py 观察 __init__.py 丢失 helper re-export；或对两层 Kernel 继承 wrapper 跑 `statectl gate 5` 观察 S5-ASCEND-MODE）
+- toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
+- delta: |
+    动作: update（两处）
+    定位锚 1: "def parse_wrapper_imports(wrapper_path: Path, extracted_module: str) -> list[str]:"
+    new 文本 1: 在 `gen_init_py` 调用侧（main 流程）持久化 wrapper 契约名：首次运行把 `parse_wrapper_imports` 得到的名字清单写入 `.migration_meta.json`（如 `wrapper_import_names`）；重跑时该字段非空则以其为 `gen_init_py` 的输入（不再从已重写的 wrapper 重新解析），或在 `rewrite_wrapper_import` 报「already integrated」时跳过 `__init__.py` 重生成——消除「wrapper 已重写 → 解析为空 → `__init__.py` 只剩 `integrated_files` keys → helper re-export 丢失 → import smoke ImportError」。
+    定位锚 2: "def sync_wrapper_ascend_mode(wrapper_path: Path, kernel_class: str | None, mode: str) -> bool:"
+    new 文本 2: `kernel_class` 给出时把目标类的选择从「名字等于 `kernel_class` 的类」改为「`meta.kernel_class_name` 的 MRO 中直接继承 `Kernel` 的类」（或在无 `kernel_class` 时对全部 bases 含 `Kernel` 的 wrapper 类写值）——两层 wrapper（`Base(Kernel)` + `Subclass(Base)`）场景下 gate_lint `S5-ASCEND-MODE` 只度量直接继承 `Kernel` 的类，把字面量写到子类会留下 direct-`Kernel` 基类无字面量而门禁失败。
+    动机: 两缺陷在本任务各消耗一次 Stage 5 返工（attempt 1 幂等重跑破坏 import、attempt 2 gate 失败 + 行为中性修复的时间戳对账 164.9s）；同一脚本内两处，独立于既有 VP-2026-0055（产物侧校验）的根因。
+- status: merged
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z 2026-10-13
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py` 两处（① wrapper 契约名持久化到 `.migration_meta.json.wrapper_import_names` → 重跑不再丢 helper re-export；② `sync_wrapper_ascend_mode` 经 MRO 解析到直接继承 `Kernel` 的基类）。锚文本（两处 `def` 行）各唯一命中、原行保留、纯增量（+72 行 / 0 删除行）。E-4 预验证 PASS：repro 为可执行脚本场景（幂等重跑 + 两层类继承）——控制组复现两缺陷（重跑丢 helper re-export / `ascend_mode` 写到子类）、编辑组均修复；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。〔原备注〕与 VP-2026-0055/0064/0012 同缺陷集群；②的另一可行解在 gate_lint 侧（解析 `meta.kernel_class_name` 的 MRO），本批采用脚本侧方案。
+
+## VP-2026-0047
+- type: R
+- title: design_calc_check.py 补两类表格形态解析——「按 N 分行的驻留预算表」（§4.5）与「workload 表格式分核表」（§5.5）当前均 skip，VP-2026-0009 混合字节口径类错误的机械拦截位在这些形态上失效
+- evidence:
+  - examples/ada_layer_norm/_ada_layer_norm_kernel/RETROSPECTIVE.md（Stage 2 Skill Flow Issues 首行：ub_budget=skip、core_split=skip 的机械复核 JSON + REVIEW.md 人工逐行复算补位记录）
+  - .agents/tools/design_calc_check.py#L100-103（check_ub_budget 行过滤 `^[a-zA-Z_]|缓冲` 把 N 值数字行当 header 跳过）+ #L156-158（skip detail "no per-level buffer tables parsed"）+ #L231-233（core_split skip "insufficient parsed dims"）
+  - 交叉引用：queue VP-2026-0009（UB 预算混合字节口径——本条是其机械拦截位的形态扩展）
+  - 〔2026-09-17 第二证（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕design_calc_check 对该 DESIGN.md **两轮（v0/v1）均 skip 3/4**（ub_budget / l0c_budget / core_split），且 v1 §4.5 已含逐行 Bytes 列与「稳态峰值合计」行、§5.2 有 bl/bs/bp/bn 代码块、§5.5 有 w1–w4 逻辑核数列表仍全部无法解析——与 ada_layer_norm（N 分行驻留表形态）构成**两类表格形态的独立第二证**；REVIEW 只能人工复算（UB 115.25KB 逐项加和、L0C 16KB、逻辑核数 8/768/2560/16384）。机械拦截位（VP-2026-0009 类）连续两任务不生效，建议审批时把本条的 §5.5 workload 分核表解析与 ssd 的 w1–w4 列表形态并入 new 文本 2 的识别范围
+  - 〔2026-09-20 第三现 + 新子缺陷，task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z〕4 项检查 3 skip（ub_budget/l0c_budget/core_split——该任务 §4.3 多张 buffer 表 + §5.2 block 常量代码块 + §5.5 分核三要素列表均无法解析，仅 r3_metrics 生效，全靠人工复算兜底）；**新子缺陷**：l0c_budget 解析取 "block 64x128"（bn=128 被当 block_N），与真实 L0C acc [bl,bp]=[64,64] 不符（结论 pass 侥幸同向）——GEMM 类多 block 参数文档的维度取用需语义识别而非首个数值对，建议并入 new 文本 2 识别范围（优先匹配 alloc_L0C/L0C 容量句上下文中的 [bl,bp] 组合）
+  - 〔2026-09-28 第四现（不同任务，reduction 族）+ 两类新表形态，task argmax-_argreduce_kernel-20260924T031005Z〕design_calc_check 对该 DESIGN v0/v1 两轮检视 + v1 复审（同一任务三轮）ub_budget/core_split 全 skip，仅 r3_metrics 生效；人工复算 ~20 组数字（含 12 组分核算术）是发现膨胀系数数据点混用与 C1 缓冲区间漏 fp32 bm=1 的唯一途径。**两类新表形态**（建议并入识别范围）：① §4.5「B/elem 表 + 逐配置预算表」（列名含 手工预算/×2 双缓冲/结论）；② §5.5「逐 workload 分核表」（列名含 num_row_blocks/num_kernels/核内任务数）。REVIEW.md v0/v1 机械复核表（skip 三行 + 人工复算结论）。**合入优先级建议上调**：四任务（ada/ssd×2/argmax）连续命中，reduction 族最严重的阻塞项（workload (M,N) 差 1024×）正落在 skip 的 core_split 域——与 VP-2026-0136（--manifest 真值推导模式）互补：本条修「表解析」，该条补「真值来源」
+  - 〔2026-10-13 第五现（不同任务，pool 族首个迁移）+ 新子缺陷，task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z〕纯 Vector、**任务维 Tiling**的设计几乎必然全部 skip：`design_calc_check.py` 四项中三项 skip（`ub_budget`/`l0c_budget`/`core_split`），仅 `r3_metrics=pass`；`core_split` 按 GEMM 形状（`M/bm`、`N/bn`）解析，对任务维命名（`(n, o_H, c_block)`）恒 skip。**新子缺陷**：`core_split` 的 skip detail 把 §5.5 的小节编号「5」误当 declared logical cores（输出 `"insufficient parsed dims {}; declared logical cores = 5"`）——识别器对小节编号与逻辑核数不做语义区分。`ub_budget` 因 §4.5 表用「**总计（spp CH=64）**」粗体行 + 纯文本层级描述而 skip（第三种未覆盖表形态：单行总量行 + 文本层级）。检视侧后果：纯 Vector 设计的 UB 逐 buffer 求和、`num_logical` 逐 workload 复算、物理核数实查全部落人工；「skip 不得当 pass」已由检视者手工写「机械跳过，人工已核」。建议识别范围并入：① 任务维（非 M/bm）分核表；② §5.5 编号与逻辑核数区分；③ 单行总量 UB 表形态
+  - 〔2026-10-13 第六现（不同任务，pool 族同族追加），task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z〕纯 Vector、任务维 Tiling 的设计**再次三项全 skip**（`ub_budget`/`l0c_budget`/`core_split`），仅 `r3_metrics=pass`——与第五现（adaptive_avg_pool2d）同形态：`§4.5` 用「**总计（spp CH=64）**」单行总量行 + 纯文本层级描述（UB 逐 buffer 复算 ≈34.4KB / resnet C4 ≈38.5KB 的手工求和）、`num_logical` 逐 shape 复算落人工（256/24/14/1）。纯 Vector 池化/归约类设计连续两任务全 skip，机械拦截位不生效——建议识别范围并入前述 ①②③（两任务独立佐证，pool 族为第二族证据）
+  - 〔2026-10-14 第七现（不同任务，pool 族第三个算子、纯 Vector 任务维 Tiling），task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z〕与第五/第六现**同形态第三次**（pool 族三连）：`design_calc_check.py` 对 §4.5「逐 buffer 清单 + 按编译期分支分路径」的表**三项全 skip**（`ub_budget`/`l0c_budget`/`core_split`，仅 `r3_metrics=pass`）——退化路径 UB 预算的机器拦截位持续不生效，人工复算成为唯一途径，且本次人工复算正是 Stage 2 唯一发现「C4 低报 ≈46%、C4b 漏计模式构造 buffer ≈51KB」（v0 记 90KB/64KB vs 实算 132.8KB/112.1KB）的手段（`REVIEW.md#问题 2`；v1 改逐 buffer 复算 + `CH_deg=min(C,32)` 收窄，见 hardware-cost-model.md §5 第三数据点）。pool 族三连 + reduction/ada 已累计七现，本条修复优先级与 VP-2026-0136（`--manifest` 真值推导）同档。
+- repro: 复现条件——DESIGN.md 采用「按 N 分行的驻留预算表」（§4.5）或「workload 表格式分核表」（§5.5）形态时跑 design_calc_check 两个检查项（当前均 skip）
+  - 〔provenance，允许失效〕任务内复现命令：python3 .agents/tools/design_calc_check.py check --design examples/ada_layer_norm/_ada_layer_norm_kernel/DESIGN.md
+- toolchain_stamp: design_calc_check.py 现行版本；失效环境 tilelang 0.1.2+a83118285a / 2026-09-10
+- target_doc: .agents/tools/design_calc_check.py
+- delta: |
+    动作: update（两处解析扩展）
+    定位锚 1: |
+      (check_ub_budget 函数体内)
+          if not any(re.match(r"^[a-zA-Z_]", c) or "缓冲" in c for c in cells):
+              continue  # header rows
+    old 文本 1: （即上述定位锚 1 原文）
+    new 文本 1: |
+          if not any(re.match(r"^[a-zA-Z_]", c) or "缓冲" in c for c in cells):
+              # Row-N residence tables (N / block_m / 驻留字节 columns):
+              # numeric first cell (N) + a per-elem-bytes or 驻留 column ->
+              # parse as per-N footprint rows (bytes_per_elem * N) for the
+              # UB budget check, so mixed-dtype byte widths are still caught.
+              if not (cells and re.match(r"^\d", cells[0]) and any(
+                  ("B/elem" in c or "字节" in c or "驻留" in c) for c in cells
+              )):
+                  continue  # header rows
+    定位锚 2: |
+      (check_core_split 函数体内，skip 分支)
+              "detail": f"insufficient parsed dims {nums}; declared logical "
+    old 文本 2: （即上述定位锚 2 原文所在 skip 分支）
+    new 文本 2: |
+      同分支前增加 workload 表格式识别：首列为 workload 名、含 "MxN"/shape 与 bm 列的表格行，从 (M, bm) 重算 num_logical = ceildiv(M, bm) 与表中声明值对照（无法解析全部维度时保留 skip，但 detail 注明已识别的 workload 行数）
+    动机: ada_layer_norm 的 §4.5/§5.5 采用「N 分行驻留表 + workload 分核表」形态，两项机械检查双双 skip，混合字节口径错误只能靠人工逐行复算拦截——正是 VP-2026-0009 定义的机械拦截位，扩展解析使该防线对常见表格形态生效。
+- status: merged
+- confirmations: -/-
+- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T132324Z 2026-09-10
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/tools/design_calc_check.py`（两处解析扩展：① §4.5「按 N 分行的驻留预算表」放行；② §5.5 workload 表格式分核表按 `ceil(M/bm)` 重算并对照声明值）。锚文本两处唯一命中、原行保留、纯增量（+147 行 / 0 删除行）。E-4 预验证 PASS：repro = design_calc_check 自身（合成 DESIGN 两表形态）——控制组 ub_budget=skip / core_split=skip，编辑组 ub_budget=pass（2 项 4.5 KB）/ core_split=pass（w1 8/8、w2 64/64 对照成立）；真实 pool DESIGN 两侧同为 skip（无回归）；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。实现说明：① 在提案文本的识别条件上补「该表存在 B/elem｜字节｜驻留 列」的表头判据（提案原条件仅扫数据行，对「描述符只在表头」的常见形态不生效）；② 采用表头列语义映射实现对照。残留边界（未出提案范围，记 apply 报告 issues）：描述符列缺失时 ① 仍 skip；`_section(text,'5')` 会先命中 §4.5 编号，纯 Vector 设计的 §5.5 表多不可达。
+
+## VP-2026-0020
+- type: R
+- title: gate 1 S1-REF-PATHS 路径存在性核对未剥离 `#`/`::` 锚后缀与省略号——`DESIGN.md::修订记录`/`.py#L345` 类合法引用被判「引用的仓库路径不存在」
+- evidence:
+  - examples/multi_head_attention/_gqa_prefill_fwd_kernel/.task_timeline.jsonl（同 VP-2026-0019 的两次 Stage 1 runtime fail）
+  - .agents/tools/gate_lint.py#L64-84（_ref_path_failures：REF_PATH_RE 的排除字符类不含 ASCII `:`/`#`，token 连同锚后缀一起做 os.path.exists 判定）+ #L42-44（REF_PATH_RE 定义）
+  - 正则行为机械复现（2026-09-07 蒸馏会话）：`examples/.../DESIGN.md::修订记录` 与 `examples/deepseek_v4/example_sparse_attn_kernel_highperf.py#L345` 两个 token 均含锚后缀导致 exists 判 false；发生账户同 VP-2026-0019（conductor 终态钩子输入 + 复盘缺口）
+  - 〔2026-10-13 第五现（不同任务，pool 族）+ 两个提案原文未覆盖的形态，task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z〕Stage 1 gate-1 `S1-REF-PATHS` 失败 1 次（3 处 token 误判），新增形态：① `examples/TileOPs/tests/ops/test_pool.py:130`——ASCII `:行号` 紧贴路径（本提案 `rstrip(".,;:!?、。】")` 只剥**尾部**冒号，`:` 处于 token 中段，未被覆盖）；② `.../bench_pool.py:test_adaptive_max_pool2d_bench`——`...` 缩写与 `:函数名` 并存（本提案 `"/..." in token` 可覆盖 `...`，但 `:函数名` 后缀仍在）；③ `docs/…/T.transpose.md`——**全角省略号 `…`（U+2026）**，本提案只匹配 ASCII `...` 故不覆盖。仅修 5 处引用格式即通过（设计逐字保留，SESSION_TIMING_ANALYSIS §3 估 ≈105s）。**本条修复须扩为**：token 内嵌 ASCII `:` 后接数字/标识符的锚后缀剥离（或改用「路径须以已知扩展名/目录结尾」的正向识别）+ `…` 与 `...` 双省略号形态；设计侧写作自检另立 **VP-2026-0154**（两案互补）。
+  - 〔2026-09-15 任务登记的同主题复发（S1-PLACEHOLDER/S1-REF-PATHS 误报系列，见 stats.md §3）与本条合并计数：本条提案 pending 期间已积累 ≥5 起实证，建议审批简报置顶〕
+- repro: python3 -c "import re; print([m.group(0) for m in re.finditer(r'(?:docs|examples|testing|\.agents)/[^\s\`\x27\"<>()\[\]（）【】：，。；、！？]+', '见 examples/multi_head_attention/_gqa_prefill_fwd_kernel/DESIGN.md::修订记录')])"
+- toolchain_stamp: gate_lint.py 现行版本；误判发生于 2026-09-07 expert 迁移任务
+- target_doc: .agents/tools/gate_lint.py
+- delta: |
+    动作: update（替换 token 清理两行）
+    定位锚: |
+      (于 _ref_path_failures 函数体内)
+          token = m.group(0).rstrip(".,;:!?、。】")
+    old 文本: |
+          token = m.group(0).rstrip(".,;:!?、。】")
+    new 文本: |
+          # Strip anchor suffixes (path#heading / path::section) before the
+          # existence check; elided paths (examples/foo/...) are not concrete.
+          token = re.split(r"#|::", m.group(0), maxsplit=1)[0].rstrip(".,;:!?、。】")
+          if token.endswith("...") or "/..." in token:
+              continue
+    动机: 设计文档以 `path#heading`/`path::section` 引用仓库工件是合法引证形态（本任务 DESIGN/REVIEW 多处使用）；现行正则把锚后缀并入 token 判不存在——已验证修复后 `DESIGN.md::修订记录` → `DESIGN.md`、`.py#L345` → `.py` 正确判定，尾部省略号路径 rstrip 后落到父目录存在性判定。
+- status: merged
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_prefill_fwd_kernel-20260907T115424Z 2026-09-07
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/tools/gate_lint.py`（`_ref_path_failures` 剥离 `#`/`::` 锚后缀；省略号路径不作具体路径判定）。锚文本唯一命中、原行保留、纯增量（+5 行 / 0 删除行；实现取「先 rstrip 后 split」等价顺序以保留原行）。E-4 预验证 PASS：repro = 锚后缀 token 复现——控制组 `DESIGN.md::修订记录` / `DESIGN.md#ref` 各 1 条 S1-REF-PATHS 误报，编辑组 0；3 个真实 DESIGN 的 gate 1 结果两侧均 `[]`（既有合法样例仍通过）；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。残留（未出本批 diff 范围）：第五现登记的 ASCII `:行号`/`:函数名` 中置冒号与全角 `…` 形态未覆盖，建议另立提案。
+
+## VP-2026-0054
+- type: R
+- title: ab_test.py 输出目录创建后内置 chmod 700——msprof 权限校验拒绝 group-writable 目录，工具自建目录不 chmod 时采集必失败（需 umask 077 前置调用才可避开）
+- evidence:
+  - examples/TileOPs/tileops/kernels/norm/ada_layer_norm/ada_layer_norm_kernel/perf_opt/opt_log.md#Skill-Retrospective-工具/环境问题（ab_test.py 建目录未 chmod 700，msprof 拒写 "writable by any other users or group users"——需 umask 077 前置调用）
+  - .agents/tools/ab_test.py#L50-51（os.makedirs 两处，无 chmod）
+  - 交叉引用：queue VP-2026-0037（msprof 父目录权限规则——profile-collection.md 规则侧，本条为工具侧互补修复）
+- repro: 复现条件——默认 umask 002 的共享 checkout 下以默认权限建 msprof 输出目录后执行采集（本任务实证形态；VP-2026-0037 的 8/8 首采失败为同机制父目录侧实证）
+  - 〔2026-09-17 第三现（不同任务），task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z〕opt_log §9.4——ab_test.py 的 msprof 输出目录 group-writable 拒采再现（R5 蛇形裁决 pair 采集），本任务以预创建 pair 目录规避；两提案（0037 规则侧 / 0054 工具侧）均 pending 未 apply 期间的第三次发生
+- toolchain_stamp: CANN 8.5.0 msprof / Ascend910B2C / 2026-09-10
+- target_doc: .agents/tools/ab_test.py
+- delta: |
+    动作: update（两处 makedirs 后追加 chmod）
+    定位锚: |
+      (run_pair 函数体内)
+          os.makedirs(out_dir, exist_ok=True)
+          os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    old 文本: |
+          os.makedirs(out_dir, exist_ok=True)
+          os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    new 文本: |
+          os.makedirs(out_dir, exist_ok=True)
+          os.makedirs(os.path.dirname(log_path), exist_ok=True)
+          # msprof refuses to write into group/world-writable dirs (same
+          # check as VP-2026-0037's parent-dir rule); self-created dirs
+          # must be tightened explicitly regardless of umask.
+          os.chmod(out_dir, 0o700)
+    动机: msprof 权限校验覆盖输出目录自身；工具自建目录依赖调用方 umask 077 是隐式契约——内置 chmod 消除对调用环境的依赖（规则侧 VP-2026-0037 已覆盖「须 700」，本条使工具自身满足该规则）。
+- status: merged
+- confirmations: -/-
+- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T145715Z 2026-09-10
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/tools/ab_test.py`（`run_msprof` 自建 `out_dir` 后 `os.chmod(out_dir, 0o700)`）。锚文本唯一命中、原行保留、纯增量（+4 行 / 0 删除行）。E-4 预验证 PASS：repro = `run_msprof` 目录权限行为探针（umask 002）——控制组 `out_dir=0o775`（group-writable，msprof 拒采）、编辑组 `0o700`；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。规则侧 VP-2026-0037（须 700）本轮未获批准、保持 pending。
+
+## VP-2026-0116
+- type: R
+- title: kb_stale_check.py 的 stamp diff 过滤非源码路径——repo HEAD（含 .agents/docs 知识库 commit）被当作 tilelang 工具链戳产生全库假阳性（stale_count=125，实际 tilelang 源码零改动）
+- evidence:
+  - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260921T120526Z：opt_log.md §0 E-5 段（启动时 kb_stale_check 报 stale_count=125 几乎全库，本 kernel 直接相关条目全部标「待重验」——五项结构否决的 carry-over 论证本可直接成立，被迫逐条 git diff 自证）+ Skill Retrospective Skill Flow Issues 第 2 行
+  - 机械复核（2026-09-21 蒸馏会话）：`git diff --stat 15ad002..96f287e` = 7 个文件全部位于 .agents/（queue/stats/INDEX/attention/cases/constants/repro——evolution commit），tilelang/ 源码零改动；kb_stale_check 现跑 stale_count=124——假阳性复现
+  - 根因：.agents/tools/kb_stale_check.py detect_current_stamp() 以 `git rev-parse --short=10 HEAD`（repo HEAD）为 tilelang_commit——知识库文档 commit 也推进 HEAD，使全部旧工具链戳条目批量失配
+  - 交叉引用：queue VP-2026-0089（消费侧口径——全局 stale_count 不作单条目判定依据，已三现）/ VP-2026-0101（消费侧两分法）——本条为工具侧根因修复，三案互补建议同批审批
+- repro: python3 .agents/tools/kb_stale_check.py（观察 stale_count）；git diff --stat 15ad002..96f287e（docs-only delta 复现命令——两相对照即假阳性证据）
+- toolchain_stamp: kb_stale_check.py 现行版本；发生环境 tilelang 0.1.2+96f287eeaa / CANN 8.5.0 / Ascend910B2C / 2026-09-21
+- target_doc: .agents/tools/kb_stale_check.py
+- delta: |
+    动作: update（detect_current_stamp 的 HEAD 查询替换为源码树过滤查询）
+    定位锚: |
+      (detect_current_stamp 函数体内)
+          try:
+              head = subprocess.run(
+                  ["git", "rev-parse", "--short=10", "HEAD"],
+                  cwd=REPO_ROOT,
+                  capture_output=True,
+                  text=True,
+                  timeout=10,
+              )
+              if head.returncode == 0:
+                  stamp["tilelang_commit"] = head.stdout.strip()
+          except Exception:  # noqa: BLE001 -- advisory tool
+              pass
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+          try:
+              # The stamp must track the tilelang SOURCE tree, not repo HEAD:
+              # knowledge-base/doc-only commits (.agents/, docs/, examples/)
+              # also advance HEAD and would flip the stamp, producing
+              # whole-library false positives (2026-09-21 ssd rebuild task:
+              # stale_count=125 while `git diff --stat 15ad002..96f287e`
+              # showed 7 .agents files and zero tilelang source changes).
+              head = subprocess.run(
+                  [
+                      "git", "log", "-1", "--format=%h",
+                      "--",
+                      "tilelang/", "src/", "tilelangir/", "3rdparty/",
+                      "pyproject.toml", "CMakeLists.txt",
+                  ],
+                  cwd=REPO_ROOT,
+                  capture_output=True,
+                  text=True,
+                  timeout=10,
+              )
+              if head.returncode == 0 and head.stdout.strip():
+                  stamp["tilelang_commit"] = head.stdout.strip()
+          except Exception:  # noqa: BLE001 -- advisory tool
+              pass
+    动机: stale 检测的语义是「tilelang 行为可能变了」；文档 commit 不改变编译器行为，却使每次蒸馏后的全库条目批量假阳性——optimizer Phase 0 被迫逐条 git diff 自证（本任务实证），或更糟：照单全收「待重验」清单浪费调优预算。源码树过滤（tilelang/ src/ tilelangir/ 3rdparty/ + 构建文件——路径集 apply 时可复核增删）使 stamp 只随真实工具链变更推进。
+- status: merged
+- confirmations: -/-
+- created_by: task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260921T120526Z 2026-09-21
+- decided_by: human
+- decided_note: 2026-10-14 用户批准（E-3 审批简报，2026-10-14）；mode=apply 落盘 `.agents/tools/kb_stale_check.py`（stamp 由 repo HEAD 改为源码树过滤 `git log -1 -- tilelang/ src/ tilelangir/ 3rdparty/ pyproject.toml CMakeLists.txt`；原 HEAD 查询保留为回退）。锚文本（`detect_current_stamp` / `rev-parse` / `--short=10`）保留、纯增量（+21 行 / 0 删除行）。E-4 预验证 PASS：repro = `python3 .agents/tools/kb_stale_check.py` 实跑——控制组 stamp=`f1e59e23c4`（repo HEAD，evolution commit）stale_count=**183**，编辑组 stamp=`417dae9`（源码树）stale_count=**166**（全库假阳性 −17）；standards_check / kb_lint / `.agents/tools/tests` delta 零新增 failure。
+

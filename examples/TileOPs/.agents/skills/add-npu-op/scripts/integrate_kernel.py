@@ -153,6 +153,35 @@ def kernel_ascend_mode(kernel_src: Path) -> str:
     return modes.pop()
 
 
+def _direct_kernel_base(
+    by_name: dict[str, ast.ClassDef], class_name: str
+) -> ast.ClassDef | None:
+    """Resolve the local class that directly inherits ``Kernel``.
+
+    Walks ``class_name``'s local base hierarchy so a two-layer wrapper
+    (``Subclass(Base)`` with ``Base(Kernel)``) maps to ``Base`` -- the
+    class gate_lint ``S5-ASCEND-MODE`` measures (VP-2026-0150 defect ②).
+    """
+    seen: set[str] = set()
+    queue = [class_name]
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        node = by_name.get(name)
+        if node is None:
+            continue
+        if any(isinstance(base, ast.Name) and base.id == "Kernel" for base in node.bases):
+            return node
+        for base in node.bases:
+            if isinstance(base, ast.Name):
+                queue.append(base.id)
+            elif isinstance(base, ast.Attribute) and isinstance(base.value, ast.Name):
+                queue.append(base.value.id)
+    return None
+
+
 def sync_wrapper_ascend_mode(wrapper_path: Path, kernel_class: str | None, mode: str) -> bool:
     """Set the Kernel subclass mode once, without changing other wrapper logic."""
     source = wrapper_path.read_text(encoding="utf-8")
@@ -166,6 +195,18 @@ def sync_wrapper_ascend_mode(wrapper_path: Path, kernel_class: str | None, mode:
             for node in classes
             if any(isinstance(base, ast.Name) and base.id == "Kernel" for base in node.bases)
         ]
+    if kernel_class:
+        # VP-2026-0150 defect ②: a two-layer wrapper (`Base(Kernel)` plus
+        # `Subclass(Base)`) points kernel_class_name at the subclass, but the
+        # literal must live on the class that directly inherits Kernel (that
+        # is the class gate_lint S5-ASCEND-MODE measures) -- resolve the local
+        # hierarchy to it.
+        direct = _direct_kernel_base(
+            {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)},
+            kernel_class,
+        )
+        if direct is not None:
+            classes = [direct]
     if len(classes) != 1:
         raise SystemExit(
             f"[error] {wrapper_path}: expected one Kernel class"
@@ -215,6 +256,26 @@ def parse_wrapper_imports(wrapper_path: Path, extracted_module: str) -> list[str
             if node.level == 1 and module == extracted_module:
                 names.extend(a.name for a in node.names)
     return names
+
+
+def _persist_wrapper_names(meta_path: Path, names: list[str]) -> None:
+    """Persist the wrapper contract names so re-runs stay idempotent.
+
+    The wrapper is rewritten on the first run, after which
+    ``parse_wrapper_imports`` can no longer recover the names it imported
+    from the extracted module; persisting them keeps the aggregation
+    ``__init__.py`` stable across re-runs (VP-2026-0150 defect ①).
+    """
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if meta.get("wrapper_import_names") == names:
+        return
+    meta["wrapper_import_names"] = names
+    meta_path.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
 
 def defining_module(name: str, integrated_files: dict[str, Path]) -> str | None:
@@ -435,7 +496,18 @@ def main() -> None:
 
     wrapper_names = parse_wrapper_imports(wrapper_path, extracted_module)
     if not wrapper_names:
+        # Re-run path: the wrapper is already rewritten to import from
+        # .{op_slug}_kernel, so the original contract names can no longer be
+        # recovered from it.  Prefer the contract persisted on the first run
+        # so the aggregation __init__.py does not silently drop helper
+        # re-exports (VP-2026-0150 defect ①).
+        persisted_names = meta.get("wrapper_import_names")
+        if isinstance(persisted_names, list) and persisted_names:
+            wrapper_names = [str(n) for n in persisted_names]
+    if not wrapper_names:
         wrapper_names = list(functions)
+    if args.meta and not args.dry_run:
+        _persist_wrapper_names(args.meta, wrapper_names)
 
     sources = {f: find_conductor_file(f, examples_root, op_slug, overrides) for f in functions}
     source_modes = {func: kernel_ascend_mode(src) for func, src in sources.items()}

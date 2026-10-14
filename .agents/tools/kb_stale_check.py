@@ -74,6 +74,27 @@ def detect_current_stamp() -> dict:
         )
         if head.returncode == 0:
             stamp["tilelang_commit"] = head.stdout.strip()
+        # The stamp must track the tilelang SOURCE tree, not repo HEAD:
+        # knowledge-base/doc-only commits (.agents/, docs/, examples/) also
+        # advance HEAD and would flip the stamp, producing whole-library
+        # false positives (2026-09-21 ssd rebuild task: stale_count=125
+        # while `git diff --stat 15ad002..96f287e` showed 7 .agents files
+        # and zero tilelang source changes). The repo-HEAD value above
+        # remains as a fallback for checkouts lacking the filtered paths.
+        head = subprocess.run(
+            [
+                "git", "log", "-1", "--format=%h",
+                "--",
+                "tilelang/", "src/", "tilelangir/", "3rdparty/",
+                "pyproject.toml", "CMakeLists.txt",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if head.returncode == 0 and head.stdout.strip():
+            stamp["tilelang_commit"] = head.stdout.strip()
     except Exception:  # noqa: BLE001
         pass
     for cand in (

@@ -68,7 +68,12 @@ def _ref_path_failures(text: str, file_path: str, repo_root: str, rule_id: str):
     failures = []
     seen = set()
     for m in REF_PATH_RE.finditer(text):
+        # Strip anchor suffixes (path#heading / path::section) before the
+        # existence check; elided paths (examples/foo/...) are not concrete.
         token = m.group(0).rstrip(".,;:!?、。】")
+        token = re.split(r"#|::", token, maxsplit=1)[0]
+        if token.endswith("...") or "/..." in token:
+            continue
         if token in seen:
             continue
         seen.add(token)

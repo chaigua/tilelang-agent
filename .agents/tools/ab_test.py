@@ -48,6 +48,10 @@ def run_msprof(
     """Run one msprof op measurement; return the list of Task Durations."""
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    # msprof refuses to write into group/world-writable dirs (same
+    # check as VP-2026-0037's parent-dir rule); self-created dirs
+    # must be tightened explicitly regardless of umask.
+    os.chmod(out_dir, 0o700)
     msprof_prefix = (
         f"msprof op --kernel-name={kernel} --output={out_dir} "
         f"--launch-count={launch_count} --warm-up={warm_up} --dump=off "
