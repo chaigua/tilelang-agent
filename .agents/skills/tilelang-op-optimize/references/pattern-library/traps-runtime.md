@@ -60,6 +60,30 @@ repro: repro-missing
 torch.lerp（torch 2.9.0+cpu）对 fp16 输入经**fp32 opmath + 单次舍回**计算，NPU fp16 原生域三步链（逐步 fp16 舍入）与之差 ~2–3 ulp fp16，N=2^24、atol=rtol=1e-3 下违反率 ~0.125% 且与 shape/block_size/核数无关（纯舍入路径统计性质，非 tiling/同步缺陷）；bf16 golden 与 fp32 中转 kernel 逐位一致。对齐通解：`vcast(rint)` 升 fp32 → fp32 域 v-prefix 链 → `vcast(rint)` 单次舍回，差 ≤1 ulp fp16（rtol≥5e-4 即覆盖）；NaN/Inf 角点 IEEE 传播不受中转影响。复现（provenance，允许失效）：`python examples/lerp_tensor/_make_lerp_tensor_kernel/history_version/_make_lerp_tensor_kernel_impl_s3_attempt1.py --level L0`（fp16 违反）vs `python examples/lerp_tensor/_make_lerp_tensor_kernel/_make_lerp_tensor_kernel.py --level all`（全过）。
 
 ---
+
+id: TRAP-npuir-ref-backend-golden-capability
+kind: trap
+family: [migration, pool, window, golden]
+apis: [F.max_pool2d, F.max_pool1d]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: max_pool2d-_max_pool2d_kernel-20261014T062320Z（首证，2D 直接观测）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第二证，1D 泛化应用）
+toolchain: 首证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c + torch_npu 2.9.0.post8 + torch 2.9.0 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二证 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro-missing
+---
+
+### NPU 参考后端（torch_npu）自身的能力缺口——`F.max_pool*` 只支持 `dilation == 1`；纯选择类算子的 CPU golden 回退逐位一致
+
+**缺口本体**（与 npuir 前端 / TileLangIR pass 缺口不同类）：`F.max_pool2d` 在 NPU 上经 `aclnnMaxPool2dWithMask` 实现，**只支持 `dilation == 1`**；`dilation != 1`（int 或 tuple 任一非 1）时在 `ref_program` 内即抛 `AclNN_Parameter_Error(EZ1001): dilation only support 1`，**被测算子未执行**（堆栈落在 `torch.nn.functional`）。判别信号 = 异常出现在 `ref_program` 且算子尚未执行 + `AclNN_*_Error` 前缀 → 归因为参考后端能力缺口，而非 kernel/迁移缺陷。首证实测：[INTEGRATE_FAIL]（`run.json` `correctness_failed=1`，`dilation=(2,1)` 用例；stamp 见 front-matter）。
+
+**处置形态**：纯**选择**类算子（max/min/argmax/排序，无累加）把该用例的 reference 计算回退 CPU（`F.x(input.cpu(), **kwargs).to(input.device)`）——结果与设备输出逐位一致，`atol=rtol=0` 与用例集（含 `dilation>1` 覆盖）均保持原样（放宽容差 / skip / xfail / 删例均不构成处置）。首证 2D attempt 2 修复后本算子 rollup 22/22、`max_abs_err = 0.00e+00`。**含累加算子不可照搬**该回退（sum/avg/conv/gemm 的 CPU/设备浮点序不同）；回退前提是「输出 = 输入元素的纯选择，无算术合并」。
+
+**第二证（1D 泛化，不同任务/不同算子/不同 stamp）**：max_pool1d 迁移的 Stage 0 脚手架按 max_pool2d 教训**预置**了同款回退（`examples/TileOPs/tests/ops/test_pool.py` 的 `MaxPool1dTest.ref_program`；任务工作区/集成包，未上库，provenance 允许失效），Stage 5 单算子 report 本算子 rollup **34/34**、`max_abs_err = 0.00e+00`，`ecg-cnn-dilated`（`dilation=2`）用例实跑走该回退且无 `AclNN_*_Error`。限定：1D 侧实测的是「补救路径（CPU golden 回退）跨算子/跨 stamp 泛化成立」，未再触发 1D 的 `dilation>1` 后端报错本身（回退已前置）；缺口本体为 2D 侧直接观测。
+
+**配套**：Stage 0 脚手架期的 golden 可用性自检见 queue VP-2026-0178（集成期失败回交/扩权成本 ≈17min 实测）；同族另一类「设计层 vs 后端」边界（窗口池化退化特化条件）见 algorithm-candidates.md ALG-pooling。**不登记 `capability-gaps.md`**——AGENTS.md 的缺口层枚举（Frontend API / TileLangIR pass / BishengIR / tladapter / runtime）不含 PyTorch-NPU 参考后端，故按 pattern-library 事实条目 + 流程提案双落点处置。
+
+---
 id: TRAP-load-nd2nz-strided
 kind: trap
 family: [attention, expert, cube]

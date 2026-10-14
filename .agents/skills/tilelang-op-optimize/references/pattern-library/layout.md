@@ -55,14 +55,14 @@ apis: [T.transpose, T.vmax, T.vcmp, T.vcast, T.vmul, T.vbrc, T.reduce_min, T.red
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证，行级掩码细化 + 窗口池化域）
-toolchain: 首证 tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；均 dev root build + CANN 9.0.0 + Ascend910B3
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证，行级掩码细化 + 窗口池化域）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点，1D 域：块级掩码 + 单空间轴守卫前提）
+toolchain: 首证 tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；均 dev root build + CANN 9.0.0 + Ascend910B3
 repro: repro-missing
 ---
 
 ### 1.22 max 池化/归约的 NPU 向量实现形态（NaN 追踪 + 无代数化简）✅ 已验证
 
-> 由 queue VP-2026-0152 在两任务独立证据后合入（adaptive_max_pool2d 迁移 2026-10-13 / max_pool2d 窗口池化迁移 2026-10-14）。两任务为**不同任务、不同算子**（AdaptiveMaxPool2dFwdOp / MaxPool2dFwdOp），各自独立执行 Stage 3 分层门禁（前者全用例过且 worst max_diff=0.0；后者 L0 31 / L1 23 / L2 7 / Boundary 8 全过、fp16/bf16/fp32 三 dtype `max_diff=0.000e+00`、`atol=rtol=0` 成立）。保守限定同 queue VP-2026-0143 先例（max 为纯选择无累加，逐位判据可成立）。**repro**：本条按 ED-B「无法当场最小化时显式 `repro-missing`」处置（P 类允许）——③ 的 NaN 追踪合法式已有可执行载体 `repro/TRAP-vcmp-ne-ordered-nan.py`（属 traps-compiler.md 条目，两侧互相引用，故不重复登记为本条 repro）；②/③'/③''/④/⑤/⑥ 部分的专属最小 repro 待同族任务回填。
+> 由 queue VP-2026-0152 在两任务独立证据后合入（adaptive_max_pool2d 迁移 2026-10-13 / max_pool2d 窗口池化迁移 2026-10-14）。两任务为**不同任务、不同算子**（AdaptiveMaxPool2dFwdOp / MaxPool2dFwdOp），各自独立执行 Stage 3 分层门禁（前者全用例过且 worst max_diff=0.0；后者 L0 31 / L1 23 / L2 7 / Boundary 8 全过、fp16/bf16/fp32 三 dtype `max_diff=0.000e+00`、`atol=rtol=0` 成立）。保守限定同 queue VP-2026-0143 先例（max 为纯选择无累加，逐位判据可成立）。**第三数据点（2026-10-14，1D 域）**：max_pool1d 窗口池化迁移在本条 ①②③''④⑤ 上独立复现（见 ⑦）——同一形态集跨维（2D → 1D）成立，按 `update` 追加数据点（Tier 0，front-matter 版本戳同步）。**repro**：本条按 ED-B「无法当场最小化时显式 `repro-missing`」处置（P 类允许）——③ 的 NaN 追踪合法式已有可执行载体 `repro/TRAP-vcmp-ne-ordered-nan.py`（属 traps-compiler.md 条目，两侧互相引用，故不重复登记为本条 repro）；②/③'/③''/④/⑤/⑥ 部分的专属最小 repro 待同族任务回填。
 
 - **① 向量轴 = C 轴**：核内 NHWC 二轴 `T.transpose` 重排后沿 C 轴 `T.vmax` 归约，与 avg 池化同构（PL-1.2），差异仅在归约算子与 NaN 追踪。窗口池化的窗口形状由 `k/s/p/d` 固定（非 adaptive 的变长 bin），但向量轴结论相同。
 - **② 比较与掩码在 fp32 域**：bf16 先 `T.vcast` 到 fp32（`vmax`/`reduce_max`/`vsub` 不支持 bf16）。**注意源本身是 fp32 时不能**用 `T.vcast` 做同 dtype 搬运（退化为 round-to-integer，见 traps-compiler.md TRAP-vcast-same-dtype-rounds）——按 dtype 在 trace 期分派 `T.copy` / `T.vcast`，且该分派使 fp32 的 UB 预算与 fp16/bf16 不同档。
@@ -71,9 +71,10 @@ repro: repro-missing
 - **③'' 掩码归约算子 = 判决的集合语义**：0/1 掩码上「`reduce_min` 与 0 比较」=「存在 0」，「`reduce_max` 与 0 比较」=「全部为 0」；`x==x` 掩码上 0 意味着 NaN，故「任一 NaN」必须用 `reduce_min + ==0`——写成 `reduce_max + ==0` 只在全 NaN 平面成立（第二证 Stage 3 首版即 `reduce_max` 配注释「1.0 iff 窗口无 NaN」的自相矛盾形态；改 `reduce_min` 后部分含 NaN 的平面正确返回 NaN）。自然语言注释与算式不符时以数学推演为准并回写设计。
 - **④ 累加器单位元为 `-inf`**：`T.vbrc(-T.infinity("float32"), acc)`；`T.clear` 置 0 在全负窗口产生错误输出。`T.vbrc` 的 destination 须为整 buffer、标量 operand 须为 typed PrimExpr（region/裸标量形态见 TRAP-npuir-vbrc-region-dropped）。
 - **⑤ max 无代数化简**：非线性 → 常数权重卷积/GEMM 不等价；无逆元 → 前缀最大值差分对多条递增记录不可行。可分离 2D→1D 对窗口池化**亦不降运算量**（第二证 manifest 三档复算比 1.00 / 1.50 / 1.01 ≥ 基线；adaptive 侧见 queue VP-2026-0144）——「数学等价优化」对本形态只余**结构特化**（全局池化整平面 `reduce_max` / 恒等纯拷贝，见 queue VP-2026-0143）与**归约融合**（max + NaN 同轮扫描）。
-- **⑥ 窗口池化的边界守卫可外提**（第二证）：`ih` 只依赖 `(o_h, k_h)`，H 维判据可提升为每行一次（`k_H` 次/单元而非每元素）；`iw` 依赖 `(o_w, k_w)` 无法再提。零风险 CSE 类优化，可直接写进通用路径。
+- **⑥ 窗口池化的边界守卫可外提**（第二证）：`ih` 只依赖 `(o_h, k_h)`，H 维判据可提升为每行一次（`k_H` 次/单元而非每元素）；`iw` 依赖 `(o_w, k_w)` 无法再提。零风险 CSE 类优化，可直接写进通用路径。**前提 = 存在 ≥2 个空间轴且某方向判据只依赖该方向循环变量**——第三数据点在 1D 上复现该前提的缺失（唯一判据 `0<=iw<L_in` 同时依赖 `(o_w,k_w)`，无第二轴可外提；1D 的对应优化是连续 span 的钳制载入，见 queue VP-2026-0180）。
+- **⑦ 1D 域第三数据点（max_pool1d 窗口池化迁移 2026-10-14，本 stamp 实测）**：①②③''④⑤ 在 **1D 同构成立**——`eq` 掩码 → `vcast` 到 f32 → in-place `vmul`（`flag` 初值 1）乘性累积、末尾 `reduce_min + ==0` 判决、`T.vbrc(-inf, acc)` 整 buffer 单位元（`T.vbrc` 的 destination 须为整 buffer 这一伴随约束同样复现，见 TRAP-npuir-vbrc-region-dropped）；**掩码在 1D 天然为块级一次**——每个逻辑单元每载入块只读一次（`(LSPAN, CH)` 块），`vcmp(row,row,"eq") + vcast` 每块一次、窗口内仅 `vmul`（每元素 1 条向量 op），不存在 2D 那样的「逐元素 vs 行级」选择面；三 dtype 端到端 `max_diff=0.000e+00`（`atol=rtol=0`），设计期机器等价脚本 117 case-group 全 PASS（含 nan / ±inf / subnormal / large / zeros 六类数据 × 3 dtype，逐 lane 断言下标落界）。
 - **负向依赖**：结论不依赖 `T.vmax`/`T.reduce_max` 的 NaN 传播行为（未文档化）——实现须显式追踪 NaN 以保证正确，不得依赖该行为兜底（首证 Stage 3 near-miss：靠 `vmax` 传播「顺带修对」致语义门禁假阳性通过）。
-- **provenance（允许失效）**：首证 `examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{DESIGN.md#0.6-R2, RETROSPECTIVE.md}`；第二证 `examples/max_pool2d/_max_pool2d_kernel/{DESIGN.md#3.3, _max_pool2d_kernel.py, RETROSPECTIVE.md Stage 3}`（任务工作区，未上库）。
+- **provenance（允许失效）**：首证 `examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{DESIGN.md#0.6-R2, RETROSPECTIVE.md}`；第二证 `examples/max_pool2d/_max_pool2d_kernel/{DESIGN.md#3.3, _max_pool2d_kernel.py, RETROSPECTIVE.md Stage 3}`；第三数据点 `examples/max_pool1d/_max_pool1d_kernel/{DESIGN.md#0.6-R2/§1.6.1, _max_pool1d_kernel.py, RETROSPECTIVE.md Stage 1/3}`（任务工作区，未上库）。
 
 ---
 id: PL-1.3-host-permute
@@ -97,11 +98,11 @@ id: PL-1.4-tiling-heuristic
 kind: pattern
 family: [pooling, window]
 apis: []
-dtype: [fp16, fp32]
-device: 910B2C
+dtype: [fp16, bf16, fp32]
+device: 910B2C, 910B3
 status: verified
-origin_task: AvgPool2dFwdOp-optimize-2026-08
-toolchain: 2026-08 build（Ascend910B2C）
+origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）
+toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；后两证均 dev root build + CANN 9.0.0 + Ascend910B3
 repro: repro-missing
 ---
 
@@ -110,6 +111,7 @@ repro: repro-missing
 - **BH=1 + 最宽 CH 最优**：CH64 21.6µs < CH32 26.7µs < BH2/CH16 44.8µs——更宽 C 向量 + 更少 block 胜过更高空间并行度。
 - **UB 约束**：CH×空间 tile 驻留超 192KB 时收缩 CH（实测 vis-3x3 的 CH=64 需 252.8KB 被排除，CH=32 落地）；buffer 生命周期不重叠时可探索 aliasing 复用（预估再省 10–20%，未验证）。
 - **回退分发**：C%16≠0 或 shape 越界时回退到非重排路径（工厂层静态判定，无运行时开销）——保持全 shape 兼容。
+- **容量驱动 CH 选择**（2026-10-14 两证合入，queue VP-2026-0174 达 2/2）：`CH` = 满足「实现将要落地的 buffer 清单」逐项带字节数求和后 `× 膨胀系数 1.7 ≤ 192 KiB` 的最大 8 的倍数。2D 形态按 `ub_bytes(CH, W_in, out_W, dtype)` 记账；1D（单空间轴，需先沿该轴分块）形态按 `G = CH·LSPAN·(2·eb+9) + BL·CH·(25+2·eb)` 记账（`eb` = 元素字节、`LSPAN = min((BL-1)·s + (k-1)·d + 1, L_in)`；`2·eb+9` = row_src + row_dst + row_f32 + eq_mask + eq_f32，`25+2·eb` = acc/flag/zeros/infbuf/nanbuf/out32 六个 f32 + cfinal(bool) + acc16 + acc_t）——**`BL` 由 `min(L_out, BL_MAX)` 逐级下调试到首个可行值，CH 在 `BL=1` 仍不可行时折半（下限 8）**，故两档是同一条不等式上的联合取档。实测压档：2D `W_in=112` 窗口池化 fp16 CH 64 → 32（CH=64 需 ≈244.5 KiB ✗）、fp32 → 16；1D `textcnn`（`C=256`、`L_in=128`、k128s1p0）fp16 CH=64 → **fp32 折半为 32**（`eb=4` 使行类缓冲翻倍，`num_logical` 256 → 512）——CH 选择必须 dtype 感知，按 fp16 档硬编码到 fp32 会 UB 溢出。两条纪律：① 不得用代表 shape 的头部大 buffer 结论外推（低报）——须给「逐 buffer 原始字节 + 膨胀后字节 + 统一 KiB」；② **实现形式改变（如掩码由逐元素 `(1,CH)` 改行级/块级）后容量结论必须重算**，不得沿用设计档位（第二证实证：fp32 resnet-stem CH 32→16）。
 
 ---
 id: PL-1.5-quickref
