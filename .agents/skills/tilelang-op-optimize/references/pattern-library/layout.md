@@ -11,9 +11,9 @@ family: [pooling, window, layout]
 apis: [T.transpose, T.copy]
 dtype: [fp16, fp32, bf16]
 device: 910B2C
-status: verified
+status: stale
 origin_task: AvgPool2dFwdOp-optimize-2026-08
-toolchain: 2026-08 build（Ascend910B2C）
+toolchain: 2026-08 build（Ascend910B2C）；**2026-10-14 重验：仅对「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态成立，池化族大 shape 的 3D 二轴交换被降级为 UB→GM→UB（见正文末尾与 traps-compiler.md TRAP-transpose-ub-gm-roundtrip）**
 repro: repro-missing
 ---
 
@@ -27,6 +27,13 @@ repro: repro-missing
 - **实测代价**：4 次融合转置合计 **~5.4µs**（远低于算子本体）——"转置很慢"是错误印象，勿因直觉弃用。
 - **硬约束**：① `T.transpose` 的 permutation **仅支持二轴交换**（如 `[1,0,2]`/`[0,2,1]`），**不支持 3-cycle**（`[1,2,0]`）——3D 置换必须拆成两次交换链；② **reshape→transpose 链会 mis-compile（数据错乱）**——必须始终在自然形状 buffer 之间做 transpose；③ 转置须在**自然形状** shared/UB buffer 间进行。
 - **佐证**：`testing/npuir/broken/test_slice_transpose_dev.py`；AvgPool2d perf_opt v3a（`examples/TileOPs/tileops/kernels/pool/avg_pool2d/avg_pool2d_kernel/perf_opt/`——任务工作区，未上库，provenance 允许失效；模式与实测数字已自包含于本条目）。
+- **⚠️ 2026-10-14 重验更正（工具链变更，status -> stale）**：在 tilelang `0.1.2+8b16bccacfd9fa17`（commit 417dae9）+ CANN 9.0.0 + Ascend910B3 上重测，
+  「4 次转置 ~5.4µs」**对池化族大 shape 的 3D 二轴交换不成立**——`(64,7,7)↔(7,7,64)` 单次转置使 kernel 从 5.6 µs 涨到 138.2 µs，
+  `UB_to_GM_datas` = 48 KB/block（UB→GM→UB 往返）；转置 + C 轴 `T.vadd` 累加完整形态 148–174 µs。
+  **但 `(64,56)→(56,64)` 的 2D f16 形态仍走 UB 内实现（`UB_to_GM_datas` 8.5 KB/block）**，故本条不是整类推翻而是**适用域收窄**：
+  仅「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态可用。细分证据与绕法见 traps-compiler.md `TRAP-transpose-ub-gm-roundtrip`；
+  池化大 shape 的替代结构见本文件 **PL-1.23-flat-spatial-axis-reduce**（免转置，166.3 → 16.7 µs）。
+  溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/profiles/probe/round0/{p2_ct_c64,p6_f4,accum_a49_1}`。
 
 ---
 id: PL-1.2-caxis-accum
@@ -101,9 +108,9 @@ apis: []
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第四数据点：双输出（索引型）1D 记账式 `69+2·eb` + 薄裕度纪律 + 闭式自洽）
-toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；第四数据点 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）；全部 dev root build + CANN 9.0.0 + Ascend910B3
-repro: repro-missing
+origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第四数据点：双输出（索引型）1D 记账式 `69+2·eb` + 薄裕度纪律 + 闭式自洽）/ adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（第五数据点：**单波判据**——纯 Vector general 路径的 CH 由 `num_local==1` 约束而非 C 大小）
+toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；第四数据点 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）；第五数据点 tilelang 0.1.2+8b16bccacfd9fa17（commit 417dae9）；全部 dev root build + CANN 9.0.0 + Ascend910B3
+repro: repro/PL-1.4-single-wave-ch.py
 ---
 
 ### 1.4 tiling 启发式（C 轴向量化形态）✅ 已验证
@@ -115,6 +122,7 @@ repro: repro-missing
 - **双输出（argmax 索引型）1D 记账式 = `G = CH·LSPAN·(2·eb+9) + BL·CH·(69+2·eb) + 256`**（2026-10-14 第四数据点，queue VP-2026-0174 同族续证）：相对单输出**只增加单元类 buffer**（行类 `CH·LSPAN` 项不变）——`69 = 25 + 44`，即单输出基式 `25+2·eb` 之上再加 `7×i32`（`max_idx`/`nan_idx`/`cand`/`nanc`/`bigv`/`neg1v`/`zero_i32` = 28 B）+ `idx32`/`idx_t` 转置缓冲 8 B + `idx64` 落盘缓冲 8 B；`+256` = `fv`（`(1,CH)` 上界）。实测档位（`INFLATE=1.7`，判据 192 KiB）：`sincnet` fp16 `CH64/BL16/LSPAN48` = `114 944 B`（×1.7 = 190.8 KiB ✓）、`ecg` bf16 `CH64/BL17/LSPAN41` = `113 792 B`（×1.7 = 188.9 KiB ✓）——**同 shape 单输出档位为 `BL=18/20`，索引型的额外 44 B/元素把 `BL` 压掉 2–3 档**。
   - **薄裕度纪律**（该族实测裕度 ≈0.6%）：`sincnet` 原始 114 944 B 距判据仅 1 203 B，**再加一个 `(BL,CH)=16×64` bool（1 024 B）即 `(115 968)×1.7 = 197 146 B > 196 608 B` 翻转**⇒ 薄裕度算子的 §4.3 buffer 清单须与分析表逐名一致（「为清晰而拆缓冲」的实现会越界），且须给出「再加一个最小缓冲是否翻转判据」的边界核算。
   - **闭式自洽自检**：闭式括号内分量的求和须等于系数（本条目首个设计版本记 `53+2·eb` 而同行分量注释求和为 `69`——纯文本即可发现的漏计；见 §4.5 的更正链）；逐 buffer 求和须等于闭式值；档位（`BL`/`CH`）变更后所有派生量（`LSPAN`→`num_oblk`→`num_logical`→`num_local`）与备选档连带重算。
+- **单波判据（第五数据点，2026-10-14，纯 Vector general 路径）**：`CH` 的第三个约束面不是容量而是**波次**——逻辑单元 `units = N·out_H·ceil(C/CH)`，`num_local = ceil(units / min(units, vector_cores))`；`num_local > 1` 表示有核要串行跑第二波，其代价**大于**「更宽向量」的收益。实测（msprof op，vector_cores = 40，Ascend910B3）：`spp-6x6`（C=128, N=2, out 6x6）CH=64 → 24 units → 单波 **16.31 µs**，CH=32 → 48 units → 两波 24.32 µs（**+49%**）；`nondiv-7x7`（C=64, N=2, out 7x7）CH=64 → 14 units 单波 14.45 µs，CH=32 → 28 units 单波 **13.14 µs（-9%）**，CH=16 → 56 units 两波 22.17 µs（+53%）。**采纳规则**：`base = round_up8(min(C,64))`；若 `units(base)·2 > vector_cores` 直接用 base（已用掉过半核）；否则折半，**仅当折半后仍单波**才采纳（min 8）。该规则同时解释「CH32 在 spp 上反而更慢」（多一波）与「CH32 在 nondiv 上更快」（仍单波但把单元摊到更多空闲核）。repro：`repro/PL-1.4-single-wave-ch.py`（纯 Python，断言两 shape 的分派 = 实测最优档）。溯源：`examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/{opt_log.md#6, perf_records.jsonl}`（任务工作区）。
 
 ---
 id: PL-1.5-quickref
@@ -185,3 +193,30 @@ repro: repro/PL-1.13-aiv-dup-subid-split.py
 - **形态二（dst=src2 alias，2026-09-17 第二轮 R7 v11 第二实证）**：`T.vsub(a, b, b)`（diff 落到第二操作数原地址，元素级原地安全）同样可编译可算对，但实测同口径 **w2 +19.6% / w3 +17.0% / w4 +2.0%**——原语境为 vbrc hoist（把循环不变的 [M,1]→[M,N] 广播提出来需 diff 重定向到 alias 目标）。**AIV 接近关键路径的 workload（w2 瞬态/w3）受害最大，AIV 远离临界的稳态（w4）仅 +2%**——税的大小与该引擎的空闲余量负相关。
 - **结论**：广播/alias 等「非典型形态」的「合法化」（编译通过 + 数值正确）不等于「可用」（无性能税）——证伪协议须含性能步；列因子在 vsub/vmul 上仍应走 vbrc 展开 + 同 shape 运算；循环不变量 hoist 若被迫引入 alias 形态，宁可保留循环内重算（与 Stage-2 review 的广播形态速查口径互补：形态合法性看文档 §2.2.2，可用性看实测）。
 - 溯源：`examples/ssd_chunk_scan/_ssd_chunk_scan_fwd_kernel/perf_opt/`（形态一 opt_log R2 v4_p2 行 / perf_records round 2；形态二 opt_log R7 v11 行 / perf_records round 7 同口径对比 v9_recheck）。
+
+---
+id: PL-1.23-flat-spatial-axis-reduce
+kind: pattern
+family: [pooling, reduction, layout, general]
+apis: [T.reduce_sum, T.vcast, T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/PL-1.23-flat-spatial-axis-reduce.py
+---
+
+### 1.23 扁平空间轴归约（整平面 / 全局池化免转置）✅ 已验证
+
+- **模式（慢→快关键改动）**：整平面归约（`out_H==out_W==1` 的全局池化、整平面 sum/mean）把核内 UB tile 从**自然三维 `(CH,H,W)`** 改为**扁平 `(CH,1,H*W)`**，并把 GM tensor 同步声明为 `(N,C,1,H*W)`（同一块连续内存的形状重解释，**不改变 I/O 字节序契约**）：
+  ```
+  慢: x3:(N,C,H,W)   tile=(CH,H,W)   reduce_sum(dim=2)   # 归约轴 = 最内轴, 宽 W=7
+                                            reduce_sum(dim=1)   # 归约轴 = 中轴, 最内宽 1
+  快: x4:(N,C,1,H*W) tile=(CH,1,H*W) reduce_sum(dim=2)   # 归约轴 = 最内轴, 宽 H*W=49
+  ```
+- **实测收益**：`resnet-global`（`[8,2048,7,7]→(1,1)` fp16）**166.26 µs → 16.68 µs（9.96x）**，逐位精确（`max_diff=0.000e+00`）；`CH=32` 为该形态最优档（`CH=64` 在归约 lowering 触发 UB overflow：BishengIR 内部临时量随归约宽度放大；`CH=16` 因波数翻倍退化到 22.76 µs）。
+- **机制归因**：① 最内轴窄（7，非向量宽整数倍）的 `T.reduce_sum` 被逐元素标量化（≈ 元素数 × 6 ns，见 traps-compiler.md `TRAP-inner-axis-reduce-scalarize`）；② 三维形态还触发布局传播，使 GM→UB DMA 退化为 16 B/元素分散读（36.75 → 336 KB/block，见 `TRAP-copy-layout-propagation-dma-amplification`）；③ 扁平声明让 DMA 保持整块连续，且**完全不需要 `T.transpose`**——该工具链上三维二轴转置被降级为 UB→GM→UB 往返（见 `TRAP-transpose-ub-gm-roundtrip`）。缓冲区数量同时下降（去掉 mid/acc_t 等中间层）。
+- **适用条件与边界**：要求被合并的空间轴在内存中**连续**（NCHW 的 H、W 天然连续；C 在外层）且 `H*W` 为编译期常量。**不适用于 general grid**（每个输出 bin 是矩形子区域，扁平化后行不连续）——general 路径仍走逐行二轴转置 + C 轴累加（PL-1.2）。
+- **替代关系**：本条是 PL-1.1「核内转置把 C 变最内轴」路线的**免转置替代**；当转置可用（两边 ≥ 向量宽且为向量宽整数倍）时两者皆可，转置被降级时本条是唯一可行路径。
+- repro：`repro/PL-1.23-flat-spatial-axis-reduce.py`（slow/fast 两形态可运行、输出与 torch 整平面均值一致；≥2x 的性能断言需 msprof，命令族见 repro 头部）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/{opt_log.md#4-6, perf_records.jsonl}` 与 `profiles/probe/round0/{p7_r49_c32, p6_f6}`。

@@ -1103,6 +1103,27 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: D 类无知识域 repro（现象载体为编译警告 + 需 profile 量化）→ 降级 Tier 1。
 
+## VP-2026-0227
+
+- type: D
+- title: msprof roofline `Ratio` 不与 latency 成反比——结构改写同时压低 `total_fops`，10.12x 时延下降仅换 1.26x Ratio（池化族 169.26→16.72 µs，Ratio 2.30%→2.90%，fops 16.86M→2.20M）；「Ratio 硬目标可达性」须先算上限 `(total_fops / 时延地板) / computility`（resnet ≈12% ⇒ 70% 结构不可达）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §12 修正附录（append-only 证伪更正——§8 的「同一 roofline 下 Ratio ∝ 1/latency」外推 ≈23.2% 被官方单算子 report 实测推翻）+ §12.2 metric 定义链（`total_fops` = `ArithmeticUtilization.csv` 实测累加**非** manifest 理论 flops、`total_bytes` = L2 read miss × cacheline、`AI = total_fops/total_bytes`、`performance = total_fops/duration`、`roofline_peak = min(AI×bw_peak, computility)`、`ratio = performance/roofline_peak`）+ §12.3（10.12x 时延 vs 1.26x Ratio 的分解：fops 16.86M→2.20M ≈7.66x，performance 0.1043→0.1315 TOps/s 仅 1.32x）+ §12.4 可达性（≈4 µs 地板 ⇒ 上限 ≈0.55/4.5326 ≈ **12%**）
+  - report（provenance，允许失效）：`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`（report.md / benchmark.md / run.json；status=passed，correctness 46/46，Avg Max Abs Error 0.00e+00，Ratio Range 2.90%–4.04%）
+  - 交叉引用：`profile-collection.md` §4.1（纯选择/带宽受限算子 Ratio 判读口径，VP-2026-0175 两证合入——本条补「分子同变」与「目标可达性筛查」两块，互补不重复）；queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数，1/2）；attention.md PL-1.12 指标结构段（Computility 按 48 核计而实机 24；奖励利用率不奖励 padding 缩减）
+- repro: repro-missing（需 msprof + 目标算子环境；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 run.json 的 total_fops / computility / duration 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`（本任务 1.26x vs 10.12x）；③ 目标可行性：`(total_fops/时延地板)/computility < 目标` ⇒ 判结构不可达）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；report 侧 TileOPs Reporting 0.1.0
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    add 条目 CONST-msprof-ratio-compute-roofline（置于 CONST-fabric-bw 邻域，与 profile-collection.md §4.1 互链）：
+    **msprof roofline `Ratio` 是 compute-roofline 利用率，不与 latency 成反比**——`Ratio = performance / roofline_peak`，其中 `performance = total_fops / duration`（`total_fops` 取 `ArithmeticUtilization.csv` 实测累加，**非** manifest 理论 flops）、`roofline_peak = min(AI × bw_peak, computility)`（`computility` = 器件算力峰值按 dtype 占比加权，不随 kernel 结构变化）。**分子与分母都会被结构改写影响**：改写若删减 op 数（如去掉两级窄归约 + 转置），`total_fops` 同向下降，latency 的收益被抵消。实证（adaptive_avg_pool2d C4 路径，2026-10-15 report）：时延 169.2634 → 16.7203 µs（10.12x）而 Ratio 2.3008% → 2.9020%（**1.26x**）——`total_fops` 16.86M → 2.20M（7.66x）、`performance` 0.1043 → 0.1315 TOps/s（1.32x），分母 `computility` 4.5326 TOps/s 固定。
+    **可达性筛查（设 Ratio 硬目标前必算）**：`ratio_max ≈ (total_fops / 该 workload 的时延地板) / computility`。上式算例：地板 ≈4 µs ⇒ 上限 ≈0.55/4.5326 ≈ **12%** ⇒「Ratio → 70%」对无矩阵乘的池化/选择类算子在 compute-roofline 口径下结构不可达（同类 spp/nondiv 的 computility 更低 3.72/3.68 ⇒ 上限同样远低于 70%）。判据：上限 < 目标即改以 **Task Duration / 流量达成率** 为判据（与 profile-collection.md §4.1 的三条判读动作衔接）。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
+- decided_by: -
+- decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。
+
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
 ## VP-2026-0008
@@ -2970,6 +2991,9 @@ decided_by: evolver / human / -   # 裁决者
   - 两处产物格式错误（attempt 1）：① perf_records.jsonl final 记录 artifact_path 用仓库根相对路径（examples/TileOPs/... 前缀），gate 以 perf_records.jsonl 所在目录（perf_opt/）为基准拼接成双重前缀 → abspath 不匹配 → 「final 未测最终 perf_opt 文件」；② opt_log Final Performance Test Data 用加粗列表项而非 ##/### 标题 + 6 列且数值加粗——gate_lint.py L908 要求 `^#{2,3} Final Performance Test Data\s*$` 标题、L919 要求恰 5 列、L925 要求 float() 可解析（加粗 → ValueError / 6 列 → 行被跳过 → 「Final 表缺少 {key}」）
   - 修复形态（attempt 2，170s）：final 行 artifact_path = 裸文件名 `_ssd_chunk_scan_fwd_kernel.py`（perf_records.jsonl 末 3 行）+ opt_log §6 `### Final Performance Test Data` + 5 列纯数字表
   - .agents/tools/gate_lint.py L882-884（相对路径 join dirname(records_path)）/ L908-927（标题正则 + 5 列 + float 解析）；现行 signal-registry.md §5 已列 5 列字段名但未写标题层级/纯数字/路径基准三要素
+  - 〔2026-10-15 第四数据点（不同任务，pool 族 optimize；**含基础设施中断混淆项，如实标注**）〕task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：Stage 4 attempt 1 在 25931s（≈7.2h）后以 `stage4_artifact_gate_incomplete` 失败（`.task_timeline.jsonl` 00:34:31Z），conductor 按门禁失败流程 `fail 4 → start 4` 重调度，attempt 2 仅 202s 即 complete——补齐的两处机械工件为 **`workload_inventory.json` 的 per-workload `tuning_status` 字段缺项** + **opt_log Final Performance Test Data 表格式**（后者即本条目已覆盖的第三亚型再发）。⇒ **同族第四亚型「Phase 1 产物字段缺项」**：`workload_inventory.json` 在 optimize SKILL.md Phase 1 被要求「完整清单写入 … 供 gate 4 核对覆盖范围」，但 gate 4 亦校验 per-workload `tuning_status`（如 `winner_merged` / `no_gain`），该字段清单未成文。
+  - 〔同上一行，**混淆项披露**〕attempt 1 同时被**基础设施重启中断**（7.2h 后无 verdict，conductor 自行判门禁），故「字段缺项」有多少属中断致写入未完成、多少属契约未成文不可分离——本条按「证据链追加」登记不新开 proposal_id（同主题合并规则），并**建议审批时把第 ① 项的覆盖范围一并扩展至 `workload_inventory.json` 的 per-workload 字段清单**（使会话中断时该缺项也能被前置自检拦下）。
+  - 〔2026-10-15 蒸馏期确认〕本任务在 gate 失败后（00:35:54Z）的 kb_search 检索到了本条目（返回集含 VP-2026-0114）——属「待审批知识未生效」型复发（同 stats ⑧⑩ 形态），非检索缺口；命中计数 +1。
 - repro: python3 .agents/tools/gate_lint.py（现行 S4-PERF-RECORDS-RECON 规则；负例 = final 行 artifact_path 带仓库根前缀 + Final 表加粗 6 列形态，正例 = 本任务 attempt 2 修复后产物）
 - toolchain_stamp: gate_lint.py 现行版本（statectl gate 4 机械核对层）；发生环境 tilelang 0.1.2+15ad002b3d / CANN 8.5.0 / Ascend910B2C / 2026-09-21
 - target_doc: .agents/skills/_shared/standards/signal-registry.md
@@ -4425,6 +4449,129 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
 - decided_by: -
 - decided_note: -
+
+## VP-2026-0228
+
+- type: R
+- title: `tilelang-op-optimize` Phase 0「首轮必查项」增「**归约轴位置与最内轴宽度**」重估 bullet——最内轴被归约且宽度 < 向量宽或非向量宽整数倍时，强制评估「把空间轴折叠成一条宽最内轴」
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §9.1 流程问题 R1 + §9.2 价值点 BP_001（元凶是「归约轴 = 最内轴（W=7，非 8 的倍数）」而非「向量轴选错」）+ §3 受控分离探针（同结构仅加一个 `T.reduce_sum(dim=2)`：5.6 → 155.1 µs；换扁平 H*W=49 后 16.59 µs）
+  - 数据侧已自包含（同任务回写，含 repro）：pattern-library traps-compiler.md `TRAP-inner-axis-reduce-scalarize` + layout.md `PL-1.23-flat-spatial-axis-reduce`——本条只补「首轮必查项清单」这一**流程落点**
+  - 交叉引用：queue VP-2026-0075（已 apply 的「诊断信号强制触发换轴分析」——其触发信号是 **profile 后**标量占比 >50%；本条是 **profile 前**的设计面必查项，二者互补）
+- repro: repro-missing（流程规则；复现条件 = 读 optimize SKILL.md Phase 0 步骤 4 的 bullet 清单，确认「归约轴位置 / 最内轴宽度」是否在列）
+- toolchain_stamp: 会话层流程规则（无运行时依赖）；判据数据侧 stamp = tilelang 0.1.2+8b16bccacfd9fa17（417dae9）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0 步骤 4「首轮必查项（来自 pattern-library，不得跳过）」列表新增一个 bullet，插在「向量化轴与布局重估」bullet 与其后的「编译器陷阱版本戳与 origin_task 核对」bullet 之间）
+    定位锚: |
+      - **编译器陷阱版本戳与 origin_task 核对**：pattern-library traps-*.md 的陷阱结论绑定工具链版本与来源任务（origin_task）——若 tilelang 源码被修改/重编译过，相关结论自动视为待重验，不得直接引用；引用命中条目时在 opt_log 中标注其 origin_task，据此判别可信度；
+    old 文本: （即上述定位锚原文，其前一行即「向量化轴与布局重估」bullet 的结尾）
+    new 文本: |
+      在上述「向量化轴与布局重估」bullet 与其后的「编译器陷阱版本戳与 origin_task 核对」bullet 之间插入：
+         - **归约轴位置与最内轴宽度重估**：核对本轮实现里每个 `T.reduce_*` 的**归约轴在 tensor 中的位置**与**最内轴宽度**——最内轴被归约且宽度 < 向量宽（或非向量宽整数倍）时，该归约会被逐元素标量化（≈ 元素数 × ~6 ns，见 traps-compiler.md `TRAP-inner-axis-reduce-scalarize`），单个 op 即可使 kernel 慢 1–2 个数量级；强制评估「把空间轴折叠成一条宽最内轴」的候选（layout.md `PL-1.23-flat-spatial-axis-reduce`：整平面/全局池化把 UB tile 由 `(CH,H,W)` 改为 `(CH,1,H*W)` 并把 tensor 同步声明为 `(N,C,1,H*W)`，实测 166.26→16.68 µs / 9.96x，逐位精确）。**归约轴位置与向量化轴是两个独立的重估维度**：向量轴选对不代表归约轴可用（2026-10-14 自适应池化 C4 路径的元凶即归约轴 = 最内轴，而非向量轴选型）。
+    动机: 首轮必查项当前只覆盖「向量化轴/布局」，而本任务的证伪路径命中的是**归约轴位置**——设计期（含上游 DESIGN 的布局决策）既可能基于旧工具链，也可能未枚举「把空间轴折叠为宽最内轴」这一候选；写进首轮必查项可让下一个 pool / row-reduction 类任务第一轮就评估该路线（本任务若首轮即查，可省掉整轮结构性试错）。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0229
+
+- type: R
+- title: `profile-collection.md` §4「校验采集结果」增一条判读纪律——访存类指标异常（`GM_to_UB_datas` 扇出、`aiv_gm_to_ub_bw` 极低）时先做「同结构减法探针」，不得直接归因带宽不足
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §9.1 流程问题 R3 + §3 受控分离探针序列（s0 仅 DMA 5.37 µs → s1 +整块 vcast 5.61 µs → s2 +内轴 `reduce_sum` 155.12 µs——同结构仅差一个 op；`aiv_gm_to_ub_bw` = 2.35 GB/s 的「带宽不足」表象被证伪为扇出口径）
+  - 数据侧已自包含：traps-compiler.md `TRAP-copy-layout-propagation-dma-amplification`（含「误判陷阱」段）+ constants.md `CONST-gm-to-ub-bw-dilution` + layout.md PL-1.6——本条只补 profile-collection.md 的**采集/校验纪律**落点
+  - 交叉引用：queue VP-2026-0039（同文件「探针 kernel 测硬件上限」标准形态——本条是其「减法探针」变体，建议同批审批）；queue VP-2026-0081（同文件 Ratio 采数管线）
+- repro: repro-missing（流程规则；复现条件 = 读 profile-collection.md §4 的校验清单，确认是否含「访存异常先做减法探针」条目）
+- toolchain_stamp: CANN 9.0.0 msprof / Ascend910B3 / 2026-10-14（采数侧 tilelang 0.1.2+8b16bccacfd9fa17）
+- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
+- delta: |
+    动作: update（§4「校验采集结果」清单新增一条 bullet，置于「采到的不是 Cast / Mul / OnesLike / Random 等框架小算子。」之后）
+    定位锚: "- 采到的不是 Cast / Mul / OnesLike / Random 等框架小算子。"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      - 采到的不是 Cast / Mul / OnesLike / Random 等框架小算子。
+      - **访存类指标异常时先做「同结构减法探针」，不要直接归因带宽不足**：`GM_to_UB_datas` / `UB_to_GM_datas`（总量）与 `aiv_gm_to_ub_bw`（有效带宽）都是**跨度/sector 稀释口径**——同一 `T.copy` 的消费者从逐元素算子换成 `reduce`/`transpose` 后，总量可放大 ~9x（36.75→336 KB/block）而指令数不变，此时 `aiv_gm_to_ub_bw` 会低到 2.35 GB/s 的误导值。判据：先算**扇出倍数**（`GM_to_UB_datas` ÷ 真实输入字节），可疑则做「同结构只加一个 op」的递进探针定位到具体 op（2026-10-14 自适应池化实证：control 5.37 µs → +vcast 5.61 µs → +内轴 `reduce_sum` 155.12 µs）。详见 traps-compiler.md `TRAP-copy-layout-propagation-dma-amplification` 与 constants.md `CONST-gm-to-ub-bw-dilution`。
+    动机: 「MTE2 带宽 2.35 GB/s」这类读数会把诊断直接引向「HBM 带宽不足」的伪结论；减法探针是本任务唯一定位到根因（最内轴窄归约标量化 + 布局传播）的手段，而它当前只是任务内自发动作而非采集纪律。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0230
+
+- type: R
+- title: `kb_stale_check.py` 的「戳不可解析」条目被**默认输出静默吞掉**（false negative）——date-only `toolchain:` 条目落 `unknown` 桶且不进默认清单/JSON，实测 PL-1.1 等 **92 条**条目对默认待重验门禁不可见
+- evidence:
+  - 蒸馏期机械复核（本会话可重放）：`python3 .agents/tools/kb_stale_check.py --json` → `current_stamp: tilelang ? (commit 417dae9) + CANN ?`、`stale_count 205`、`unknown_count 92`；加 `--include-unknown` 后 `PL-1.1-transpose-chain` **出现在 unknown 而非 stale**（其 `toolchain` = `2026-08 build（Ascend910B2C）；**2026-10-14 重验：…**`，无 7–40 位 hex commit token）
+  - 机制：`classify()` 仅在条目 toolchain 正则命中 `\b([0-9a-f]{7,40})\b` 时才与当前 commit 比对，否则返回 `unknown`；而 `report["unknown"]` 只在传 `--include-unknown` 时写入、文本输出仅打印计数（`(--include-unknown to list)`）⇒ **默认口径下 unknown 条目完全不可见**
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §9.1 流程问题 R2（设计把 PL-1.1「核内融合转置链 ~5.4 µs」当主证据引用，而该条目在工具清单里查不到；最终由本任务 §3 实测推翻，属证伪留痕）
+  - 交叉引用（同族，方向互补，均 pending）：VP-2026-0089（全局 stale_count 可因工具链戳批量失配**虚高**——false positive；本条是 **false negative**）、VP-2026-0101（stale 消费两分法 + 第三档结构免疫登记）、VP-2026-0186（`--filter <family>` 子集）、VP-2026-0187（kb_lint KB-QUEUE-REPRO 死态）；已 merged 的 VP-2026-0116（stamp 由 repo HEAD 改源码树过滤）只修了「谁是对照戳」，未修「条目戳不可解析时如何处置」
+- repro: 复现条件——`python3 .agents/tools/kb_stale_check.py --json`（`stale` 列表不含 PL-1.1）与 `python3 .agents/tools/kb_stale_check.py --json --include-unknown`（PL-1.1 出现于 `unknown`）双跑对照；可用 `--stamp "tilelang 0.1.2+deadbee + CANN 9.0.0"` 固定对照戳
+- toolchain_stamp: `.agents/tools/kb_stale_check.py` 现行版本（含 VP-2026-0116 源码树过滤修复）；发生环境 tilelang 0.1.2+8b16bccacfd9fa17（417dae9）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/tools/kb_stale_check.py
+- delta: |
+    动作: update（report/main 输出块——默认输出与 JSON 报告始终携带 `unknown` 条目清单，消除「不可解析戳 = 静默豁免」）
+    定位锚: |
+        report = {
+            "current_stamp": current["raw"],
+            "checked": "pattern-library topic files + queue.md",
+            "stale_count": len(stale),
+            "stale": stale,
+            "unknown_count": len(unknown),
+            "note": "stale = entry toolchain commit differs from current; "
+            "re-verify repro-backed entries via: "
+            "repro_runner.py --filter stale",
+        }
+        if args.include_unknown:
+            report["unknown"] = unknown
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(f"current stamp: {current['raw']}")
+            print(f"stale entries: {len(stale)}")
+            for e in stale:
+                print(f"  [stale] {e['id']}  ({e['path']})  stamp: {e['toolchain'][:80]}")
+            print(
+                f"unknown (unparsable stamp, manual check): {len(unknown)} "
+                f"(--include-unknown to list)"
+            )
+        return 0
+    new 文本: |
+        report = {
+            "current_stamp": current["raw"],
+            "checked": "pattern-library topic files + queue.md",
+            "stale_count": len(stale),
+            "stale": stale,
+            "unknown_count": len(unknown),
+            "unknown": unknown,
+            "note": "stale = entry toolchain commit differs from current; "
+            "unknown = entry stamp has no parseable commit (manual triage "
+            "required, NOT an exemption); "
+            "re-verify repro-backed entries via: "
+            "repro_runner.py --filter stale",
+        }
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(f"current stamp: {current['raw']}")
+            print(f"stale entries: {len(stale)}")
+            for e in stale:
+                print(f"  [stale] {e['id']}  ({e['path']})  stamp: {e['toolchain'][:80]}")
+            print(f"unknown entries (unparsable stamp, manual check): {len(unknown)}")
+            for e in unknown:
+                print(f"  [unknown] {e['id']}  ({e['path']})  stamp: {e['toolchain'][:80]}")
+        return 0
+    （`--include-unknown` 旗标保留为向后兼容的空操作/冗余开关；若倾向删除，请在 apply 时一并处理 `argparse` 声明与 docstring 相应句。）
+    动机: `unknown` 的语义是「戳不可解析，需人工核对」而非「已重验」——默认输出吞掉它，使一批工具链早于当前 build、且无近期二次证据的存量条目（实测 92 条，占受检条目约 1/3，含 PL-1.1）从未进入待重验清单（2026-10-14 pool 任务实证：设计把 PL-1.1 的旧结论当主证据，而工具清单中查不到该条目）。修复只改输出口径、不改分类算法，零误报风险。**可选加强（供审批时决定是否并入）**：给 `detect_current_stamp` 增源码树 commit 日期（`git log -1 --format=%cs -- tilelang/ src/ tilelangir/ 3rdparty/ pyproject.toml CMakeLists.txt`），对 date-only 条目戳（`YYYY-MM`）与其比较，把「早于当前源码树月份」的条目也标为 stale-candidate。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
+- decided_by: -
+- decided_note: 与 VP-2026-0089/0101/0186/0187 同属 stale 治理家族，本条为「不可解析戳被静默豁免」子问题；`--include-unknown` 现有语义保留不变。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 

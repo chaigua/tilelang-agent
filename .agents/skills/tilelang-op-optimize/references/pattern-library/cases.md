@@ -376,8 +376,8 @@ mode: [developer]
 dtype: [fp16, bf16]
 device: 910B3
 status: verified
-origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z
-toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z（迁移）；adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4 调优）
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；**Stage 4 段** tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
 repro: none
 ---
 
@@ -386,6 +386,8 @@ repro: none
 **durable 载体**：C 轴向量轴模式自包含于 layout.md PL-1.2/PL-1.4 + PL-1.21（纯 Vector persistent 分核模板）+ PL-1.5（runtime let-bound 标量倒数 / 3D reduce_sum 链）；`T.vcast` 与 `range` 两条陷阱自包含于 traps-compiler.md TRAP-vcast-shape-and-gm-source / TRAP-tir-range-loop-not-unrolled（含知识域 repro）。
 
 pool 家族首个 TileOPs 迁移算子（AdaptiveAvgPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过）。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴累加；W 轴 bin 宽 9–10 非 8 倍数 + 变长段归约不可向量化而弃选，§1.6.3 决策）；②**几何特化四路径**（一般网格 / C4 全局 `out=1×1` → 3D `T.reduce_sum` 链 / C4b 恒等 `out==in` → 纯拷贝 / persistent 分核），退化路径以编译期容量判据 `identity_fits`/`global_fits` 决定是否走特化、否则回退一般路径（纯优化，语义与精度不变）；③**C4b 恒等路径的 `num_logical` 口径**为整平面单元 `N*num_cblk`（`(1,8,9,11)`=1，非通用式 9——设计修订 2 轮的阻塞根因，见 queue VP-2026-0147）；④**设计修订链 3 轮**（Stage 2 检视两轮不通过：v0 漏盘 `acc` 零初始化 + 候选 #1 倒数乘采纳结论跨 5 节矛盾 → v1 C4b 恒等 `num_logical`/单元粒度/解码三要素不自洽 → v2 通过），Stage 3 首轮即 `[PRECISION_PASS]`（零精度重试）。**实测**：L0 10/10、L1 13/13、L2 7/7、Boundary 6/6 全过；worst `max_diff` fp16 = 1.221e-04（resnet-global，C1 倒数乘 ≤1 ulp）、bf16 = 0.0；TileOPs 集成 7/7 正确性（avg max abs err 0.00e+00），msprof 有效 bench 3 例——resnet-global `[8,2048,7,7]→(1,1)` fp16 169.26µs / Ratio 2.30%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 16.60µs / 3.81%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 14.50µs / 2.35%（smoke 3.70µs）。适用触发条件：adaptive/窗口池化类迁移设计（变长 bin 的整数边界差口径 + 向量轴选型）；退化路径容量判据与回退设计参考；纯 Vector 多单元 persistent 分核形态；单算子 TileOPs 集成（两层 wrapper 类继承 → gate `S5-ASCEND-MODE`，见 queue VP-2026-0150/0151）。
+
+**Stage 4 续档（2026-10-14，`scenario=optimize`，task `adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z`）**：C4 全局路径 baseline 166.26 µs → **16.78 µs（-89.9% / 9.91x）**，中止原因 `plateau`（round 2 无 >3% 有效提升 + 参照结构 diff 检查完成）。要点：① **`T.transpose` 链在当前工具链失效**——`hivm.hir.vtranspose` 在池化族大 shape 上被降级为 UB→GM→UB 往返（`UB_to_GM_datas` = 48 KB/block、`aiv_mte3_time` 43–58 µs、单次 ≈8–19 µs/单元），而 `(64,56)→(56,64)` 的 2D f16 转置仍走 UB 内（8.5 KB/block）⇒ 转置代价强依赖 shape/dtype 形态（traps-compiler.md `TRAP-transpose-ub-gm-roundtrip`；本条同时把 layout.md **PL-1.1** 标为 stale 并收窄其适用域）；② **替代结构 = 扁平空间轴归约**（`(N,C,1,H*W)` 声明 + 内轴 49 宽单次 `reduce_sum`，**PL-1.23**，9.96x，逐位精确）；③ **单波 CH 分派**（`_pick_ch_general`：`units(base)·2 > vector_cores` 则用 base，否则折半且**仅当折半后仍单波**才采纳——**PL-1.4** 第五数据点；同规则解释 spp 上 CH=32 反而 +49%）；④ 其余候选全否决（`T.Pipelined(2)` 噪声内 -0.4%、`T.vcast` 子区域编译失败、`CH_GLOBAL∈{8,16,64}` 劣化、f16 直接归约仅 3.6% 且有精度风险）；⑤ **msprof roofline `Ratio` 口径更正**：本次结构改写**同时**删掉两级窄归约与转置，使 `total_fops` 16.86M→2.20M（7.66x），故 10.12x 时延下降只换来 Ratio 2.30%→2.90%（1.26x）——`Ratio = (total_fops/duration)/computility`，**不与 latency 成反比**；按此口径「池化类 Ratio→70%」结构不可达（resnet 时延地板 ≈4 µs ⇒ 上限 ≈12%）。集成侧：单算子 report `status=passed`、correctness 46/46、Avg Max Abs Error 0.00e+00、Ratio Range 2.90%–4.04%（`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`，provenance 允许失效）。durable 载体：PL-1.23 / PL-1.4（单波判据）/ PL-1.1（stale 收窄）/ traps-compiler.md 三条 TRAP + `repro/{TRAP-transpose-ub-gm-roundtrip,PL-1.23-flat-spatial-axis-reduce,PL-1.4-single-wave-ch}.py`。
 
 ---
 

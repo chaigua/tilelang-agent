@@ -777,6 +777,42 @@ created_by: fp8_quant/_fp8_quant_kernel Stage 3, 2026-10-14
 last_seen: 2026-10-14 fp8_quant/_fp8_quant_kernel Stage 3
 ```
 
+### CG-2026-0024
+
+```yaml
+gap_id: CG-2026-0024
+layer: BishengIR（`hivm.hir.vtranspose` UB 内 layout 变换的 lowering 选择）
+capability: >-
+  UB 内 `T.transpose`（二轴交换）在**池化族大 shape** 上被降级为 **UB→GM→UB 往返**，
+  而非 UB 内 layout 变换：`(CH,H,W)=(64,7,7)` 的 `T.transpose([2,1,0])` 使 kernel
+  5.6 µs → 138.2 µs，`UB_to_GM_datas` = 48 KB/block（≈ tile × 单元数）、
+  `aiv_mte3_time` 43–58 µs（向量忙时仅 5–8 µs，代价全在访存往返）。该降级**强依赖
+  shape/dtype 形态**：同工具链 `(64,56)→(56,64)` 的 2D f16 转置（两边 ≥8 且为 8 的
+  倍数）仍走 UB 内实现（`UB_to_GM_datas` 仅 8.5 KB/block）——即「可用但形态受限」，
+  非「不可用」。
+blocked_algo: >-
+  「核内布局重排 + 高整除性轴」路线（layout.md PL-1.1：核内 NHWC 二轴重排后把 C 变
+  最内轴）在全局池化/整平面归约场景不可实现——被迫换结构（改为「保持原生内存序 +
+  扁平空间轴 (N,C,1,H*W) + 长最内轴归约」，见 layout.md PL-1.23）。
+evidence:
+  - 受控分离探针（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/probe2.py`（p2_ct_c64：仅加 `T.transpose` 即 138.24 µs / UB_to_GM 336 KB 级）、`probe6.py`（p6_f4/f5 扁平+转置经 GM 往返 80.77/81.23 µs）、`probe_accum.py`（a49_1/a14_1 148–174 µs 而 vec 仅 5.46 µs）
+  - 知识域 repro（可运行部分 = 三形态正确性 + 性能断言）：`.agents/skills/tilelang-op-optimize/references/pattern-library/repro/TRAP-transpose-ub-gm-roundtrip.py`（org：TRAP-transpose-ub-gm-roundtrip）
+  - docs/Tilelang.language/shape操作/T.transpose.md（未记载 UB 内/往返的实现选择条件）
+  - 反面形态（同工具链）：同任务的 spp-6x6 general 路径 `(64,56)→(56,64)` 2D f16 转置走 UB 内（UB_to_GM 8.5 KB/block）
+workaround: >-
+  绕过转置：整平面归约改「扁平空间轴」布局（`x: (N,C,1,H*W)`，同一连续内存的 rank
+  重解释，I/O 字节序契约不变）+ 单次宽最内轴 `reduce_sum`——实测同 workload
+  166.26 → 16.78 µs（9.91x），逐位精确（layout.md PL-1.23）。若必须转置，选「两边
+  ≥ 向量宽且为向量宽整数倍」的 2D 形态。
+occurrences: 1
+tasks: [adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+status: open
+proposal: none（未达 recurring；建议方向 = ① 对满足「两边 ≥ 向量宽且为向量宽整数倍」以外形态的 UB 内二轴交换给出显式诊断或 UB 内 lowering，② 或在 docs/Tilelang.language/shape操作/T.transpose.md 记载「何种形态会被降级为 UB→GM→UB」的判据；issue 须用户批准）
+created_by: evolver 复原登记，2026-10-15（**溯源**：task adaptive_avg_pool2d-...-20261014T172114Z 的 opt_log.md §11 声明已按 AGENTS.md「Compiler Capability Gap Rule」登记本缺口并递增 occurrences，但蒸馏核对时 `.agents/evolution/capability-gaps.md` 无对应条目、文件亦无本任务未提交改动——即该声明未落盘；evolver 按 2026-09-21 先例（optimizer 声称入队未落盘 → 核对发现并补齐）以一手工件复原登记）
+last_seen: 2026-10-14 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z Stage 4
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
 ### CG-2026-0023

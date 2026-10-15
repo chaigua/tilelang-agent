@@ -456,3 +456,66 @@ repro: repro/TRAP-vexp2-not-exact-pow2.py
 - **证明**：`python repro/TRAP-vexp2-not-exact-pow2.py`（exit 0；断言 ①`vexp2` 路线与精确幂在每探针指数上不等、②`vshl` 路线对 k=0..14 逐位复现 `2.0**k`）。
 - **代价边注**：`T.vshl` 在 UB 上被标量化（编译警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`）——每 tile 一次可接受，放进逐元素热点则发射开销显著（见 queue VP-2026-0214）。
 - 族内位置：与 TRAP-vrsqrt-plain-precision（近似超越指令精度）同属「近似超越/幂运算陷阱」族；与 CONST-npuir-f32-division-not-ieee-rounded 同属软件编码的精确性链路。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vexp2-not-exact-pow2.py}`。
+
+---
+id: TRAP-transpose-ub-gm-roundtrip
+kind: trap
+family: [pooling, layout, reduction, general]
+apis: [T.transpose, T.copy, T.vcast]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-transpose-ub-gm-roundtrip.py
+---
+
+### UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（代价强依赖 shape/dtype 形态）
+
+- **现象**：全局池化（`N=8,C=2048,H=W=7`，CH=64，40 blocks）里 `T.transpose(flat_(64,7,7) → (7,7,64), [2,1,0])` 使 kernel 从 **5.6 µs → 138.2 µs**；`UB_to_GM_datas` = **48 KB/block**（≈ 整个 tile × 单元数，即转置输出被写回 GM 再读回），`aiv_mte3_time` 43–58 µs。转置 + C 轴累加（`T.vadd`）的完整形态 148–174 µs，而同一 kernel 的向量忙时仅 5–8 µs（**不是向量慢，是访存往返**）。
+- **非普适（重要）**：同工具链下 `(64,56)→(56,64)` 的 **2D f16** 转置（两边 ≥8 且为 8 的倍数）仍走 UB 内实现——`spp-6x6` general 路径每单元约 9 次该形态转置，`UB_to_GM_datas` 仅 **8.5 KB/block**、整体 16.3 µs。⇒ 转置是否被降级取决于**被转置维度的大小/对齐/ dtype**，不可用「转置很慢」一概而论，也不可用一次反例否定整类。
+- **绕法**：① 避开转置——把「需要 C 内轴」的归约改成**扁平空间轴**（见 layout.md **PL-1.23**，同一 workload 166.3 → 16.7 µs）；② 若必须转置，选「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态。
+- **与 PL-1.1 的关系（证伪留痕，工具链版本戳）**：layout.md `PL-1.1-transpose-chain`（origin_task `AvgPool2dFwdOp-optimize-2026-08`，toolchain 2026-08，`repro: repro-missing`）称「4 次核内融合转置合计 ~5.4 µs」。该结论在 **2026-10 工具链**（本 stamp）上对池化族大 shape 不成立 → PL-1.1 按 INDEX §2.2 降级为**待重验**（保留原文，见其正文标注）。
+- 证据：`repro/TRAP-transpose-ub-gm-roundtrip.py`（可运行部分：三形态正确性）；msprof 数字见 repro 头部与 `task: adaptive_avg_pool2d-...-20261014T172114Z` 的 `perf_opt/profiles/probe/round0/{p2_ct_c64,p6_f4,accum_a49_1}`（任务工作区，provenance 允许失效）。
+
+---
+id: TRAP-inner-axis-reduce-scalarize
+kind: trap
+family: [reduction, pooling, general]
+apis: [T.reduce_sum]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-transpose-ub-gm-roundtrip.py
+---
+
+### 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化
+
+- **现象**：在 `(ch,H,W)=(64,7,7)` 上追加**单个** `T.reduce_sum(f32, mid, dim=2)`（归约最内轴 W=7）把 Task Duration 从 **5.6 µs 推到 155.1 µs**（同结构仅差这一个 op，控制变量分离）；代价 ≈ 单元数 × 通道数 × 归约宽 × ~6 ns（标量速率），即 `≈ 元素数 × 6 ns`。归约中轴（`dim=1`，最内宽 =1）同样慢（165 µs）。
+- **判据**：`T.reduce_sum` 只有在**归约轴不是最内轴、且最内轴足够宽（≥ 向量宽、宜为向量宽整数倍）**时才向量化；`(H,W,ch)` 形态的 `dim=1`/`dim=0` 归约实测向量忙时仅 8.45 µs（快）。
+- **绕法**：① 把归约轴合并成一条**宽的最内轴**（H*W=49）后单次 `reduce_sum(dim=2)`（PL-1.23）；② 或把 C 变最内轴后用 `T.vadd` 累加——但后者需转置，在本工具链上被 GM 往返成本抵消（见 TRAP-transpose-ub-gm-roundtrip）。
+- 伴随：该 op 同时触发 TRAP-copy-layout-propagation-dma-amplification。
+- 证据：`repro/TRAP-transpose-ub-gm-roundtrip.py`（可运行部分断言最内轴 reduce 数值正确）；msprof 数字见 repro 头部与 `perf_opt/profiles/probe/round0/{bisect_s1,bisect_s2,bisect_s3}`（任务工作区）。
+
+---
+id: TRAP-copy-layout-propagation-dma-amplification
+kind: trap
+family: [general, elementwise, pooling, reduction]
+apis: [T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+repro: repro/TRAP-transpose-ub-gm-roundtrip.py
+---
+
+### `T.copy` 的 UB 目标一旦被推成非常规布局，GM→UB DMA 退化为 16 B/元素分散读
+
+- **现象**：同一 `T.copy(x[nb, c0:c1, 0:H, 0:W], flat)`，消费者是**逐元素** `T.vcast` 时 `GM_to_UB_datas` = **36.75 KB/block**（真实输入 ≈44 KB/block，连续搬运）；把消费者换成 `T.reduce_sum` 或 `T.transpose` 后同一 copy 变成 **336 KB/block（≈9x 扇出，16 B/元素的 sector 读）**，`aiv_mte2_time` 从 2.2 µs 涨到 110 µs（**指令数不变**，只剩 19 条——是描述符/粒度退化，不是指令膨胀）。
+- **机制**：布局推断把 UB 目标 buffer 指派为转置/归约所需的布局，使 UB 地址序与 GM 地址序不再一致 ⇒ 元素级分散访存。
+- **绕法**：让 `T.copy` 的目标布局与 GM 自然序一致——把空间轴扁平化（PL-1.23）或显式声明与 GM 连续序同构的 UB 形状；**在 copy 与布局转换之间插一个 UB→UB 恒等 copy 并不能阻断传播**（实测 v3e 仍 146.9 µs）。
+- **误判陷阱**：`aiv_gm_to_ub_bw`（如 2.35 GB/s）是**跨度/sector 稀释口径**，不能据此断言「HBM/MTE2 带宽不足」——须与 `GM_to_UB_datas` 的**扇出倍数**一起读，或做同结构减法探针（详见 layout.md PL-1.6 / constants.md CONST-gm-to-ub-bw-dilution）。
+- 证据：`repro/TRAP-transpose-ub-gm-roundtrip.py`；msprof 数字见 `perf_opt/profiles/probe/round0/{bisect_s1,bisect_s2,p3_v3e}`（任务工作区）。

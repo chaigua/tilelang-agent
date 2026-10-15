@@ -30,15 +30,16 @@
 
 | ID | 一句话 | 状态 |
 |----|--------|------|
-| PL-1.1-transpose-chain | 核内融合转置链（二轴交换链，实测 ~5.4µs；仅支持二轴交换、禁 reshape→transpose） | verified |
+| PL-1.1-transpose-chain | 核内融合转置链（二轴交换链，实测 ~5.4µs；仅支持二轴交换、禁 reshape→transpose）——**2026-10-14 重验收窄**：仅「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态成立；池化族大 shape 的 3D 二轴交换被降级为 UB→GM→UB 往返（见 traps-compiler.md TRAP-transpose-ub-gm-roundtrip） | stale |
 | PL-1.2-caxis-accum | C 轴切片累加（i/j serial，实测 1.98–13.2x） | verified |
 | PL-1.3-host-permute | host permute 路线通常净亏（106–147µs） | verified |
-| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D 不等式，dtype 感知）；工厂层回退分发 | verified |
+| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14） | verified |
 | PL-1.5-quickref | 乘常数/运行时 let-bound 倒数 / 3D reduce_sum 链 / H-collapse / fp32 求和序匹配 / launch 开销判定 / host 编译期常量折叠 | verified |
 | PL-1.15-broadcast-perf-tax | vsub/vmul 未文档化列广播可编译可算对但 +12~16% 性能税——合法化≠可用，列因子仍走 vbrc 展开 | verified |
 | PL-1.17-subfp32-fp32-transit | sub-fp32 逐元素 fp32 中转模式（bf16 v-prefix 缺失 + fp16 golden 对齐双触发；lerp+ssd 两证） | verified |
 | PL-1.21-vector-persistent-split | 纯 Vector persistent 分核模板（num_kernels=min(num_logical, aicore×2) + T.serial 静态界 + 尾任务守卫；lerp+adaptive-pool 两证） | verified |
 | PL-1.22-maxreduce-nan-tracking | max 池化/归约向量实现形态：C 轴向量轴 + fp32 比较域 + eq 掩码乘性 NaN 追踪（`reduce_min+==0` 才是任一 NaN）+ `-inf` 单位元 + 无代数化简（adaptive_max + 窗口 max 2D/1D 三数据点；守卫外提需 ≥2 空间轴） | verified |
+| PL-1.23-flat-spatial-axis-reduce | 扁平空间轴归约（整平面/全局池化免转置）：UB tile `(CH,H,W)`→`(CH,1,H*W)` + GM 同步声明，归约轴换成宽最内轴——resnet-global 166.26→16.68µs（9.96x，逐位精确） | verified |
 
 ### elementwise.md — 多输入搬运效率
 
@@ -93,6 +94,9 @@
 | TRAP-npuir-reshape-dst-buffer-shadow | npuir 分支 `T.reshape` 被 `npuir_reshape(src,dst)` 覆盖（第二参 = 目标 buffer，非 shape list）；通用形 `T.reshape(A,[m,n])` 语义漂移（含 repro） | verified |
 | TRAP-parallel-f32-uint8-cast-rounding | `T.Parallel` 内直接 `T.cast(f32,"uint8")` 非最近舍入（16/64 偏 `round()`）+ uint8 字节实际落 i8 空间（≥128 饱和 127 = fp8 NaN 载荷）；绕法 = 两步 `vcast rint` 后窄化 + signed 空间（含 repro） | verified |
 | TRAP-vexp2-not-exact-pow2 | `T.vexp2` = `exp(x·ln2)` 非精确 2^k（rel err ~6e-8 使 `n.5` tie 全反向）；精确 `2^k` 走 `T.vshl(1,k)`（k=0..14 逐位精确；`vshl` 被标量化）（含 repro） | verified |
+| TRAP-transpose-ub-gm-roundtrip | UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（5.6→138.2µs；`UB_to_GM_datas` 48KB/block）——代价强依赖 shape/dtype 形态（`(64,56)→(56,64)` f16 仍走 UB 内）；绕法 = 免转置扁平归约（PL-1.23）（含 repro） | verified |
+| TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
+| TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -155,7 +159,7 @@
 | CASE-attention-twophase-causal-regen | 两相位 causal 域重生成 + 第五轮（标量化判别链 14.2x）+ 第六轮（屏障审计/深度 2/Ratio 口径/r9 守卫）调优档案 | verified |
 | CASE-attention-mha-config-unvalidated | 反例：设计默认 config 路径未编译验证即出厂（bench 期 UB 溢出） | verified |
 | CASE-ssd-chunkscan-migration | mamba/SSD 族 MixCV Expert 迁移完整档案（模式切换 + 六轮 2.91× + 首过集成 + 4515de8 重跑 + 二轮 1.078× + 重建会话 repro 骨架重推导 +9.7%） | verified |
-| CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例） | verified |
+| CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例）——**Stage 4 续档**（`T.transpose` 链在当前工具链失效 → 扁平归约替代 9.91x + 单波 CH 分派；含「msprof roofline Ratio 不与 latency 成反比」口径更正实例） | verified |
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例） | verified |
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
