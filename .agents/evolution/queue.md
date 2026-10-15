@@ -4673,6 +4673,41 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0232（profile-collection.md 采数纪律）同事实、不同层（组装/集成检查清单）；两者可并行落盘，也可在审批时择一。
 
+## VP-2026-0235
+
+- type: R
+- title: `repro_runner.py` 以 `[sys.executable, basename]`（cwd = `repro/`）执行 repro ⇒ **依赖仓库内 tilelang 的 repro 全部 import 失败**（ED-D 知识回归测试对 tilelang 类 repro 事实上处于失明状态）
+- evidence:
+  - 蒸馏期机械复核（本会话可重放）：`python3 .agents/tools/repro_runner.py --filter CONST-aiv-time-decomposition` → `FAIL 0.0s | ModuleNotFoundError: No module named 'tilelang'`；同环境下 `cd <repo root> && /workspace/venv/bin/python -c "import tilelang"` → **OK**（`/workspace/tilelang-mlir-ascend/tilelang/__init__.py`）⇒ 差异只在 cwd/`sys.path`
+  - 机制（源码口径）：`.agents/tools/repro_runner.py` L108–109 `subprocess.run([sys.executable, os.path.basename(path)], ...)`——以 repro 文件名为脚本参数、cwd 不在仓库根，且未注入 `PYTHONPATH`；本仓 tilelang 是**仓库内包**（非 site-packages 安装），故任何 `import tilelang` 的 repro 在子进程里必然找不到模块
+  - 影响面：库内绝大多数 repro 顶部均有 `import tilelang`（本会话新登记 3 条同样如此），即 ED-D 的「工具链升级后批量重验（`--filter stale` → FAIL 即条目推翻 / PASS 即刷新版本戳）」链路对 tilelang 类条目不可用；反而是**纯宿主语言 repro**（如 `TRAP-torch-oracle-maxpool1d-empty-window.py`，2026-10-14 实测 7.2s PASS）与纯 Python 判据 repro（`PL-1.4-single-wave-ch.py`）能跑——此前「repro_runner 实跑 PASS」的记录集中在后者，掩盖了前者
+  - 交叉引用（同族：机械验证链缺口，均 pending）：VP-2026-0187（`kb_lint` KB-QUEUE-REPRO 因 `## Decided` 子串短路从未生效）、VP-2026-0198（`design-review` 返回前自跑 `review_lint` + D-1 解释器选择）、VP-2026-0089/0101/0116/0186/0230（stale 检测口径族）
+- repro: 复现条件——`python3 .agents/tools/repro_runner.py --filter CONST-aiv-time-decomposition`（FAIL: No module named 'tilelang'）与仓库根 `/workspace/venv/bin/python -c "import tilelang"`（OK）双跑对照；任取一个含 `import tilelang` 的 repro 与一个纯 Python repro 对照更直观
+- toolchain_stamp: `.agents/tools/repro_runner.py` 现行版本（HEAD 0cc90bc 之前）；环境 tilelang 0.1.2+417dae9（仓库内包）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/tools/repro_runner.py
+- delta: |
+    动作: update（子进程调用处——保证 repo root 可达 tilelang）
+    定位锚: |
+            proc = subprocess.run(
+                [sys.executable, os.path.basename(path)],
+    old 文本: |
+            proc = subprocess.run(
+                [sys.executable, os.path.basename(path)],
+    new 文本: |
+            _env = dict(os.environ)
+            _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 2)))
+            _env["PYTHONPATH"] = _repo_root + os.pathsep + _env.get("PYTHONPATH", "")
+            proc = subprocess.run(
+                [sys.executable, os.path.basename(path)],
+                env=_env,
+    （等价实现亦可：`cwd=_repo_root` 且脚本传绝对路径；关键点是子进程须能 `import` 仓库内 tilelang。若倾向零代码改动，替代方案 = 在 `repro/README.md` 顶部注明「tilelang 类 repro 须在仓库根以 `PYTHONPATH=. python repro/<id>.py` 手工执行」并把该口径写进 ED-D 说明。）
+    动机: ED-D 的批量重验是「工具链升级后条目可信度自动维持」的唯一机械手段；当前它只覆盖纯宿主语言 repro，而库内 tilelang 类条目占多数 ⇒ 「stale → repro_runner → FAIL=推翻 / PASS=刷新戳」的闭环对多数条目不可达，长期会使版本戳只增不改。
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
+- decided_by: -
+- decided_note: 蒸馏期机械发现（非任务工件产出）；与 VP-2026-0187 同属「机械门禁死态」族，建议同批审批。
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0003
