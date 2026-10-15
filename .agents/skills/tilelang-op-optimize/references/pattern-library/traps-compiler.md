@@ -222,14 +222,14 @@ apis: [T.Parallel, T.if_then_else]
 dtype: [fp16, bf16, fp32]
 device: 910B2C
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z
-toolchain: tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C
+origin_task: argmax-_argreduce_kernel-20260924T031005Z / argmin-_argreduce_kernel-20261015T023310Z（绕法收窄：per-row 展开仅独立缓冲成立）
+toolchain: tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C；绕法收窄 tilelang 0.1.2+417dae9 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro/repro_parallel2d_bm2_scalarize.py
 ---
 
 ### 2D T.Parallel(bm,N) 融合 if_then_else 在 bm≥2 整体标量化（与操作数形态无关）
 
-`for i,j in T.Parallel(bm,N): cand[i,j]=T.if_then_else(x[i,j]==ext[i,j], T.cast(j,"float32"), BIG)` 在 bm≥2 时 scalar ratio 0.84–0.95（(2,4096) 222µs）；bm=1 同形态向量化正常（tiled (1,5120) 25.9µs）。**操作数变体对照证伪旧归因**：(bm,1) 直接索引 m[i,0]（0.95）、ext_brc 物化 + x_work staging（0.948）——两者同样标量化，触发器是循环形态本身。绕法：bm≥2 用显式向量 op 链（vbrc/vcmp/vselect，r1a 形态 47µs）或 per-row (1,W) 展开循环（PL-1.20）。证伪更正留痕：argmax opt_log Iteration 4（session-1 嫌疑 (a)/(b) 均否）。
+`for i,j in T.Parallel(bm,N): cand[i,j]=T.if_then_else(x[i,j]==ext[i,j], T.cast(j,"float32"), BIG)` 在 bm≥2 时 scalar ratio 0.84–0.95（(2,4096) 222µs）；bm=1 同形态向量化正常（tiled (1,5120) 25.9µs）。**操作数变体对照证伪旧归因**：(bm,1) 直接索引 m[i,0]（0.95）、ext_brc 物化 + x_work staging（0.948）——两者同样标量化，触发器是循环形态本身。绕法：bm≥2 用显式向量 op 链（vbrc/vcmp/vselect，r1a 形态 47µs）。**旧绕法「per-row (1,W) 展开循环」已在 2026-10-15 收窄**（argmin Stage 4，tilelang 417dae9 + CANN 9.0.0 + 910B3）：该写法只在「每行**独立**缓冲」时正确——若 per-row 展开写入**共享 (bm,N) 候选缓冲**（`for r in range(bm): for i,j in T.Parallel(1,N): cand[r+i, j] = ...`）则静默错值（(2048,4096) fp16 实测 y0 = −3 vs ref 3211，且时延 12.91–15.25 µs「更快」＝伪收益）；独立 per-row 缓冲形态正确但在本工具链下整体标量化（154.98 µs），无可采纳空间。专条见 **TRAP-scf-for-row-offset-silent-miscompile**。证伪更正留痕：argmax opt_log Iteration 4（session-1 嫌疑 (a)/(b) 均否）；argmin opt_log Iteration 2（per-row 展开形态的正确性证伪 + 证伪更正记录）。
 
 ---
 id: TRAP-vbrc-same-shape-empty-broadcast
@@ -273,8 +273,8 @@ apis: [T.prim_func, T.serial]
 dtype: []
 device: 910B3
 status: verified
-origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z
-toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261013T084721Z / argmin-_argreduce_kernel-20261015T023310Z（第二形态：行偏移静默错值）
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二形态 tilelang 0.1.2+417dae9 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro/TRAP-tir-range-loop-not-unrolled.py
 ---
 
@@ -283,7 +283,8 @@ repro: repro/TRAP-tir-range-loop-not-unrolled.py
 - **现象**：`@T.prim_func` 内的 `for o in range(n)` 被前端解析为 **serial TIR 循环**，循环变量是 `tir.Var`（不是 Python int）——trace 期即报 `list indices must be integers or slices, not Var`（对编译期 Python 列表/预计算表的索引、`int()`/`float()` 转换同样失败）；由循环变量构造的 slice 偏移保持为运行时表达式。实测（adaptive_avg_pool2d 迁移 Stage 3 首轮，2026-10-13，417dae99 + CANN 9.0.0 + 910B3）：按 DESIGN §1.6.2 #8/§6.1「Python `range` 编译期展开为向量 op 序列」的字面形态实现（`range` + 预计算 bin 表索引）在 trace 期失败。
 - **本工具链可行形态**（与源 GPU kernel 同形）：静态上界 `T.serial(max_extent)` + 运行时 `if k < extent` 守卫 + 边界表达式内联计算（`adaptive_bin(o, ...)`）。repro 实测该形态编译通过且 `max_diff=0`（exit 0 证明 trap 与绕法两侧）。
 - **适用**：迁移任务把 GPU 端「Python 预计算表 + `range` 索引」当作编译期展开的形状假设（设计文档声明某 `range` 循环「编译期展开」时，该结论依赖具体前端行为，本工具链下不成立）。与 TRAP-tvm-parser-rules（`if` 折叠/条件 alloc 等解析器规则）同族；前者管条件与作用域，本条管 `range` 循环的 trace 语义。
-- **证明**：`python repro/TRAP-tir-range-loop-not-unrolled.py`（exit 0：`range` trap 复现 + 静态界+守卫形态数值通过）。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`。
+- **第二形态：静默错值（2026-10-15 补，argmin Stage 4）**——`range` trap 不只有「trace 期抛 `list indices ... not Var`」这一面：当循环变量仅**参与缓冲行偏移**（不索引 Python 列表）时，解析器不报错，循环体照常 lower 为运行时 `scf.for`，但**以该运行时常量为行偏移写共享/片段缓冲会失配向量化与 region 分析 → 静默产出错误数据**（无编译错误、无警告）。故本条与「per-row 展开」写法（TRAP-parallel2d-bm-ge2-scalarize 的旧绕法建议）强相关，专条见 **TRAP-scf-for-row-offset-silent-miscompile**（含 repro 与逐元素精确门的判据）。
+- **证明**：`python repro/TRAP-tir-range-loop-not-unrolled.py`（exit 0：`range` trap 复现 + 静态界+守卫形态数值通过）；第二形态证明见 `repro/TRAP-scf-for-row-offset-silent-miscompile.py`。溯源（任务工作区，未上库）：`examples/adaptive_avg_pool2d/_adaptive_avg_pool2d_kernel/{DESIGN.md,repro/}`；第二形态溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/opt_log.md#Iteration-2`。
 
 ---
 id: TRAP-vcast-shape-and-gm-source
@@ -519,3 +520,24 @@ repro: repro/TRAP-transpose-ub-gm-roundtrip.py
 - **绕法**：让 `T.copy` 的目标布局与 GM 自然序一致——把空间轴扁平化（PL-1.23）或显式声明与 GM 连续序同构的 UB 形状；**在 copy 与布局转换之间插一个 UB→UB 恒等 copy 并不能阻断传播**（实测 v3e 仍 146.9 µs）。
 - **误判陷阱**：`aiv_gm_to_ub_bw`（如 2.35 GB/s）是**跨度/sector 稀释口径**，不能据此断言「HBM/MTE2 带宽不足」——须与 `GM_to_UB_datas` 的**扇出倍数**一起读，或做同结构减法探针（详见 layout.md PL-1.6 / constants.md CONST-gm-to-ub-bw-dilution）。
 - 证据：`repro/TRAP-transpose-ub-gm-roundtrip.py`；msprof 数字见 `perf_opt/profiles/probe/round0/{bisect_s1,bisect_s2,p3_v3e}`（任务工作区）。
+
+---
+
+id: TRAP-scf-for-row-offset-silent-miscompile
+kind: trap
+family: [reduction, general]
+apis: [T.serial, T.Parallel, T.if_then_else]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: argmin-_argreduce_kernel-20261015T023310Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+repro: repro/TRAP-scf-for-row-offset-silent-miscompile.py
+---
+
+### 运行时 `scf.for` 的循环变量作共享缓冲行偏移 → 静默错值（无报错）
+
+- **现象**：`@T.prim_func` 内的 `for r in range(bm)` 是运行时 `scf.for`（见 TRAP-tir-range-loop-not-unrolled）。当 `r` 只参与**缓冲行偏移**（不索引 Python 列表）时解析器不报错，但 `for r in range(bm): for i,j in T.Parallel(1,N): cand[r + i, j] = T.if_then_else(x_ub[r+i,j] == ext_brc[r+i,j], j, BIG)` 这种「per-row 展开写**共享 (bm,N)** 候选缓冲」形态**静默产出错误数据**：(2048,4096) fp16 实测 `y0 = −3` vs `torch.argmin` ref `3211`（无编译错误、无 warning）。独立 per-row 缓冲（每行一个 `(1,N)` 缓冲）与显式向量链两种形态在同一数据上正确。
+- **诊断指纹（本条的最可操作处）**：**错值档比正确档更「快」**——错值形态 12.91–15.25 µs vs 正确链式 31.10–31.46 µs、正确独立行缓冲 154.98 µs；凡「per-row 展开 + 加速显著」的分支，先过**逐元素精确门**（`torch.equal` vs CPU 参考）再进 msprof 采集，否则会把失配当收益写进 winner 流程。
+- **合法形态（bm≥2 的每元素条件选择）**：显式向量 op 链 `vbrc → vcmp(eq) → vselect → reduce_min`（本机 31.1–31.5 µs，正确）；per-row 展开只对**独立** per-row 缓冲成立，而该形态在本工具链下整体标量化（154.98 µs），无采纳空间。与之并列的 `T.Parallel(bm,N)` 2D 融合形态在 bm≥2 亦标量化（TRAP-parallel2d-bm-ge2-scalarize）——三者构成「bm≥2 每元素条件选择」的完整边界。
+- **证明**：`python repro/TRAP-scf-for-row-offset-silent-miscompile.py --level c2_perrow`（打印 MISMATCH，陷阱复现）与 `--level c4_chain`（打印 OK，合法形态通过）；`--level c1_2d` 为标量化对照（268.8 µs）。机制归因：运行时常量行偏移使向量化/region 分析失配 → 生成错误地址或错误 lane 映射；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0015`。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Iteration-2, profiles/round1/, logs/round2/*.log}`。

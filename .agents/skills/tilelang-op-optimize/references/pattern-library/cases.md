@@ -329,16 +329,20 @@ kind: case
 family: [reduction]
 apis: []
 dtype: [fp16, bf16, fp32]
-device: 910B2C
+device: 910B2C, 910B3
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z
-toolchain: tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C
+origin_task: argmax-_argreduce_kernel-20260924T031005Z / argmin-_argreduce_kernel-20261015T023310Z（同族第二实例：optimize 场景 Stage 4 + [DESIGN_LIMIT]）
+toolchain: 首证 tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C；第二实例 tilelang 0.1.2+417dae9（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro-missing
 ---
 
 ### argmax/_argreduce_kernel Stage 4 完整档案（C6 预注册裁决翻转 + 证伪更正）
 
 几何平均 11.5×（lm-head 2.20×/2.60× C6 N-split 翻转、hidden-state 5.8×/4.4× 链式+arange 修复、3d 130× 窄行 deinterleave）。要点：①DESIGN §1.6.4 实验裁决三件套（结构+阈值+回写路径）在续跑会话直接闭环——预注册的价值实证；②session-1 标量化归因被操作数变体对照证伪（TRAP-parallel2d-bm-ge2-scalarize）；③C6 双 kernel 的 msprof 口径 = 两段 Task Duration 之和（--kernel-name 分别捕获）。工件（工作区过程文件，任务级溯源）：examples/argmax/_argreduce_kernel/perf_opt/opt_log.md（[DESIGN_LIMIT] 双门槛达成：2.20×>2× + 设计层归因）；知识域证据见本库 repro/repro_nsplit_pattern.py 等六件。
+
+#### 同族第二实例：argmin 共享 ArgreduceKernel 的 Stage 4（`scenario=optimize`，`stage_plan=[4]`，2026-10-15）
+
+任务 `argmin-_argreduce_kernel-20261015T023310Z`（910B3 / CANN 9.0.0 / tilelang 417dae9）；4 轮 12 个实验分支，`stop_reason=budget_exhausted`（rounds 4/10、experiments 12/40，主要结构候选已充分验证），几何平均 1.30×（6 tune workload：2.21×/2.63×/1.004×/1.47×/1.011×/1.011×）。要点：① **C6 N-split 分派翻转**（lm-head (4,102400) 双 dtype 11.898/11.914 µs，0.453×/0.380×，tn=2560/nchunk=40；跨设备跨工具链与 argmax 锚点同量级 → PL-1.20 第二实例）；② **block_m 阶梯重标定**（用编译报错口径的真实 UB 足迹 ~16 B/elem 替换 Stage 3 的 64 KB 探针代理预算 → bf16 hidden-state 由 bm=1 提档 bm=2，54.010→36.865 µs = 1.47×）；③ **DMA 粒度是拷贝地板的真实杠杆**（16 KB → 64 KB：15.82 → 13.61 µs，CONST-copy-floor-dma-granularity）但 64 KB 档需 4× UB，与算法缓冲不可共存；④ **正确性证伪**：per-row 展开写共享 (bm,N) 缓冲静默错值（12.91–15.25 µs「更快」= 伪收益，→ TRAP-scf-for-row-offset-silent-miscompile）；⑤ **`[DESIGN_LIMIT]`**：hidden-state fp16 目标（≤13.7 µs / Ratio ≥70%）在本机同粒度纯拷贝地板（15.82 µs / Ratio 上限 60.7%）之下不可达，`perf_feedback.md` 给出量化归因 + 本机实测常数回填（附录 B），路由「附录补记」；⑥ **优化场景下的集成观察**：该 op 的 wrapper 在同一 report 上 `status=partial`（correctness 42/42 通过但 6 个 msprof case 中 2 个 `profiler_valid=false`、2 个「valid 实为欠归因」）——根因是「多 `@T.prim_func` 名 + wrapper 未上浮 `msprof_kernel_name`」，见 CASE-argmax-argreduce-integration 缺陷 ⑤ 与 queue VP-2026-0232。工件（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md, perf_feedback.md, perf_records.jsonl, profiles/}`；知识域证据见本库 `repro/{CONST-copy-floor-dma-granularity,CONST-aiv-time-decomposition,TRAP-scf-for-row-offset-silent-miscompile}.py`。
 
 ---
 id: CASE-argmax-argreduce-integration
@@ -348,8 +352,8 @@ apis: []
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0）
-toolchain: 首证 tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（20 AICore / 40 Vector）/ 2026-10-14
+origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0）+ argmin-_argreduce_kernel-20261015T023310Z（第三证：缺陷 ⑤ 多 prim_func 采数名歧义）
+toolchain: 首证 tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（20 AICore / 40 Vector）/ 2026-10-14；第三证 tilelang 0.1.2+417dae9（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro-missing
 ---
 
@@ -366,6 +370,7 @@ repro: repro-missing
 - **实测（910B3，msprof Task Duration，集成态）**：smoke `[32,256]` 1.80/1.86/1.88 µs（fp16/bf16/fp32，bm=8）；lm-head `[4,102400]` 26.08/31.68 µs（fp16/bf16，tiled bm=1 tn=5120）；hidden-state `[2048,4096]` 31.16/54.10 µs（fp16 bm=2 / bf16 bm=1）；non-aligned `[256,300]` 3.10/3.32 µs（fp16/bf16，bm=8）。3 条 smoke 记录仅存在于 `benchmark.json`（`tileops/reporting/analyzer._is_smoke_record` 把 label 含 "smoke" 的用例从 `run.json#performance.cases` 与 `report.md` 过滤，即使 msprof profile 有效）——数值引用走 `benchmark.json`。
 - **durable 载体**：argreduce 边界语义（±0.0 全序 / NaN→哨兵 `2^30`）自包含于 traps-runtime.md TRAP-argreduce-edge-semantics；`T.reshape` 被 `npuir_reshape(src,dst)` 覆盖自包含于 traps-compiler.md TRAP-npuir-reshape-dst-buffer-shadow（含知识域 repro）；索引失配指纹见 error-fixer references/precision-patterns.md。
 - 溯源（任务工作区，未上库，允许失效）：`examples/argmin/_argreduce_kernel/{DESIGN.md#§0.2/§5.6/§1.6.1-E5/§9.1, RETROSPECTIVE.md Stage 1/2/3}` + `examples/argmin/RETROSPECTIVE.md Stage 5` + 集成侧 integration_log.md。
+- **缺陷 ⑤（第三证 / 新形态，2026-10-15，argmin 的 Stage 4 optimize 集成跑）：多 `@T.prim_func` 名 + wrapper 未上浮采数名 → report `status=partial`（correctness 42/42 全过）**。现象：perf_opt 版 kernel 文件（`perf_opt/_argreduce_kernel.py`）含 **4 个不同名的 `@T.prim_func`**（`main` / `argreduce_tiled` / `argreduce_partial` / `argreduce_merge`），而 baseline kernel 文件只有 `main` 一个 distinct 名。后果（6 个 msprof case，报告 `examples/TileOPs/reports/tileops/20261015_061354_481681_ArgminFwdOp/`，基线对照 `…/20261015_003723_597141_ArgminFwdOp/` `status=passed` 6/6 valid）：① 派生名歧义时取到**某一个** kernel——lm-head 两 dtype 派生 `argreduce_merge` → 只捕获 merge 段，记 **3.640/3.180 µs（`profiler_valid=true`）**，而 C6 真实 workload 时延 = partial + merge = **11.898/11.914 µs**（**看似 valid 实为欠归因**）；② 派生 `None` 时退回**无过滤全捕获**——non-aligned 两 dtype 捕获到 `MemSet_*` + `PadV3_*` + `main` 三 op → **`profiler_valid=false`**，记 5.420/5.400 µs（含 Op 层 pad/fill 算子），而 kernel-only 实测 3.192/3.317 µs；③ 唯一「恰好正确」的 hidden-state 两 dtype（派生 `None` 但窗口内仅 1 op）记 31.601 µs / 36.421 µs。机制（源码口径）：`tileops/benchmark/msprof.py::_derive_kernel_name_from_prim_func`（Pass 2 静态源码扫描）在候选模块内 distinct `@T.prim_func` 名 > 1 时返回 `None`/歧义；`msprof.py` 的解析链为「显式 `kernel_name` → `functor.msprof_kernel_name` → `functor.kernel.msprof_kernel_name` → `TILEOPS_MSPROF_KERNEL_NAME` → 派生名」。同族对照（tier-2 解析正例）：argmax wrapper 显式 `self.msprof_kernel_name = getattr(self.kernel, "msprof_kernel_name", None) or "main"` 把工厂的 `_func.msprof_kernel_name` 上浮到 Op 层，故其 C6 双发射可归因；argmin wrapper 缺这一行（Stage 5 integration_log §issues 曾以「report-layer cosmetic」记录该现象——本次实证其**非 cosmetic**）。判读口径：`run.json.summary.invalid_profile_count > 0` 或「case 时延显著低于 workload 流量下界」⇒ 先查派生采数名与捕获段数，再谈性能。**该缺陷属 integration 期接线缺口，`optimize` 场景下 wrapper 仅允许翻转 switch 块、本任务范围内不可修**（处置提案见 queue VP-2026-0232 / VP-2026-0234）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/{integration_log.md#issues, ../../argmin.py, perf_opt/perf_records.jsonl}`。
 
 ---
 

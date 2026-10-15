@@ -521,13 +521,13 @@ evidence:
   - pattern-library TRAP-parallel2d-bm-ge2-scalarize（三组操作数变体对照 + msprof
     数据 + repro/repro_parallel2d_bm2_scalarize.py，ratio 3.02 实测复现）。
   - argmax opt_log Iteration 4 证伪更正记录（session-1 嫌疑 (a)/(b) 均被变体对照否证）。
-workaround: bm>=2 用显式向量 op 链或 per-row (1,W) 展开（PL-1.20 形态）。
+workaround: bm>=2 用显式向量 op 链（vbrc/vcmp/vselect + reduce）。**2026-10-15 收窄**：「或 per-row (1,W) 展开」（PL-1.20 形态）仅在「每行**独立**缓冲」时成立——per-row 展开写**共享 (bm,N)** 缓冲为静默错值（新缺口本体见 CG-2026-0025），独立行缓冲形态则在本工具链下同样标量化（154.98 µs）无可采纳空间。
 occurrences: 1
 tasks: [argmax-_argreduce_kernel-20260924T031005Z]
 toolchain_stamp: tilelang 0.1.2 (dev root build 2026-09-24) / CANN 8.5.0 / Ascend910B2C
 status: open
 created_by: argmax/_argreduce_kernel Stage 4 round 4（2026-09-28）
-last_seen: argmax-_argreduce_kernel-20260924T031005Z（2026-09-28）
+last_seen: 2026-10-15 argmin-_argreduce_kernel-20261015T023310Z Stage 4 复核（同族 `_argreduce_kernel` 谱系再现 + 绕法收窄；**不计 occurrences**——同 op 谱系且知识已预注入〔kb_search 命中〕，非独立识别；与之并列的静默错值形态另立 CG-2026-0025）
 ```
 
 ### CG-2026-0016
@@ -811,6 +811,44 @@ status: open
 proposal: none（未达 recurring；建议方向 = ① 对满足「两边 ≥ 向量宽且为向量宽整数倍」以外形态的 UB 内二轴交换给出显式诊断或 UB 内 lowering，② 或在 docs/Tilelang.language/shape操作/T.transpose.md 记载「何种形态会被降级为 UB→GM→UB」的判据；issue 须用户批准）
 created_by: evolver 复原登记，2026-10-15（**溯源**：task adaptive_avg_pool2d-...-20261014T172114Z 的 opt_log.md §11 声明已按 AGENTS.md「Compiler Capability Gap Rule」登记本缺口并递增 occurrences，但蒸馏核对时 `.agents/evolution/capability-gaps.md` 无对应条目、文件亦无本任务未提交改动——即该声明未落盘；evolver 按 2026-09-21 先例（optimizer 声称入队未落盘 → 核对发现并补齐）以一手工件复原登记）
 last_seen: 2026-10-14 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z Stage 4
+```
+
+### CG-2026-0025
+
+```yaml
+gap_id: CG-2026-0025
+layer: TileLangIR pass / codegen（向量化与 region 分析 × 前端 `range` 语义）
+capability: >-
+  `@T.prim_func` 内的 `for r in range(bm)` 被解析为**运行时 `scf.for`**（非 trace-time
+  展开，另一面见 traps-compiler.md TRAP-tir-range-loop-not-unrolled）。当循环变量仅
+  参与**缓冲行偏移**（不索引 Python 列表）时解析器不报错，但该形态**静默产出错误数据**
+  —— (2048,4096) fp16 上 `for r in range(bm): for i,j in T.Parallel(1,N):
+  cand[r + i, j] = T.if_then_else(x_ub[r+i,j] == ext_brc[r+i,j], j, BIG)` 实测
+  y0 = −3 vs `torch.argmin` ref 3211，无编译错误、无 warning。即「逐行展开 + 共享块
+  缓冲写」这一在 GPU 后端常见的写法在本工具链上既非展开、又静默错值（不是标量化那种
+  性能问题，而是**正确性缺失且无诊断**）。
+blocked_algo: >-
+  resident 归约族 bm≥2 的 fused 候选形态（单环 do-it-all 候选，省掉 cmp/idx/sent 三个
+  全宽缓冲）不可用——被迫退到显式向量 op 链（`vbrc→vcmp→vselect→reduce`，每元素 ~5 pass）；
+  「每行独立缓冲」形态正确但在本工具链下整体标量化（154.98 µs），无可采纳空间。
+  跨任务影响：任何「bm≥2 的逐行向量化 + 共享块缓冲」形态（row-wise softmax/归约/池化候选）。
+evidence:
+  - pattern-library traps-compiler.md TRAP-scf-for-row-offset-silent-miscompile（四形态对照 + 断言说明）
+  - 知识域 repro（可运行，`--level c2_perrow` 打印 MISMATCH / `--level c4_chain` 打印 OK）：
+    .agents/skills/tilelang-op-optimize/references/pattern-library/repro/TRAP-scf-for-row-offset-silent-miscompile.py
+  - 任务内证伪更正记录（任务工作区，允许失效）：examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/opt_log.md#Iteration-2（12.91–15.25 µs「更快」实为错值；c1_2d 268.82 µs 标量化 / c3_rowbuf 154.98 µs 正确但标量化 / f1_bm1_fused 284.72 µs）
+  - docs/Tilelang.language/ 全目录未见「range 循环的 trace 语义」或「共享缓冲写与循环变量的限制」条款（未文档化，估量依据 = 上述本机实测）
+workaround: >-
+  bm≥2 的每元素条件选择走显式向量 op 链（vbrc/vcmp/vselect + reduce_min/max）；per-row 展开
+  仅对**每行独立缓冲**成立（且本工具链下会标量化）。形态裁决前必过逐元素精确门
+  （`torch.equal` vs CPU 参考）——错值档的典型指纹是「比正确档更快」（本例 12.9–15.3 µs vs 31.1–31.5 µs）。
+occurrences: 1
+tasks: [argmin-_argreduce_kernel-20261015T023310Z]
+toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: open
+proposal: none（未达 recurring；建议方向 = ① 对「运行时循环变量作共享/片段缓冲行偏移」的写给出诊断或正确 lowering（当前静默错值，属正确性级缺陷）；② 或在 docs/Tilelang.language 记载 `range` 循环的 trace 语义与共享缓冲写的限制条款；issue 须用户批准）
+created_by: evolver 复原登记，2026-10-15（**溯源**：task argmin-_argreduce_kernel-20261015T023310Z 的 perf_opt/opt_log.md 遗留问题 2 声明「如需该形态需编译器侧支持（能力缺口登记见 §Skill Retrospective）」，但该任务 §Skill Retrospective **无** CG 登记、本簿亦无对应条目——属「声称未落盘」；按 2026-09-21 / 2026-10-15 先例以一手工件复原登记）
+last_seen: 2026-10-15 argmin-_argreduce_kernel-20261015T023310Z Stage 4（Iteration 2 正确性证伪）
 ```
 
 ## Recurring（达升级阈值，待推动补齐）

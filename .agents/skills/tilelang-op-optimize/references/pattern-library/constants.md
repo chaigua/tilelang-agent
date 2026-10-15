@@ -247,3 +247,52 @@ repro: repro/CONST-npuir-f32-division-not-ieee-rounded.py
 - **绕法**：(a) per-row/per-group 的 scale 除法改走 `T.vdiv` **列形态**（实测精确），逐元素量化值除法保留与参考同形的 `x/scale`（**勿换 reciprocal-mul**——乘法倒数在 tie 处与除法不等价，见 TRAP-vexp2-not-exact-pow2 同族与 queue VP-2026-0212）；(b) 字节级判据须允许「参考 mantissa 落在 tie 的 ≤1 device-ulp 邻域内时取另一侧邻居」，把容忍度显式写进分类器（勿放宽为随机容差）。
 - **证明**：`python repro/CONST-npuir-f32-division-not-ieee-rounded.py`（2-D `T.vdiv` 对正确舍入商断言非零 1-ulp 比例并打印实测率；绝对率随环境漂移，锁量级与相对关系）。
 - 能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0021`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/CONST-npuir-f32-division-not-ieee-rounded.py}`。
+
+---
+
+id: CONST-copy-floor-dma-granularity
+kind: constant
+family: [reduction, elementwise, general]
+apis: [T.copy]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: argmin-_argreduce_kernel-20261015T023310Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（npu-smi 26.1.1；aicore 20 → aivector 40）/ 2026-10-15
+source: PL-1.20-nsplit-perrow-partial / CONST-copy-floor-method
+repro: repro/CONST-copy-floor-dma-granularity.py
+---
+
+### 同形纯拷贝地板随 DMA 粒度变化（(2048,4096) fp16，910B3 / CANN 9.0.0）
+
+- **口径**：`msprof op` Task Duration(us)，`--launch-count=20 --warm-up=5`；同一 persistent 结构（grid = 40 Vector 核、per-core 串行 task 环）、同一 16.78 MB 读 + 16 KB 写流量、标量消费者单元素读保活（避免 DCE）——**唯一变量 = 单次 DMA 的连续粒度**。
+- **实测**：16 KB 粒度（(2,4096) 行块）= **15.82 µs**（16.78 MB / 15.82 µs = **1.06 TB/s**，按 1.75 TB/s 聚合口径其 Ratio 上限 ≈ 60.7%）；64 KB 粒度（flat (32768,) 块）= **13.61 µs**（**1.23 TB/s**，Ratio ≈ 70.5%）；64 KB 行块（(8,4096)）= 14.03 µs（与 flat 同量级）。任务内 opt_log 另汇总 32 KB 档 ≈14.6 µs（探针族未单列该档，provenance 见 origin_task）。
+- **粒度是真实杠杆，其余同族形态不是**：16 KB 档上的输出 UB 累积/每核一次写（16.31）、每核连续行映射（16.53）、`T.Pipelined(num_stages=3)`（16.05）、GM→fragment 直取（16.14）、每核连续 + Pipelined(2)（15.25）全部落在噪声或 no_gain 内（−3.6% 至 +4.3%），即「同样 16 KB 搬运结构内的重排」无收益，**只有把单次 DMA 粒度做大才降地板**。
+- **粒度上限与 UB 预算耦合（本常数的适用边界）**：64 KB 粒度需要 ~4× UB 占用（flat 32768 f16 = 64 KB/缓冲）；而 resident 行块 + 显式向量链的正确算法实测足迹 ≈ **16 B/elem**（bm=4 @N=4096 = 262 KB > 192 KB 档，编译报 `ub overflow, requires 2097408 bits while 1572864 bits available`）——故「大粒度 DMA 地板」与「算法缓冲」在同一 kernel 内**不可共存**，算法形态实际回落到 16 KB 档地板。
+- **用法（设计期 roofline）**：估「同数据通路的时延下界」时，地板取值须**同时绑定 DMA 粒度与 UB 预算**（16 KB 档 1.06 TB/s vs 64 KB 档 1.23 TB/s，差 ~16%）；按 64 KB 档地板评估需要 4× UB 的算法形态会低估下界。与 `CONST-copy-floor-method`（标定法与 mte2_ratio 判定式）、`CONST-mte2-degradation`（带宽随总流量退化——本条是**粒度**维度，两者正交）配合使用。
+- **证明**：`python repro/CONST-copy-floor-dma-granularity.py`（测量脚本 + 头部断言说明；msprof 重测按头部命令人工执行）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Iteration-1, profiles/round1/, logs/round1/{c_c0_base,d_d1_bm8,d_d3_flat32}.log}`。
+
+---
+
+id: CONST-aiv-time-decomposition
+kind: constant
+family: [reduction, elementwise, general]
+apis: [T.copy, T.reduce_min]
+dtype: [fp16, fp32]
+device: 910B3
+status: verified
+origin_task: argmin-_argreduce_kernel-20261015T023310Z
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → aivector 40）/ 2026-10-15
+source: PL-1.20-nsplit-perrow-partial / CONST-copy-floor-method
+repro: repro/CONST-aiv-time-decomposition.py
+---
+
+### `Task Duration ≈ max(mte2, vec) + scalar`：AIV 时间分解口径（910B3 / CANN 9.0.0）
+
+- **拟合式（本机三处同形实测）**：`Task Duration ≈ max(mte2, vec) + scalar`——纯拷贝档 `aiv_time 13.10 = mte2 10.92 + scalar 1.59`；完整链式档 `29.05 = 18.86 + 9.73`（MTE2 10.33 已被 auto-multi-buffer 流水隐藏，不入 max）；「纯拷贝 + 1 次 fp16 全宽 reduce_min」档 `17.56 = 10.71 + 5.86`。
+- **ratio 的读法**：`aiv_vec_ratio` / `aiv_scalar_ratio` 是 **`aiv_time` 的分解分量**（同档实测 0.649 + 0.335 = 0.984 ≈ 1），不是 Task Duration 的占比；`aiv_mte2_ratio` 属另一条 pipe（0.356），它是「已用掉多少搬运窗口」而非「占了多少总时长」。把 ratio 当总时长占比会把「计算受限」误读为「搬运受限」。
+- **判据（本档的用途）**：当 `vec + scalar > mte2` 时该 workload 是**计算受限**——此时即使把搬运完全隐藏，下界仍由该 DMA 粒度的纯拷贝地板给出（见 CONST-copy-floor-dma-granularity），压时延的唯一有效方向是削减 vec/scalar 分量（pass 数、标量地址/边界计算），而不是继续优化搬运。
+- **证伪更正（本轮纠正的误判模型）**：本轮一度用「UB 字节吞吐」模型解释链式代价并据此实现 fused 候选，实测证伪——把候选链缓冲（idx/sent/cand）由 fp32 改 fp16 仅 **−1.7%**（30.686 vs 31.229 µs），说明链代价**不是字节主导**，而是向量 pass 数与标量分量主导（与 `CONST-vector-launch-overhead` 的 ~0.5 µs/op 量级一致）。旧模型下「换更窄 dtype 就能大降」的推论不成立。
+- **证明**：`python repro/CONST-aiv-time-decomposition.py`（逐 op 类标定脚本 + 头部断言说明；msprof 重测按头部命令人工执行）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Baseline-现象结论, logs/round1/q_*.log}`。
+
+> 〔新增 2026-10-15 蒸馏，origin_task: argmin-_argreduce_kernel-20261015T023310Z（Stage 4 / scenario=optimize）；两条均为 D 类 Tier 0 合入，repro 为 ED-C 机械转正（信息域自包含脚本，代码零改动、仅头部登记）。〕

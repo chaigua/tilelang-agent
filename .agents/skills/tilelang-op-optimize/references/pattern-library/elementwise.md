@@ -112,10 +112,10 @@ kind: pattern
 family: [reduction]
 apis: [T.Kernel, T.transpose, T.vbrc]
 dtype: [fp16, bf16, fp32]
-device: 910B2C
+device: 910B2C, 910B3
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z
-toolchain: tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C
+origin_task: argmax-_argreduce_kernel-20260924T031005Z / argmin-_argreduce_kernel-20261015T023310Z（第二实例：跨设备 910B3 + CANN 9.0.0 双 dtype 复现）
+toolchain: tilelang 0.1.2 (dev root build 2026-09-24) + CANN 8.5.0 / Ascend910B2C；第二实例 tilelang 0.1.2+417dae9（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro/repro_nsplit_pattern.py
 ---
 
@@ -126,3 +126,4 @@ repro: repro/repro_nsplit_pattern.py
 - merge：单 block，ws 按 (nchunk,M) 视图读入 shared → `T.transpose(...,[1,0])` → (M,nchunk) dims=1 tie-break 链（E1 同构：vselect 命中 chunk 的已全局化 idx，min = 首现）。
 - **tn 规则（扫描实测 tn∈{1280,2048,2560,5120} → 8.58µs@2560 最优）：最大单波 nchunk ≤ cores**（tn 升序 256 倍数扫首个除数）；nchunk>cores（双波 2:1）与 nchunk≪cores（核饥饿）均劣。
 - 实测：lm-head fp16 25.90→11.78µs（2.20×）、bf16 30.61→11.75µs（2.60×）；工厂契约保持单 callable（组合层 torch.empty workspace + 双发射）。
+- **跨设备/跨工具链复现（第二实例，2026-10-15，argmin 共享 ArgreduceKernel 的 Stage 4）**：910B3（aicore 20 / 40 Vector）+ CANN 9.0.0 + tilelang 417dae9 上，`(4,102400)` **双 dtype** 均得 **tn=2560 / nchunk=40（零尾）**——tn 规则逐条复现（tn 升序 256 倍数扫首个 `N % tn == 0` 且 `nchunk = N/tn ≤ min(vector_cores, N//256, MERGE_ELEMS/M)`）；端到端 **fp16 11.898 µs（26.247 → 0.453×）/ bf16 11.914 µs（31.370 → 0.380×）**，与 argmax 在 910B2C/CANN 8.5.0 的锚点（0.461× / 0.386×）同量级——**结构可迁移、参数按本机 40 核重导后恰好同值**。裁决谓词本轮补全为 `M ≤ 16 且 M < cores 且 N_padded ≥ 32768`。该形态的 msprof 口径须记**两段 Task Duration 之和**（partial + merge，分别按 op 名过滤捕获）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/opt_log.md#Iteration-4`。

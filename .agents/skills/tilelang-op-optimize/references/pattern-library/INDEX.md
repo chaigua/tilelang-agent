@@ -49,7 +49,7 @@
 | PL-1.10-loads-first-decoupling | 单 staging 复用链致 MTE2/VEC 零重叠 → per-input staging + 三输入前置装载（收益数字见条目） | verified |
 | PL-1.14-mte3-strided-ws | 跨引擎 ws 中继写侧必须块连续（band 化 MTE3 3× 回退；读侧逐块入 L1 band 列偏移区两全） | verified |
 | PL-1.19-scatter-col-write-amplification | (M,1) 列切片 UB→GM 写 42× 放大 → 扁平 chunk-major 连续写 | verified |
-| PL-1.20-nsplit-perrow-partial | C6 N-split per-row partial + transpose merge（小 M 大 N 2.2–2.6×；tn=最大单波 nchunk≤cores） | verified |
+| PL-1.20-nsplit-perrow-partial | C6 N-split per-row partial + transpose merge（小 M 大 N 2.2–2.6×；tn=最大单波 nchunk≤cores）；**跨设备复现** 910B3/CANN 9.0.0 双 dtype（0.453×/0.380×，tn=2560） | verified |
 
 ### attention.md — Expert persistent / attention 族
 
@@ -97,6 +97,7 @@
 | TRAP-transpose-ub-gm-roundtrip | UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（5.6→138.2µs；`UB_to_GM_datas` 48KB/block）——代价强依赖 shape/dtype 形态（`(64,56)→(56,64)` f16 仍走 UB 内）；绕法 = 免转置扁平归约（PL-1.23）（含 repro） | verified |
 | TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
 | TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
+| TRAP-scf-for-row-offset-silent-miscompile | 运行时 `scf.for` 循环变量作**共享缓冲行偏移**（`for r in range(bm): … cand[r+i, j] = …`）→ **静默错值**（(2048,4096) fp16 y0=−3 vs ref 3211）；错值档「更快」= 伪收益，须先过 `torch.equal` 精确门（含 repro；与 TRAP-tir-range-loop-not-unrolled / TRAP-parallel2d-bm-ge2-scalarize 同族） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -135,6 +136,8 @@
 | CONST-gm-to-ub-bw-dilution | gm_to_ub_bw 是总时长稀释口径（用 mte2_ratio×aiv_time 判搬运）；跨步列块 2D 读不慢（0.98× 对照 + 误读更正） | verified |
 | CONST-reduce-dims0-skinny | dims=0 长条形 (K,4) 逐列串行（(400,4)=33µs）；transpose+dims=1 绕法 | verified |
 | CONST-npuir-f32-division-not-ieee-rounded | npuir fp32 除法非 IEEE correctly rounded：`T.vdiv` 2-D ~6.1% lane 1 ulp 偏、标量除法式 135/256 值 1–2 ulp 偏、**列形态 (M,1)/(M,1) 逐位精确**（含 repro） | verified |
+| CONST-copy-floor-dma-granularity | 同形纯拷贝地板随 **DMA 粒度**变化（(2048,4096) fp16 / 910B3：16 KB 15.82µs=1.06TB/s、64 KB 13.61µs=1.23TB/s；64 KB 档需 4× UB，与算法缓冲不可共存） | verified |
+| CONST-aiv-time-decomposition | `Task Duration ≈ max(mte2, vec) + scalar` 分解口径（三处同档拟合）+ ratio 读法（vec/scalar 是 aiv_time 分量非总时长占比）+ 「UB 字节吞吐」误判更正（链式改 fp16 仅 −1.7%） | verified |
 
 ### cases.md — 案例索引与参考实现集
 
@@ -148,8 +151,8 @@
 | CASE-pool-maxpool3d-standalone | standalone 池化算子目录 | verified |
 | CASE-attention-gqa-expert-full | Expert attention 迁移完整档案（设计修订链 + debug_log D1–D6） | verified |
 | CASE-attention-expert-stage4 | attention expert Stage 4 三轮调优档案（含 [DESIGN_LIMIT] 修正闭环） | verified |
-| CASE-argmax-argreduce-stage4 | argmax Stage 4 档案（C6 预注册裁决翻转 2.2×/2.6× + 标量化归因证伪更正；几何 11.5×） | verified |
-| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad；argmax 首证 + **argmin 第二证**〔910B3/CANN 9.0.0 逐字节复现 + 胶水代码 + bench 数值〕） | verified |
+| CASE-argmax-argreduce-stage4 | argmax Stage 4 档案（C6 预注册裁决翻转 2.2×/2.6× + 标量化归因证伪更正；几何 11.5×）+ **同族第二实例** argmin Stage 4（几何 1.30× / DMA 粒度地板 / bm 阶梯重标定 / `[DESIGN_LIMIT]`） | verified |
+| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad；argmax 首证 + **argmin 第二证**〔910B3/CANN 9.0.0 逐字节复现 + 胶水代码 + bench 数值〕+ **第三证缺陷 ⑤**：多 `@T.prim_func` 名 + wrapper 未上浮采数名 → report `partial`/欠归因） | verified |
 | CASE-attention-developer-stage4 | developer 谱系同门对照档案 | verified |
 | CASE-deepseek-v4-highperf | Expert 跨引擎结构先例（vcmp/flag 协议） | verified |
 | CASE-ref-flash-attn-npuir | **参考实现集首条**：两相位结构参照锚点（[DESIGN_LIMIT] 强制对照） | verified |

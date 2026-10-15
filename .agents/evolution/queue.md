@@ -4573,6 +4573,106 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0089/0101/0186/0187 同属 stale 治理家族，本条为「不可解析戳被静默豁免」子问题；`--include-unknown` 现有语义保留不变。
 
+## VP-2026-0231
+
+- type: P
+- title: block_m / 容量阶梯应以**真实 UB 足迹**（编译报错口径实测 B/elem）标定，而非探针代理预算——resident 归约链的 64 KB 代理值把 bf16 钉在 bm=1，白丢 1.47×
+- evidence:
+  - task argmin-_argreduce_kernel-20261015T023310Z（Stage 4 / `scenario=optimize`）：`perf_opt/opt_log.md#Iteration-3`（bf16 hidden-state (2048,4096) bm=1 → 2：**54.010 → 36.865 µs（1.47×）**；fp16 同 shape bm=2 = 31.35 µs；`bm=4 @ N=4096` 编译报 `ub overflow, requires 2097408 bits while 1572864 bits available` ⇒ 实测足迹 ≈ **16 B/elem**（262 KB > 192 KB），同时确认 fp16/bf16 均无 bm=4 空间）
+  - 根因链：Stage 1 DESIGN §5.2 / §4.5 的「竞态安全手工预算 = 64 KB（代理模型 8/12/10 B/elem）」是**探针代理**；真实 UB 上限为 192 KB（编译报错口径 `1572864 bits available`，见 constants.md CONST-capacity-910B2C 的 910B3 实查值 196608 B）
+  - 数据侧已自包含：constants.md CONST-capacity-910B2C（容量三硬上限 + 膨胀系数结构依赖）；本条补 layout.md 的**阶梯标定口径**落点（跨 dtype 复用同一足迹模型）
+  - 交叉引用：layout.md PL-1.4-tiling-heuristic（池化族容量驱动 CH——本条是其「归约族 block_m 阶梯」对偶，建议同域互链）；queue VP-2026-0122（窄 N 膨胀 ~4× 数据点）
+  - 〔2026-10-15 蒸馏补充〕argmin Stage 4 的 P 类提案原文出自 `opt_log.md` §Skill Retrospective 的 P 行；evolver 复核 `-D 事实侧`（足迹 16 B/elem + 1.47×）已并入 CONST-copy-floor-dma-granularity 的边界段，本条只承载「阶梯标定口径」方法侧
+- repro: repro-missing（效应只在完整 kernel 规模显现；ED-B delta 骨架待同族任务回填——最小形态 = 同一 kernel 的 `_select_config` 阶梯在「代理预算」与「编译报错口径足迹」两套标定下的档位对照）
+- toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 / 40 Vector / ub_cap 196608 B 实查）/ 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    动作: add（新条目 PL-1.24-ub-footprint-ladder-calibration，置于 PL-1.22 之后）
+    正文要点（成稿时按 ED-B 补「优化见解摘要」）：
+    - **口径**：`block_m` / `CH` 阶梯的预算输入必须是**实测 UB 足迹（B/elem）**，其权威来源是编译报错反推（`ub overflow, requires N bits while 1572864 bits available`）——用「探针 kernel 的手工预算」当代理会低估足迹，把可承载的档位钉在小值上（argmin：fp16/bf16 resident 链式 ≈ **16 B/elem**，故 bm=2 @N=4096 = 131 KB ✓、bm=4 = 262 KB ✗）。
+    - **量级对照（本机实测）**：代理预算 8/10 B/elem → bf16 判 bm=1（54.010 µs）；真实 16 B/elem → bf16 允许 bm=2（36.865 µs，**1.47×**）且 fp16 档位不变（bm=2，31.35 µs）——即「更保守的代理」在 bf16 上白丢 1.47×，在 fp16 上恰好无损（代理误差方向与 dtype 相关）。
+    - **判据（何时必须重标定）**：换 dtype / 换链形态（pass 数变化导致中间缓冲增减）/ 工厂分派路径改变时，手工预算的 B/elem 与真实足迹会解耦——此时先按编译报错口径复测一档，再回填阶梯；容量硬上限与膨胀系数见 constants.md CONST-capacity-910B2C。
+    - **验证**：阶梯变更后全 tune workload 的非回退检查（argmin：26 个代表 shape 的 `_select_config` 逐项复算，仅 bf16 hidden-state 档位变化）。
+    动机: 「竞态安全手工预算」在本任务被证明是**探针代理**而非真实足迹（bf16 因此被钉在 bm=1，1.47× 白丢）；该口径错误对同族归约/池化算子的 `_select_config` 阶梯普遍适用，而现行 layout.md 只覆盖池化族 CH 的容量驱动式。
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0232
+
+- type: D
+- title: 多 `@T.prim_func` 名 kernel 的 msprof 采数名派生歧义——`_derive_kernel_name_from_prim_func` 在 >1 distinct 名时返回 `None`/歧义 ⇒ 「看似 valid 实为欠归因」或 `profiler_valid=false` 全捕获
+- evidence:
+  - task argmin-_argreduce_kernel-20261015T023310Z（Stage 4 的集成跑，`[DESIGN_LIMIT]` 路由后 conductor 翻转 wrapper switch 块）：报告 `examples/TileOPs/reports/tileops/20261015_061354_481681_ArgminFwdOp/run.json`（`summary`: `status=partial` / correctness 42/42 / `msprof_case_count=6` / **`invalid_profile_count=2`** / `benchmark_passed=false`）对照基线 `…/20261015_003723_597141_ArgminFwdOp/`（`status=passed`、6/6 valid、`invalid_profile_count=0`）
+  - 三症状（均为本任务实测）：① 派生名取到**某一个**子 kernel——lm-head 双 dtype 派生 `argreduce_merge` → 记 **3.640/3.180 µs（`profiler_valid=true`）**，而 C6 真实 workload 时延 = partial + merge = **11.898/11.914 µs**（欠归因，且看上去 valid）；② 派生 `None` → 退回无过滤全捕获 → non-aligned 双 dtype 捕到 `MemSet_*`+`PadV3_*`+`main` 三 op，**`profiler_valid=false`** 且记 5.420/5.400 µs（含 Op 层 pad/fill），kernel-only 实测 3.192/3.317 µs；③ 派生 `None` 但窗口内仅 1 op（hidden-state 双 dtype）→ 恰好正确（31.601/36.421 µs）
+  - 机制（源码口径，可复核）：`examples/TileOPs/tileops/benchmark/msprof.py::_derive_kernel_name_from_prim_func`（Pass 2 静态源码扫描，docstring 明示「A single distinct name across all candidate modules is returned; ambiguity (or nothing found) returns `None`」）；解析链 = 显式 `kernel_name` → `functor.msprof_kernel_name` → `functor.kernel.msprof_kernel_name` → `TILEOPS_MSPROF_KERNEL_NAME` → 派生名
+  - 同族正例（tier-2 解析可归因）：`examples/TileOPs/tileops/kernels/reduction/argmax/argmax.py` 显式 `self.msprof_kernel_name = getattr(self.kernel, "msprof_kernel_name", None) or "main"` 把工厂的 `_func.msprof_kernel_name` 上浮到 Op 层；argmin wrapper 缺该行（Stage 5 `integration_log.md#issues` 曾把它记为「report-layer cosmetic」——本次实证其为**欠归因**）
+- repro: repro-missing（需完整 TileOPs report 环境 + 一个多 prim_func kernel；判据自包含于 delta——「`invalid_profile_count>0` 或 case 时延显著低于该 workload 流量下界」即命中）
+- toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
+- delta: |
+    动作: update（§4「校验采集结果」清单新增一条 bullet，置于「kernel launch 次数足够覆盖 `warm-up + launch-count`。」之后）
+    定位锚: "- kernel launch 次数足够覆盖 `warm-up + launch-count`。"
+    new 文本: |
+      - kernel launch 次数足够覆盖 `warm-up + launch-count`。
+      - **多 `@T.prim_func` 名 kernel 的采数名派生歧义（2026-10-15 argmin Stage 4 实证）**：TileOPs msprof 采数名按「显式 `kernel_name` → `functor.msprof_kernel_name` → `functor.kernel.msprof_kernel_name` → `TILEOPS_MSPROF_KERNEL_NAME` → `@T.prim_func` 名派生」解析；**kernel 文件含 >1 个 distinct `@T.prim_func` 名时派生名歧义或为 `None`**，后果二择一：① 取到某一个子 kernel → 记该段时延且 `profiler_valid=true`（**看似 valid 实为欠归因**，多段发射 kernel 的真实 workload 时延是各段之和）；② 退回无过滤全捕获 → 捕获到 `MemSet_*`/`PadV3_*` 等 Op 层算子，`profiler_valid=false`。判读：`run.json.summary.invalid_profile_count > 0`，或某 case 的时延显著低于该 workload 的流量下界（例：lm-head (4,102400) 记 3.640 µs vs 两段之和 11.898 µs），即先查派生采数名与捕获段数，再谈性能结论。多 prim_func kernel 的装配期处置 = wrapper 显式声明 `msprof_kernel_name`（正例 `kernels/reduction/argmax/argmax.py`：`getattr(self.kernel, "msprof_kernel_name", None) or "main"`）。
+    动机: 本条是「report 记的数不是 kernel 的数」这一类静默失真的首例完整实证（同一 wrapper 切换实现即从 6/6 valid 变为 2 个 invalid + 2 个欠归因）；采数口径小节现行只有「captured_op_name 须可追溯」的一般要求，未覆盖「派生名歧义」这一具体机理与判读指纹。
+- status: pending
+- confirmations: 1/2
+- created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
+- decided_by: -
+- decided_note: 事实本体已 Tier 0 合入 cases.md `CASE-argmax-argreduce-integration` 缺陷 ⑤（C 类案例索引）；本条只承载 profile-collection.md 的采数纪律落点。**备选落点**：若审批倾向改由 `add-npu-op` 的 S5 检查清单承担（同事实，流程侧，见 VP-2026-0234），可在审批时择一或并行。
+
+## VP-2026-0233
+
+- type: R
+- title: `tilelang-op-optimize` Phase 2 把「结构分支正确性门」明确排在 msprof 采集之前（且 runner 默认开启正确性门）——正确性与性能分两轮采集会让错误的 winner 进入合并流程
+- evidence:
+  - task argmin-_argreduce_kernel-20261015T023310Z（Stage 4）：`perf_opt/opt_log.md` §Skill Retrospective 流程问题（唯一一条）+ Iteration 2 证伪更正记录——「per-row 展开写共享 (bm,N) 缓冲」分支实测 12.91–15.25 µs（快于正确链式 31.10–31.46 µs）但 `torch.equal` 判 MISMATCH（y0 = −3 vs ref 3211）；错误 winner 一度进入合并流程，直到单独一轮正确性复核才发现
+  - 现行 SKILL 文本为「6. 每个实验分支跑 L0 精度回归。7. 对精度通过的分支，用 `msprof op` 采集……」，但实操中 L0 套件耗时长而被降级为 driver 级 smoke（本轮后期才在每个 msprof 采集前补 `--check`）
+  - 数据侧自包含：traps-compiler.md `TRAP-scf-for-row-offset-silent-miscompile`（含 repro，断言「错值档更快 = 伪收益」）
+- repro: repro-missing（流程规则；复现条件 = 读 SKILL.md Phase 2 第 6/7 步，确认正确性门与采数的先后与「结构分支」的额外要求）
+- toolchain_stamp: 现行 `tilelang-op-optimize/SKILL.md`（2026-10-15 HEAD 0cc90bc）；发生环境 tilelang 0.1.2+417dae9 + CANN 9.0.0 + Ascend910B3
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update
+    定位锚: "6. 每个实验分支跑 L0 精度回归。"
+    new 文本: |
+      6. 每个实验分支跑 L0 精度回归；**结构分支（改循环形态/缓冲组织/布局/dtype 路径的分支）另须在 msprof 采集之前过逐元素精确门**（`torch.equal` vs CPU 参考，或该 dtype 下等价的逐元素判据）——正确性与性能不得分两轮采集。实验批处理 runner 默认开启该门（见 `references/autotune.md` 的 runner 节，模板加 `--check` 开关）。依据：argmin Stage 4 的「per-row 展开写共享 (bm,N) 缓冲」分支测得 12.91–15.25 µs（快于正确链式 31.10–31.46 µs）但结果静默错值（y0 = −3 vs ref 3211），错误 winner 一度进入合并流程（pattern-library traps-compiler.md `TRAP-scf-for-row-offset-silent-miscompile`）。
+    动机: 现行第 6 步只要求「L0 回归」，未把「结构分支的逐元素精确门」定为采数前置，也未说明「错值形态往往表现为**更快**」这一反向信号；把门写在采数之前可把「错误的 winner 进合并流程」整类事故消掉（成本 = 一次 driver 级 `--check`）。
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0234
+
+- type: R
+- title: `add-npu-op` S5 检查清单增「多 `@T.prim_func` kernel 的采数名契约」——wrapper 须显式声明 `msprof_kernel_name`，否则 report 静默欠归因/`partial`
+- evidence:
+  - task argmin-_argreduce_kernel-20261015T023310Z：报告 `examples/TileOPs/reports/tileops/20261015_061354_481681_ArgminFwdOp/run.json`（`invalid_profile_count=2`、`status=partial`、correctness 42/42）vs 基线 `…/20261015_003723_597141_ArgminFwdOp/`（6/6 valid、`status=passed`）——唯一差异是 wrapper 切换到了含 4 个 distinct `@T.prim_func` 的 perf_opt kernel
+  - 正例（同族已接线）：`examples/TileOPs/tileops/kernels/reduction/argmax/argmax.py` 显式上浮 `msprof_kernel_name`；argmin wrapper 缺该行，且 Stage 5 `integration_log.md#issues` 曾以「cosmetic」登记（⇒ 检查清单缺该项使缺陷被误分类为非缺陷）
+  - 机制与判读指纹自包含于 queue VP-2026-0232 / cases.md `CASE-argmax-argreduce-integration` 缺陷 ⑤（本条是其流程侧落点）
+- repro: repro-missing（流程规则；复现条件 = 读 add-npu-op SKILL.md Tier 2 段，确认是否含「多 prim_func kernel 须显式声明采数名 + `invalid_profile_count` 判读」条目）
+- toolchain_stamp: `examples/TileOPs/.agents/skills/add-npu-op/SKILL.md` 现行版本；发生环境 tilelang 0.1.2+417dae9 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
+- delta: |
+    动作: update（Tier 2 段「a `partial` report means …」句之后插入一段）
+    定位锚: "Read this run's `run.json` and `report.md`; a `partial` report"
+    old 文本: |
+      Read this run's `run.json` and `report.md`; a `partial` report
+    new 文本: |
+      Read this run's `run.json` and `report.md`. **多 `@T.prim_func` kernel 的采数名契约（2026-10-15 argmin Stage 4 实证）**：msprof 采数名按 tier-2 解析（显式 `kernel_name` → `functor.msprof_kernel_name` → `functor.kernel.msprof_kernel_name` → `TILEOPS_MSPROF_KERNEL_NAME` → `@T.prim_func` 名派生，见 `tileops/benchmark/msprof.py`）；kernel 文件含 **>1 个 distinct `@T.prim_func` 名**时派生名歧义/为 `None`，report 会记「某个子 kernel 的时延且 `profiler_valid=true`」（欠归因）或退回无过滤全捕获（`profiler_valid=false`，含 Op 层 pad/fill 算子）。判定：`run.json` 的 `summary.invalid_profile_count` 必须为 0，且任一 case 时延不得显著低于该 workload 的流量下界；多 prim_func kernel 须由 wrapper 显式声明 `self.msprof_kernel_name = getattr(self.kernel, "msprof_kernel_name", None) or "main"`（正例 `kernels/reduction/argmax/argmax.py`）后再采数。A `partial` report
+    动机: 本条缺陷在本任务被 Stage 5 误分类为「report-layer cosmetic」而放过，直到上层任务切换 wrapper 实现才以 `status=partial` + `invalid_profile_count=2` 暴露——把该契约写进 S5 检查清单可让集成期一次拦下。
+- status: pending
+- confirmations: -/-
+- created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
+- decided_by: -
+- decided_note: 与 VP-2026-0232（profile-collection.md 采数纪律）同事实、不同层（组装/集成检查清单）；两者可并行落盘，也可在审批时择一。
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0003
