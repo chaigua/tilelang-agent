@@ -352,3 +352,36 @@ repro: repro/TRAP-reduce-ub-per-element.py
 - **机制**：`hivm.hir.vreduce` lowering 为归约链物化多份中间张量（IR 可见 `memref.alloc` + `tensor.insert_slice` + `hivm.hir.vreduce`），规模随输入 tile 元素数增长。关闭 auto-multi-buffer（`pass_configs={"npuir.enable_auto_multi_buffer": False}`）**不改变**该记账（实测 open/close 数字完全相同）。
 - **伴随实测（同任务）**：整平面 `reduce` 与 GM→UB `T.copy` **不重叠**——global-1x1 实测 `mte2 = 9.10 µs / 1.92 MB = 211 GB/s`，而同栅格同粒度的纯拷贝标定为 690 GB/s（`T.Pipelined(2/3)` 复测无改善，±1% 噪声内）。
 - **证明**：compile-time sweep 见 `repro/TRAP-reduce-ub-per-element.py` 头部（失败信息含 `ub overflow, requires N bits while M bits available`）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md#3.2, probe_ub2.py}`。
+
+
+---
+id: CONST-dual-output-whole-plane-reduce-ub
+kind: constant
+family: [pooling, reduction, general]
+apis: [T.reduce_max, T.reduce_min, T.vreduce, T.vselect, T.vcmp, T.vbrc, T.serial]
+dtype: [fp16, int32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z（Stage 4）
+toolchain: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+source: TRAP-npuir-arange-pattern-with-whole-plane-reduce
+repro: repro-missing
+---
+
+### 双输出整平面 argmax 的归约链 UB 单价 ≈ **237 B / 平面元素**（Ascend910B3）
+
+- **口径**：`x: (N, C, 1, H*W)` fp16 整平面块 + 运行期构建的位置表 `(C,1,plane)` int32 + `vecmp(eq)→vselect→reduce_min`（first-hit）
+  + `vselect→reduce_max`（last-NaN）+ `reduce_max`（值），**含 auto-multi-buffer ×2**。
+  实测（`ub overflow, requires N bits while 1572864 bits available` 反推）：`plane=49` 时 **`ch=8` 编译通过**，
+  **`ch=16` 需 1 618 432 bit（202 304 B）> 1 572 864 bit（196 608 B）**；声明 buffer 仅 ~21 B/元素 ⇒ 归约链 lowering 额外 ≈ **237 B/平面元素**。
+- **与单输出同族对照**：同族 `adaptive_max_pool2d` 单输出 C4（无索引、原位平方 `reduce_sum` 代 NaN 探测、无位置表）
+  实测 **32 B/平面元素**（`_UB_REDUCE_B_PER_ELEM`）⇒ **索引侧的位置表 + eq 掩码 + 候选平面缓冲把单价抬高 ~7x**，
+  把 `ch` 从 64+ 压到 **8**；`ch=8` 在 `N=8,C=2048,plane=49` 下产生 `num_local = ceil(2048/40) = 52` 轮，
+  实测 Task **262.8 µs**（远差于同 workload 的一般网格路径 144.4 µs）⇒ **该特化对双输出不可采纳**。
+- **归约轴形态**：`(C, plane)` 二维 `reduce(dim=1)`（归约轴 = 最内轴）**被标量化**——实测 `ch=64` 时
+  `scalar = 98.1 µs`、Task **237.0 µs**、`UB_to_GM = 96 KB/blk`（转置/布局往返）；
+  合法形态是「**扁平空间轴**」`(C, 1, plane)` + `dim=2`（同 PL-1.23），或 `(C, plane)` 经 `(plane, C)` 转置后按行 `reduce(dim=1)`（但转置本身会中 TRAP-transpose-ub-gm-roundtrip）。
+- **用法**：设计期做「整平面 argmax + 索引」特化的容量判据时用 `237 B/平面元素`（双输出）而非 `32`（单输出）；
+  若 `ch` 被压到 ≤8 且 `num_cblk` 很大（`num_cblk >> 物理核数`），该特化在**时延**上不划算——须按 `num_local = ceil(N*num_cblk/vector_cores)` 一并核算。
+- 数据来源（任务工作区，允许失效）：`perf_opt/probe_global_reduce.py`（ch=8 精确、ch=16 UB overflow）、
+  `perf_opt/probe_global_2d.py`（二维行归约标量化）、`perf_opt/logs/g2d_ch64.log` / `pr_ch8.log`。

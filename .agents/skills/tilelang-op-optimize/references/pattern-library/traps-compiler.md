@@ -396,6 +396,9 @@ repro: repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py
 - **退路形态**：改用与通用路径同构的「行扫描 + 无 pattern」机制；构造 argmax 型索引时对 pattern 做 **standalone 精确 + in-chain 精确**双向断言（单向不足）。
 - **证明**：`python repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py`（exit 0；control 精确 + trap 损坏 + 派生 first-hit 与真值不等三段断言，int32 与 fp32 载体各一遍）。
 - 溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d_with_indices/_adaptive_max_pool2d_with_indices_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-arange-pattern-with-whole-plane-reduce.py}`；关联 CONST-arange-scalar-materialize（`T.arange` 物化代价）与 TRAP-vcast-shape-and-gm-source（同族 reshape/形状约束）。
+- **〔2026-10-15 追加：适用域收窄为「pattern 生产者特有」+ 下一道墙；origin_task `adaptive_max_pool2d_with_indices-...-20261015T100705Z`（Stage 4），工具链 tilelang 0.1.2+67a0441 + CANN 9.0.0 + Ascend910B3〕** 被腐蚀的是 **`arange` 派生的 pattern 生产者**，不是「整平面 vselect + reduce」链本身：把下标改由**运行期构建**的位置表产生（`T.serial` + typed `T.vbrc` 标量写 `(plane,)` → `reshape` → `vbrc` 广播成 `(ch,1,plane)`，非 `T.arange`），同一 `vcmp(eq)→vselect→reduce_min/max` 链的 first-hit / last-NaN / 值全部**逐元素精确**（16384/16384，含 NaN / 并列 / ±inf / 全 -inf；`probe_global_reduce.py --ch 8 --check` 报告精确）⇒ 该正确性障碍**可绕过**，原条的「整类路径不可用」结论按此收窄。
+- **〔2026-10-15 追加：绕过正确性后的下一道墙〕** 双输出整平面 argmax 的归约链 **UB 单价 ≈ 237 B/平面元素**（含 auto-multi-buffer ×2；对照同族单输出 C4 的 32 B/元素），把 `ch` 封顶在 **8** → `N=8,C=2048,plane=49` 下 `num_local = ceil(2048/40) = 52` 轮 → 实测 **262.8 µs**（远差于该 workload 的一般网格路径 144.4 µs；`ch=16` 报 `ub overflow`）；同时 `(C, plane)` 二维 `reduce(dim=1)`（归约轴 = 最内轴）被标量化（`ch=64`：scalar 98.1 µs、Task 237.0 µs、`UB_to_GM` 96 KB/blk），有效形态是「扁平空间轴」`(C,1,plane)+dim=2`（同 PL-1.23）。常数本体见 `constants.md` `CONST-dual-output-whole-plane-reduce-ub`，能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0028`。
+- 证据（本任务工作区，允许失效）：`perf_opt/probe_global_reduce.py`（`--ch 8 --check` 逐元素精确；`--ch 16` UB overflow）、`perf_opt/probe_global_2d.py`（二维行归约标量化）、`perf_opt/opt_log.md` §3.3 F3/F4/F5 与 §7「已知残留」。
 
 ---
 id: TRAP-npuir-reshape-dst-buffer-shadow
@@ -480,6 +483,19 @@ repro: repro/TRAP-transpose-ub-gm-roundtrip.py
 - **非普适（重要）**：同工具链下 `(64,56)→(56,64)` 的 **2D f16** 转置（两边 ≥8 且为 8 的倍数）仍走 UB 内实现——`spp-6x6` general 路径每单元约 9 次该形态转置，`UB_to_GM_datas` 仅 **8.5 KB/block**、整体 16.3 µs。⇒ 转置是否被降级取决于**被转置维度的大小/对齐/ dtype**，不可用「转置很慢」一概而论，也不可用一次反例否定整类。
 - **绕法**：① 避开转置——把「需要 C 内轴」的归约改成**扁平空间轴**（见 layout.md **PL-1.23**，同一 workload 166.3 → 16.7 µs）；② 若必须转置，选「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态。
 - **与 PL-1.1 的关系（证伪留痕，工具链版本戳）**：layout.md `PL-1.1-transpose-chain`（origin_task `AvgPool2dFwdOp-optimize-2026-08`，toolchain 2026-08，`repro: repro-missing`）称「4 次核内融合转置合计 ~5.4 µs」。该结论在 **2026-10 工具链**（本 stamp）上对池化族大 shape 不成立 → PL-1.1 按 INDEX §2.2 降级为**待重验**（保留原文，见其正文标注）。
+- **〔2026-10-15 追加，双输出 + 写侧生产者形态；origin_task `adaptive_max_pool2d_with_indices-...-20261015T100705Z`，工具链 tilelang 0.1.2+67a0441 + CANN 9.0.0 + Ascend910B3〕** 往返的**触发条件被进一步定到「写侧生产者形态」**，而非字节数：
+  同一读侧（整平面 `ch*plane` fp16 连续 DMA，7 轮）、同一 `(real_c,1,1)` 目标 region 形态下，只改 store 源的生产者——
+  | store 源生产者 | 写入内容 | Task(us) | mte3(us) | `UB_to_GM`(KB/blk) | 真实写出(B) |
+  |---|---|---:|---:|---:|---:|
+  | `T.vbrc` → `T.vcast`（连续） | fp16 值 | 4.73 | 0.82 | 0.8 | 896 |
+  | 同上 + `vcast`int32→int64（连续） | fp16 值 + int64 索引 | 4.73 | 0.92 | 0.8 | 4480 |
+  | 跨步 UB gather `flat[:,:,0]` | fp16 值 | 94.29 | 45.55 | 48.0 | 896 |
+  | 跨步 UB gather `flat[:,:,0]` | int64 索引 | 44.16 | 25.43 | 48.0 | 3584 |
+  | 跨步 UB gather（dual） | 值 + 索引 | 109.29 | 71.34 | 96.0 | 4480 |
+  ⇒ **`(C,plane)→(plane,C)` 平面转置（`plane=49`，非向量宽整数倍）与跨步列切片的 store 源必中往返；连续 op 链的 store 源不中（且 int64 本身不是问题——p7 的索引+值仅 4.73 µs）。**
+  另一独立触发点：**`GM_to_UB` 也被同时拉长**（同粒度纯拷贝 mte2 2.1 µs vs 含平面转置 31.4 µs），即转置同时污染读侧 DMA 的**时延**而不只是字节。
+  可复现探针（本任务工作区）：`perf_opt/probe_write2.py` / `probe_write3.py`（写侧 1 变量 A/B）+ `perf_opt/copy_floor_calibration.jsonl`（行 `global_ch64_read_floor_elem` / `global_ch64_dual_contig_store` / `global_ch64_dual_transpose_poison`）。
+  **纪律推论**：写侧 floor 标定必须把「生产者形态」当自变量；若标定地板低于 baseline（本轮 dual 标定 95–111 µs 会把 baseline 144.4 µs 判成「已达标」），先怀疑标定假地板。
 - 证据：`repro/TRAP-transpose-ub-gm-roundtrip.py`（可运行部分：三形态正确性）；msprof 数字见 repro 头部与 `task: adaptive_avg_pool2d-...-20261014T172114Z` 的 `perf_opt/profiles/probe/round0/{p2_ct_c64,p6_f4,accum_a49_1}`（任务工作区，provenance 允许失效）。
 
 ---
@@ -544,3 +560,32 @@ repro: repro/TRAP-scf-for-row-offset-silent-miscompile.py
 - **诊断指纹（本条的最可操作处）**：**错值档比正确档更「快」**——错值形态 12.91–15.25 µs vs 正确链式 31.10–31.46 µs、正确独立行缓冲 154.98 µs；凡「per-row 展开 + 加速显著」的分支，先过**逐元素精确门**（`torch.equal` vs CPU 参考）再进 msprof 采集，否则会把失配当收益写进 winner 流程。
 - **合法形态（bm≥2 的每元素条件选择）**：显式向量 op 链 `vbrc → vcmp(eq) → vselect → reduce_min`（本机 31.1–31.5 µs，正确）；per-row 展开只对**独立** per-row 缓冲成立，而该形态在本工具链下整体标量化（154.98 µs），无采纳空间。与之并列的 `T.Parallel(bm,N)` 2D 融合形态在 bm≥2 亦标量化（TRAP-parallel2d-bm-ge2-scalarize）——三者构成「bm≥2 每元素条件选择」的完整边界。
 - **证明**：`python repro/TRAP-scf-for-row-offset-silent-miscompile.py --level c2_perrow`（打印 MISMATCH，陷阱复现）与 `--level c4_chain`（打印 OK，合法形态通过）；`--level c1_2d` 为标量化对照（268.8 µs）。机制归因：运行时常量行偏移使向量化/region 分析失配 → 生成错误地址或错误 lane 映射；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0015`。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Iteration-2, profiles/round1/, logs/round2/*.log}`。
+
+
+---
+id: TRAP-hivm-vsel-cond-slice
+kind: trap
+family: [general, pooling, reduction]
+apis: [T.vselect, T.vcmp]
+dtype: [fp16, bf16, fp32, int32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z（Stage 4）
+toolchain: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+repro: repro-missing
+---
+
+### `hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**（同 slice 作 `vcmp` 操作数合法）
+
+- **现象**：`row_mask` 声明为 `(w_in, ch)` **bool**、逐元素用 `T.vselect(row_mask[iw0+kw : iw0+kw+1, 0:ch], neg1, fvec, nanc)` 消费时，BiShengHIR 报
+  `error: 'hivm.hir.vsel' op operands' shape are inconsistent`（编译失败，非静默）。
+  同一 slice 作为 **`vcmp` 的操作数**（`T.vcmp(eq_f32[iw0+kw : iw0+kw+1, 0:ch], zero_e, isn_b, "eq")`）**合法且向量化**。
+- **后果（工程性）**：把「行级 `x==x` 掩码」直接送 `vselect` 以省掉每元素一次 `vcmp` 的 op 削减（8→6 op/元素）在本工具链**不可达**；
+  可行形态是让专用 `(1,ch)` bool 缓冲由 `vcmp` 产生（每元素 1 条 op），或先 `T.copy` 该 slice 到 `(1,ch)` bool 缓冲（等代价）。
+- **无关变量**：`ch` 大小（8..128 均复现）、掩码 dtype（bool）与 `vselect` 的 a/b dtype（int32/fp16 均复现）——
+  差异只在**操作数形态**（whole-buffer/专用缓冲 vs 切片）。
+- **族内位置**：与 TRAP-vcast-shape-and-gm-source（形状一致约束）、TRAP-vselect-inplace-carried-state（原位 select 丢状态）、
+  TRAP-vbrc-region-dropped（region destination）共同构成「v 算子**操作数形态子集**」族——**否定任一 API 前必须穷举 whole-buffer / 切片 / bool-cond / rank 形态**。
+- **证明（本任务工作区，未上库，允许失效）**：`perf_opt/_adaptive_max_pool2d_with_indices_kernel_round1_gen.py` 的 G6 分支编译报该错；
+  改用 `vcmp` 产出的专用 bool 缓冲后同分支 L0 全过（`perf_opt/logs/` 内有 stderr）。
+  溯源：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/perf_opt/opt_log.md` §3.3 F6。

@@ -10,11 +10,19 @@ apis: [T.copy, T.vadd]
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z（首证：copy-floor 标定法 + MTE2 带宽退化曲线）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（追加：global 类地板由「每核串行轮数」主导 + 轮数自变量扫描）
+origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z（首证：copy-floor 标定法 + MTE2 带宽退化曲线）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（追加：global 类地板由「每核串行轮数」主导 + 轮数自变量扫描）/ adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z（追加：写侧生产者形态维度 + 假地板识别纪律）
 toolchain: tilelang 0.1.2+ed787bb（2026-09-07 build）/ Ascend910B2C / CANN 8.5.0；2026-10-15 追加 tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）/ Ascend910B3 / CANN 9.0.0
 repro: repro/CONST-copy-floor-rounds.py
 ---
 
+- **〔2026-10-15 追加，双输出 + 写侧生产者形态；origin_task `adaptive_max_pool2d_with_indices-...-20261015T100705Z`，toolchain 67a0441〕标定须把「写侧生产者形态」当自变量，否则会产出假地板**：
+  同一栅格 / 同 DMA 粒度下，把「值 + int64 索引」双输出的 store 源从**连续 op 链**（`vbrc`→`vcast`）换成**跨步 UB gather**
+  （`flat[:,:,0]`，即从 `(C,plane)` 取列），Task 从 **4.73 µs → 109.29 µs**（`UB_to_GM` 0.8 → 96 KB/blk，真实写 4.5 KB/blk）；
+  该 95–111 µs 的「dual 地板」会把 baseline 144.4 µs 判成已达 70% 线（156 µs），**方向性错误**。
+  **纪律**：① 双输出/带索引写出的算子，标定必须至少给「连续生产者」与「跨步生产者」两档；② **当地板显著低于 baseline 时先怀疑标定假地板**；
+  ③ 合法地板锚 = 1 元素保活读地板（本任务 global CH=64 → **6.86 µs**，70% 线 **9.80 µs**）与连续生产者双输出地板（**4.73 µs**）。
+  数据（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/.../perf_opt/copy_floor_calibration.jsonl`
+  （行 `global_ch64_read_floor_elem` / `global_ch64_dual_contig_store` / `global_ch64_dual_transpose_poison`）+ `opt_log.md` §2。
 ### 1.6 copy-floor 标定与 MTE2 带宽退化曲线（elementwise 多输入）✅ 已验证
 
 - **copy-only 探针标定法**：与目标 kernel 同结构（同 persistent/分块/映射）的 3 载入 + 2 vadd 保活（DCE-proof）+ 1 写出探针，一步判定计算链暴露量。lerp_tensor（3 输入 1 输出，7-pass fp32-transit 链）：≥16M 全 dtype delta ≤1.1us（16M 仅 0.34us）——**auto multi-buffer 将全部向量 pass 隐藏于 MTE2 窗口内**，计算链优化在该区间 ROI≈0，直接进入搬运效率维度。

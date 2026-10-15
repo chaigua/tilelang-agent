@@ -109,11 +109,18 @@ apis: []
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第四数据点：双输出（索引型）1D 记账式 `69+2·eb` + 薄裕度纪律 + 闭式自洽）/ adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（第五数据点：**单波判据**——纯 Vector general 路径的 CH 由 `num_local==1` 约束而非 C 大小）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（第六数据点：**最小可行 CH**——第五数据点的「折半」规则细化为一维扫描 `min{CH : units ≤ cores}`）
+origin_task: AvgPool2dFwdOp-optimize-2026-08（首证）/ max_pool2d-_max_pool2d_kernel-20261014T062320Z（第二证：容量驱动 CH 逐 buffer 带字节数口径）/ max_pool1d-_max_pool1d_kernel-20261014T082309Z（第三数据点：1D 容量不等式 + CH 的 dtype 感知折半）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（第四数据点：双输出（索引型）1D 记账式 `69+2·eb` + 薄裕度纪律 + 闭式自洽）/ adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（第五数据点：**单波判据**——纯 Vector general 路径的 CH 由 `num_local==1` 约束而非 C 大小）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（第六数据点：**最小可行 CH**——第五数据点的「折半」规则细化为一维扫描 `min{CH : units ≤ cores}`）/ adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z（第七数据点：**双输出**下同一规则成立——spp CH 64→48 / nondiv CH 64→32；且**同族「bool 切片直送 vselect」的进一步削 op 不可达**，见 TRAP-hivm-vsel-cond-slice）
 toolchain: 首证 2026-08 build（Ascend910B2C）；第二证 tilelang 0.1.2+0d3950aabfec7b3aa6a67a5cf21bfe4945a9655c；第三数据点 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）；第四数据点 tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）；第五数据点 tilelang 0.1.2+8b16bccacfd9fa17（commit 417dae9）；第六数据点 tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）；全部 dev root build + CANN 9.0.0 + Ascend910B3
 repro: repro/PL-1.4-single-wave-ch.py
 ---
 
+- **〔2026-10-15 第七数据点，双输出（值 + int64 索引）；toolchain 67a0441，Ascend910B3〕** 「最小可行 CH」（`min{CH : N·out_H·ceil(C/CH) ≤ vector_cores}`）在**双输出**形态同样成立且收益更大（每元素 7 条向量 op，核占用更重要）：
+  - `spp-6x6`（C=128,N=2,out 6×6）：CH 64 → 24 units / BD 24（16 核空）→ CH 48 → 36 units / BD 36，**85.57 → 79.74 µs（-6.8%）**；
+  - `nondiv-7x7`（C=64,N=2,out 7×7）：CH 64 → 14 units / BD 14（26 核空）→ CH 32 → 28 units / BD 28，**81.41 → 72.64 µs（-10.8%）**。
+  - **削 op 的形态边界（重要）**：双输出每元素 8 条向量 op 中只有 **1 条是死代码**（`h_flag` 乘积无消费者，NaN 判决由 `nan_idx>=0` 给出）⇒ 8→7 是可达的；
+    进一步把「行级 `x==x` bool 掩码」直接送 `vselect`（想省掉每元素一次 `vcmp`，8→6）在本工具链**不可达**（`hivm.hir.vsel` 拒绝切片 cond，见 TRAP-hivm-vsel-cond-slice）。
+    设计期把「8→6」写进收益表的须复核该形态限制。
+  数据（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/.../perf_opt/{perf_records.jsonl（round1 gen 分支）, opt_log.md §4}`。
 ### 1.4 tiling 启发式（C 轴向量化形态）✅ 已验证
 
 - **BH=1 + 最宽 CH 最优**：CH64 21.6µs < CH32 26.7µs < BH2/CH16 44.8µs——更宽 C 向量 + 更少 block 胜过更高空间并行度。

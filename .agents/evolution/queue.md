@@ -4799,6 +4799,77 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 源工件（opt_log §8.2 BP_002）标为 R；按 distillation-rules §3 判定树，修改对象为 skill references 的**流程性内容**（探针纪律）⇒ R，Tier 2 仅提案。数据侧（CONST-reduce-ub-per-element 单价表 + repro）已由本任务内 ED-C 回写，本条只承载探针纪律，避免双写。
 
+## VP-2026-0243
+
+- type: R
+- title: `tilelang-op-optimize` Phase 1 增「copy-floor 标定」纪律——标定**必须把写侧生产者形态当自变量**（连续 op 链 vs 跨步 gather / `(C,plane)` 转置源），且**标定地板显著低于 baseline 时先怀疑假地板**，否则会得出「baseline 已达标」的方向性错误结论
+- evidence:
+  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z：`perf_opt/opt_log.md` §8.1 流程问题 R1 + §2.2/§2.3（step-0 dual 标定 95.10–110.66 µs；写侧隔离表 p1/p7 **4.73 µs**（`UB_to_GM` 0.8 KB/blk）vs value/index/dual **94.29 / 44.16 / 109.29 µs**（48/48/96 KB/blk）——同一读侧、同一 `(real_c,1,1)` 目标 region 形态，只改 store 源的生产者）→ 该 95–111 µs「dual 地板」会把 baseline 144.4 µs 判成已达 70% 线（156 µs）
+  - 数据侧已回写：`pattern-library/elementwise.md` PL-1.6（〔2026-10-15 追加〕bullet：两档生产者对照 + 「当地板显著低于 baseline 时先怀疑标定假地板」+ 合法地板锚 6.86 µs / 4.73 µs）+ `traps-compiler.md` TRAP-transpose-ub-gm-roundtrip 追加段（触发条件定到写侧生产者形态）+ INDEX 一句话
+  - 流程侧缺口：`tilelang-op-optimize/SKILL.md` 全文无「copy-floor / 标定」字样（任务书的「步骤 0 强制前置标定」来自 harness 任务书），故该纪律的**执行时点**（baseline 采集阶段）与**自变量要求**在当前 skill 内无落点——本条承载流程侧
+- repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-optimize/SKILL.md` Phase 1「要求：」清单，确认「copy-floor 标定须区分写侧生产者形态」是否在列）
+- toolchain_stamp: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 1「要求：」列表末条之后增一条 bullet）
+    目标: .agents/skills/tilelang-op-optimize/SKILL.md
+    定位锚: "- **设计估算 vs 实测偏差行（D-2 回填）**：`DESIGN.md` §1.6.0 含「设计期估算」行时，baseline 采集后在 `opt_log.md` Baseline 段追加**「设计估算 vs 实测」偏差行**（估算下界 vs baseline Task Duration；偏差 >2x 时注明失准项——流量/发射/容量）；该偏差行是 `[DESIGN_LIMIT]` 归因的量化证据（hardware-cost-model.md §3）。"（在该 bullet 之后插入）
+    new 文本: |
+      - **copy-floor 标定（任务书要求步骤 0 时）**：标定须把「**写侧生产者形态**」当自变量——同一栅格 / 同 DMA 粒度下至少给「连续 op 链 store 源」与「跨步 UB gather / `(C,plane)` 转置 store 源」两档；**当地板显著低于 baseline 时先怀疑标定假地板**（2026-10-15 adaptive_max_pool2d_with_indices 实证：双输出 dual 标定 95–111 µs 会把 baseline 144.4 µs 判成已达 70% 线，真因是写侧生产者被降级为 UB→GM→UB 往返；连续生产者地板仅 4.73 µs、1 元素保活读地板 6.86 µs）。标定报告须同时标注**轮数**与**生产者形态**两个自变量（轮数见 pattern-library elementwise.md PL-1.6）。
+    动机: 标定是优化任务的目标线来源；假地板会把「远未达标」判成「已达标」并误导后续全部结构决策（本轮若不换合法锚，global 路径的结构改写不会被立项）。skill 内无该纪律的落点，故补在 Phase 1 要求清单。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §8.2 BP_001）标为 R；按 distillation-rules §3 判定树，修改对象为流程文件（optimize SKILL.md）⇒ R，Tier 2 仅提案。数据侧（PL-1.6 写侧生产者形态维度 + 假地板纪律 + TRAP-transpose 追加段）已由本任务内 ED-C 回写 ⇒ 本条只承载流程侧（标定时点与自变量要求），避免双写；审批时若认为 PL-1.6 的检索面已足够，可直接 rejected。
+
+## VP-2026-0244
+
+- type: R
+- title: 标定/探针类脚本须「**逐 case 追加落盘 + 失败 case 记 error 行**」——末尾批量写使单个 case 的编译失败丢弃全部已测数据（本轮 `statistics.median([])` 抛异常致 ch32/ch64 标定作废重跑）
+- evidence:
+  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z：`perf_opt/opt_log.md` §8.1 流程问题 R2 + §2 标定首轮崩溃（`StatisticsError: no median for empty data`——`calib_run.py` 在 `ch=128` UB overflow 档对空列表取 median，**只在内存累积、末尾统一落盘** ⇒ 已测的 ch32/ch64 结果全部丢失、被迫重跑）；`perf_opt/copy_floor_calibration.jsonl` 的行内 `timestamp` 显示 ch32/ch64/ch96（10:19–10:20）与 general 档（10:21–10:23）为崩溃后重测
+  - 同 skill 内已有**部分**对应纪律：`references/autotune.md` 「实验批处理 runner（T-4）」节规定 `run_experiments.py` 「脚本逐测量追加性能记录」（实验分支路径受保护），但**标定 / 写侧隔离探针 / UB 容量探针**这类临时脚本不在其覆盖内
+- repro: repro-missing（流程规则；复现条件 = 读 `references/autotune.md` 「实验批处理 runner（T-4）」节，确认「逐 case 追加落盘 + 失败 case 记 error 行」是否覆盖标定/探针脚本）
+- toolchain_stamp: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/autotune.md
+- delta: |
+    动作: update（「实验批处理 runner（T-4）」节末尾增第 6 条）
+    目标: .agents/skills/tilelang-op-optimize/references/autotune.md
+    定位锚: "5. 脚本输出与 perf_records.jsonl 对账（append-only 纪律不变），gate 4 机械校验照常生效。"（在该条之后插入）
+    new 文本: |
+      6. **同一落盘纪律适用于标定 / 探针类脚本**（步骤 0 copy-floor 标定、写侧隔离探针、UB/容量探针）：**每个 case 测量完成即追加落盘**（jsonl append），**失败 case 记 error 行**而不是抛异常中断——末尾批量写会让单个档位的编译失败丢弃全部已测数据。实测教训（2026-10-15 adaptive_max_pool2d_with_indices）：标定脚本在 `ch=128` UB overflow 档 `statistics.median([])` 抛 `StatisticsError`，已测 ch32/ch64 结果全部丢失（仅内存累积、末尾统一落盘），被迫整轮重跑。
+    动机: 标定结果本身就是后续所有选型与目标线判定的输入，重跑成本远高于一次 append；该纪律与 T-4 runner 的 perf_records 追加纪律同源，只是覆盖面扩到临时标定/探针脚本。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §8.2 BP_002）标为 R；分类按 D<P<R 保守序取 R（脚本工程纪律改变后续任务行为方式，非数据条目）。无对应数据侧条目（属纯流程缺口），故本条为唯一载体。
+
+## VP-2026-0245
+
+- type: R
+- title: optimize SKILL.md 证伪协议增第 5 条「**操作数形态子集**」——报告「某 API 不可用」前须穷举 whole-buffer / 切片 / bool-cond / rank 形态，否则形态限制被误记为 API 缺失
+- evidence:
+  - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z：`perf_opt/opt_log.md` §8.1 流程问题 R3 + §3.3 F6（`hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**——`T.vselect(eq_mask[iw0+kw : iw0+kw+1, 0:ch_], ...)` 报 `operands' shape are inconsistent`；**同一 slice 作 `vcmp` 操作数合法**）⇒ 设计期「bool 切片直送 vselect」的 8→6 op 削减被记为 blocked（实际只削得掉死代码 8→7）
+  - 数据侧已回写：`traps-compiler.md` **TRAP-hivm-vsel-cond-slice**（新条目，含无关变量排除 ch 8..128 / dtype 面）+ INDEX 一句话（「否定 v 算子 API 前须穷举 whole-buffer/切片/bool-cond/rank 形态」）
+  - 现 SKILL.md 证伪协议第 1 条只要求「用文档合法形态测试…穷举代表性写法」，未把「**同一 API 的操作数形态子集**」列为独立维度（该维度缺失导致形态限制被误记为 API 缺失的判定风险）
+- repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-optimize/SKILL.md` 「证伪协议」小节，确认「操作数形态子集穷举」是否在列；知识域侧判据见 traps-compiler.md TRAP-hivm-vsel-cond-slice）
+- toolchain_stamp: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（「证伪协议（否定一个 API/模式前必须遵守）」小节第 4 条之后增第 5 条）
+    目标: .agents/skills/tilelang-op-optimize/SKILL.md
+    定位锚: "4. **诊断信号强制触发换轴分析**：msprof 显示热点段标量执行占比 > 50% 时，强制评估向量化轴/布局重排候选（pattern-library/layout.md），不得只在原轴上微调参数。"（在该条之后插入）
+    new 文本: |
+      5. **操作数形态子集穷举（API 不可用类结论的独立维度）**：报告「某 API 不可用 / 不适用」前，除文档合法写法外还须穷举**操作数形态子集**——whole-buffer / UB 切片 / bool-cond / rank（缓冲区切出的区域、专用缓冲、标量、不同维数），逐个形态给结论或标注未测。实测教训（2026-10-15 adaptive_max_pool2d_with_indices）：`hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**（报 `operands' shape are inconsistent`），而**同一 slice 作 `vcmp` 操作数合法** ⇒ 「v 算子不支持切片」是错误归因，正确结论是「该 op 的 cond 不支持切片、需专用 `(1,ch)` bool 缓冲」；条目见 traps-compiler.md TRAP-hivm-vsel-cond-slice。
+    动机: 形态限制与 API 缺失的处置成本不同（前者可换形态绕开、后者须换路线）；把形态限制记成 API 缺失会关闭仍有收益的候选路径（本轮 8→6 削 op 的判定由此改为「只能削死代码 8→7」）。该维度零成本、可机械核对。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §8.2 BP_003）标为 R（原文建议「traps-compiler.md 增条目 + skill 证伪协议补维度」）；按 merge-policy §1 边界「同时含数据与流程 → 拆两条」：数据侧（新 TRAP 条目 + INDEX 一句话）已由本任务内 ED-C 回写，本条只承载流程侧。与 VP-2026-0075（证伪协议第 4 条前置编译警告排查，已 merged）同节、相邻条目。
+
 > **条目迁移（2026-10-15 apply）**：VP-2026-0238 / 0239 / 0240 经用户批准（Primary 上下文，2026-10-15）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 
 ## Decided（merged / rejected / expired / conflict 归档）

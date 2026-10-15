@@ -34,7 +34,7 @@
 | PL-1.1-transpose-chain | 核内融合转置链（二轴交换链，实测 ~5.4µs；仅支持二轴交换、禁 reshape→transpose）——**2026-10-14 重验收窄**：仅「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态成立；池化族大 shape 的 3D 二轴交换被降级为 UB→GM→UB 往返（见 traps-compiler.md TRAP-transpose-ub-gm-roundtrip） | stale |
 | PL-1.2-caxis-accum | C 轴切片累加（i/j serial，实测 1.98–13.2x） | verified |
 | PL-1.3-host-permute | host permute 路线通常净亏（106–147µs） | verified |
-| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14）；**最小可行 CH**（第六数据点 2026-10-15：一维扫描 `min{CH: units≤cores}` 取代「折半」判据） | verified |
+| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14）；**最小可行 CH**（第六数据点 2026-10-15：一维扫描 `min{CH: units≤cores}` 取代「折半」判据）；**第七数据点**（2026-10-15 双输出：同一规则给出 spp CH 64→48 / nondiv 64→32；进一步削 op 的形态边界见 TRAP-hivm-vsel-cond-slice） | verified |
 | PL-1.5-quickref | 乘常数/运行时 let-bound 倒数 / 3D reduce_sum 链 / H-collapse / fp32 求和序匹配 / launch 开销判定 / host 编译期常量折叠 | verified |
 | PL-1.15-broadcast-perf-tax | vsub/vmul 未文档化列广播可编译可算对但 +12~16% 性能税——合法化≠可用，列因子仍走 vbrc 展开 | verified |
 | PL-1.17-subfp32-fp32-transit | sub-fp32 逐元素 fp32 中转模式（bf16 v-prefix 缺失 + fp16 golden 对齐双触发；lerp+ssd 两证） | verified |
@@ -46,7 +46,7 @@
 
 | ID | 一句话 | 状态 |
 |----|--------|------|
-| PL-1.6-copy-floor | copy-floor 标定法 + MTE2 带宽退化曲线 + 混合流量地板 + grid-stride 反直觉 + 标量削减判定式（数字见条目）；**轮数自变量扫描**（global 类地板由每核串行轮数主导，≈0.7-0.9 µs/轮，2026-10-15） | verified |
+| PL-1.6-copy-floor | copy-floor 标定法 + MTE2 带宽退化曲线 + 混合流量地板 + grid-stride 反直觉 + 标量削减判定式（数字见条目）；**轮数自变量扫描**（global 类地板由每核串行轮数主导，≈0.7-0.9 µs/轮，2026-10-15）；**写侧生产者形态是标定自变量**（连续 op 链 4.73µs vs 跨步 gather/`(C,plane)` 转置源 105.7µs；地板显著低于 baseline ⇒ 假地板嫌疑，2026-10-15） | verified |
 | PL-1.10-loads-first-decoupling | 单 staging 复用链致 MTE2/VEC 零重叠 → per-input staging + 三输入前置装载（收益数字见条目） | verified |
 | PL-1.14-mte3-strided-ws | 跨引擎 ws 中继写侧必须块连续（band 化 MTE3 3× 回退；读侧逐块入 L1 band 列偏移区两全） | verified |
 | PL-1.19-scatter-col-write-amplification | (M,1) 列切片 UB→GM 写 42× 放大 → 扁平 chunk-major 连续写 | verified |
@@ -87,15 +87,16 @@
 | TRAP-vselect-inplace-carried-state | 原位 vselect(cond,A,B,B) 多迭代 T.serial 丢 loop-carried 状态（tile-0 局部值）；绕法 = noalias select + T.copy 回写 | verified |
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
 | TRAP-vcast-shape-and-gm-source | `T.vcast` 形状须一致（无 broadcast/reshape）+ 源须为 UB（GM 源 BiShengHIR pipeline 失败）；伴随：runtime let-bound 标量可作 vmul src2 | verified |
+| TRAP-hivm-vsel-cond-slice | `hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**（同 slice 作 `vcmp` 操作数合法）→ 双输出池化「行级掩码直送 vselect」的削 op 不可达；**否定 v 算子 API 前须穷举 whole-buffer/切片/bool-cond/rank 形态** | verified |
 | TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro） | verified |
 | TRAP-npuir-ref-backend-golden-capability | NPU 参考后端（torch_npu）两形态能力缺口：`dilation!=1` 抛 `AclNN_Parameter_Error`（op 未执行）+ `return_indices=True` 的 indices **静默损坏**（int8 mask buffer，全 dilation）；纯选择类算子回退 CPU golden 逐位一致 | verified |
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
-| TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
+| TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露）；**2026-10-15 收窄为「pattern 生产者特有」**——运行期构建的位置表（非 `arange`）可绕过（逐元素精确），但双输出下被归约链 UB 单价 237 B/元素与轮数封顶（见 CONST-dual-output-whole-plane-reduce-ub） | verified |
 | TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
 | TRAP-npuir-reshape-dst-buffer-shadow | npuir 分支 `T.reshape` 被 `npuir_reshape(src,dst)` 覆盖（第二参 = 目标 buffer，非 shape list）；通用形 `T.reshape(A,[m,n])` 语义漂移（含 repro） | verified |
 | TRAP-parallel-f32-uint8-cast-rounding | `T.Parallel` 内直接 `T.cast(f32,"uint8")` 非最近舍入（16/64 偏 `round()`）+ uint8 字节实际落 i8 空间（≥128 饱和 127 = fp8 NaN 载荷）；绕法 = 两步 `vcast rint` 后窄化 + signed 空间；**2026-10-15 补充**：`vcast` int32→int8 形态不可用，字节窄化链载体是 f32（含 repro） | verified |
 | TRAP-vexp2-not-exact-pow2 | `T.vexp2` = `exp(x·ln2)` 非精确 2^k（rel err ~6e-8 使 `n.5` tie 全反向）；精确 `2^k` 走 `T.vshl(1,k)`（k=0..14 逐位精确；**`vshl` 被标量化 —— 实测 (32,64) tile 单独 305.5µs / ≈20ns/元素，须换 `vexp2` 向量化路线**）（含 repro） | verified |
-| TRAP-transpose-ub-gm-roundtrip | UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（5.6→138.2µs；`UB_to_GM_datas` 48KB/block）——代价强依赖 shape/dtype 形态（`(64,56)→(56,64)` f16 仍走 UB 内）；绕法 = 免转置扁平归约（PL-1.23）（含 repro） | verified |
+| TRAP-transpose-ub-gm-roundtrip | UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（5.6→138.2µs；`UB_to_GM_datas` 48KB/block）——代价强依赖 shape/dtype 形态（`(64,56)→(56,64)` f16 仍走 UB 内）；绕法 = 免转置扁平归约（PL-1.23）。**2026-10-15 追加**：触发条件定到「**写侧生产者形态**」——连续 op 链 store 源 4.73µs vs 跨步 gather / `(C,plane)` 转置 store 源 105.7µs（96KB/blk）；且转置同时拉长 `GM_to_UB` 的时延（mte2 2.1→31.4µs），故**写侧 floor 标定必须区分生产者形态**（含 repro） | verified |
 | TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
 | TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
 | TRAP-scf-for-row-offset-silent-miscompile | 运行时 `scf.for` 循环变量作**共享缓冲行偏移**（`for r in range(bm): … cand[r+i, j] = …`）→ **静默错值**（(2048,4096) fp16 y0=−3 vs ref 3211）；错值档「更快」= 伪收益，须先过 `torch.equal` 精确门（含 repro；与 TRAP-tir-range-loop-not-unrolled / TRAP-parallel2d-bm-ge2-scalarize 同族） | verified |
@@ -134,6 +135,7 @@
 | CONST-store-fixpipe-gm-only | store_fixpipe 仅 L0C→GM（跨引擎传输强制 GM 往返） | verified |
 | CONST-aicore-910B2C | 物理核数 24（910B2C）/ **20（910B3 实查）** + persistent 任务平衡公式；跨型号不可复用本值 | verified |
 | CONST-arange-scalar-materialize | T.arange (M,W) 物化标量 ~1ns/elem；(1,N)+首轴 vbrc 绕法（-18.2%） | verified |
+| CONST-dual-output-whole-plane-reduce-ub | 双输出整平面 argmax 归约链 UB 单价 ≈237 B/平面元素（单输出 C4 仅 32）→ 封顶 ch=8 → 52 轮 → 262.8µs；`(C,plane)` 行归约标量化 237µs | verified |
 | CONST-gm-to-ub-bw-dilution | gm_to_ub_bw 是总时长稀释口径（用 mte2_ratio×aiv_time 判搬运）；跨步列块 2D 读不慢（0.98× 对照 + 误读更正） | verified |
 | CONST-reduce-dims0-skinny | dims=0 长条形 (K,4) 逐列串行（(400,4)=33µs）；transpose+dims=1 绕法 | verified |
 | CONST-npuir-f32-division-not-ieee-rounded | npuir fp32 除法非 IEEE correctly rounded：`T.vdiv` 2-D ~6.1% lane 1 ulp 偏、标量除法式 135/256 值 1–2 ulp 偏、**列形态 (M,1)/(M,1) 逐位精确**（含 repro） | verified |
@@ -167,7 +169,7 @@
 | CASE-ssd-chunkscan-migration | mamba/SSD 族 MixCV Expert 迁移完整档案（模式切换 + 六轮 2.91× + 首过集成 + 4515de8 重跑 + 二轮 1.078× + 重建会话 repro 骨架重推导 +9.7%） | verified |
 | CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例）——**Stage 4 续档**（`T.transpose` 链在当前工具链失效 → 扁平归约替代 9.91x + 单波 CH 分派；含「msprof roofline Ratio 不与 latency 成反比」口径更正实例） | verified |
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例）——**Stage 4 续档**（C4 扁平宽归约 + 原位平方-sum NaN 追踪 + 单波 CH 判据；PL-1.13 在纯 Vector 上不适用；320.83→18.86 µs） | verified |
-| CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7） | verified |
+| CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7）；**Stage 4 续档**（2026-10-15：扁平整平面读 + dtype 宽度扫描 + 写侧生产者纪律 + 双输出单波 CH；global 144.4→91.9µs/1.57x；C4 双输出被归约链 UB 单价封顶） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
 | CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |

@@ -615,14 +615,25 @@ evidence:
     （c）单层 `u[i,j] = T.cast(x[i,j], "e4m3_float8")`（目标 uint8 buffer）→ 同报错；
     （d）嵌套 `T.cast(T.cast(x,"e4m3_float8"),"uint8")` → 前向量化产出 fp8 临时 buffer
     后同报错。探针（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/history_version/design_probe_encoder_lowering.py` / `design_probe_tileops.py`
+  - **Stage 4 复验 + 绕法代价实测量化（2026-10-15，tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 / CANN 9.0.0 / Ascend910B3）**：
+    fp8 cast（`u[i,j] = T.cast(x[i,j], "e4m3_float8")`，目标 uint8 buffer）**仍**报
+    `BackendInternalError: Cannot convert type e4m3_float8` —— 缺口跨 3 个工具链戳存活。
+    绕法代价实测（msprof op，同任务 `perf_opt/opt_log.md`）：软件 e4m3 编码器 ~7.0 µs
+    （20+ 个整 tile 逐元素 pass，pass 单价实测 ~0.23–0.3 µs），叠加平台「空 kernel」
+    地板 3.37 µs + 必需 GM 流量后 Task=11.26 µs；70% Ratio（≤5.52 µs）需编码器 ≤1.27 µs
+    （≤4 pass），软件 RNE e4m3 编码最少 ~14 pass → **目标结构性不可达**（详见
+    `perf_opt/perf_feedback.md`）。硬件窄化路径（若本缺口补齐）预期 Task ≈4.8 µs（Ratio ≈80%）。
 workaround: >-
   已回填（2026-10-14 本迁移交付）：软件 e4m3 编码写入 **uint8 字节载体** + host 侧
   `out.reshape(B,S,G,D).view(torch.float8_e4m3fn)` 还原对外 dtype 契约（`.view` 为纯元数据
   操作、设备侧实测可用，见 CG-2026-0023）。代价：约 11–13 个向量 op/元素的软件编码链；
   对外 shape/dtype/数值与源算子一致（非契约降级）。缺口补齐后应去绕化（回退硬件窄化）。
-occurrences: 2
-tasks: [fp8_quant-FP8QuantOp-20261014T150047Z（preflight）, fp8_quant-_fp8_quant_kernel-20261014T153942Z（迁移，独立复核并加宽：表达式路径同样 blocked）]
-toolchain_stamp: preflight tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce；迁移 tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（实测为准，DESIGN §11 记录的 ac0522ed 为设计期探针戳）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+  **Stage 4 量化该代价（2026-10-15）**：编码链实测 ~7.0 µs（基线 238.5 → 11.26 µs，
+  其中标量化元凶 `T.vshl` 单独贡献 305 µs，已由 `T.vexp2` 向量化路线替换）；
+  该代价使 Design §12.4 的 70%-Ratio 目标（≤5.52 µs）在本平台结构性不可达。
+occurrences: 3
+tasks: [fp8_quant-FP8QuantOp-20261014T150047Z（preflight）, fp8_quant-_fp8_quant_kernel-20261014T153942Z（迁移，独立复核并加宽：表达式路径同样 blocked）, fp8_quant-_fp8_quant_kernel-optimize-20261015（Stage 4：复验存活 + 绕法代价实测量化 → 70% 目标不可达）]
+toolchain_stamp: preflight tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce；迁移 tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（实测为准，DESIGN §11 记录的 ac0522ed 为设计期探针戳）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14；Stage 4 复验 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
 status: recurring
 proposal: >-
   目标层 codegen（`src/target/codegen_npuir_api.cc` / `codegen_npuir_api_a5.cc` 的
@@ -636,7 +647,7 @@ proposal: >-
   转为 COMPILE_OK，且 FP8QuantOp 可去绕化为硬件窄化路径。issue 草稿（标题前缀 [npuir]）
   须经用户批准后对外提交。
 created_by: fp8_quant migration preflight (2026-10-14)
-last_seen: fp8_quant-_fp8_quant_kernel-20261014T153942Z（2026-10-14 迁移设计期独立复核并加宽）
+last_seen: fp8_quant-_fp8_quant_kernel optimize Stage 4（2026-10-15）：缺口跨 3 个工具链戳存活；绕法代价实测 ~7.0 µs 编码器 → 70% Ratio 目标结构性不可达（见 perf_opt/perf_feedback.md）
 ```
 
 ### CG-2026-0008 → 已升级 recurring，条目移入下方 Recurring 区（2026-09-15 occurrences 2）
@@ -804,13 +815,19 @@ workaround: >-
   重解释，I/O 字节序契约不变）+ 单次宽最内轴 `reduce_sum`——实测同 workload
   166.26 → 16.78 µs（9.91x），逐位精确（layout.md PL-1.23）。若必须转置，选「两边
   ≥ 向量宽且为向量宽整数倍」的 2D 形态。
-occurrences: 1
-tasks: [adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z]
-toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
-status: open
-proposal: none（未达 recurring；建议方向 = ① 对满足「两边 ≥ 向量宽且为向量宽整数倍」以外形态的 UB 内二轴交换给出显式诊断或 UB 内 lowering，② 或在 docs/Tilelang.language/shape操作/T.transpose.md 记载「何种形态会被降级为 UB→GM→UB」的判据；issue 须用户批准）
+occurrences: 2
+tasks: [adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z, adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z]
+toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14；第二任务重验 tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: recurring
+proposal: >-
+  **目标层**：BishengIR（`hivm.hir.vtranspose` 的 UB 内 lowering 选择）+ Frontend（诊断）。
+  **建议改动**：① 对「二轴交换的**两端均 ≥ 向量宽且为向量宽整数倍**」以外形态（如本次 `plane=49`）给出**显式诊断**（warning/error）而非静默走 UB→GM→UB；
+  ② 或对该形态实现真正的 UB 内 layout 变换；③ 至少在 docs/Tilelang.language/shape操作/T.transpose.md 记载降级判据与可观测指纹（`UB_to_GM_datas` ≈ tile×单元数、`GM_to_UB` 同步被拉长）。
+  **收益量化（两任务实测）**：avg pool 166.26→16.78 µs（9.91x，绕法 = 免转置扁平归约）；本任务 `global-1x1` 残余 ~60 µs（91.92 µs 中；纯拷贝地板 4.73–6.86 µs）——若转置走 UB 内，该 workload 预期进入 10–20 µs 量级。
+  **受影响算子清单**：adaptive max/avg pool 2d（整平面/退化网格）、adaptive_max_pool2d_with_indices（双输出，写侧 store 源同样中招）、任何「核内布局重排 + 高整除性轴」路线。
+  **issue 草稿（[npuir]，须用户批准后提交）**：`[npuir] hivm.hir.vtranspose silently lowers UB two-axis swap to a UB→GM→UB round trip when a side is not a multiple of the vector width`。
 created_by: evolver 复原登记，2026-10-15（**溯源**：task adaptive_avg_pool2d-...-20261014T172114Z 的 opt_log.md §11 声明已按 AGENTS.md「Compiler Capability Gap Rule」登记本缺口并递增 occurrences，但蒸馏核对时 `.agents/evolution/capability-gaps.md` 无对应条目、文件亦无本任务未提交改动——即该声明未落盘；evolver 按 2026-09-21 先例（optimizer 声称入队未落盘 → 核对发现并补齐）以一手工件复原登记）
-last_seen: 2026-10-14 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z Stage 4
+last_seen: 2026-10-15 adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4（second occurrence: 写侧 store 源为 `(C,plane)` 转置 / 跨步 gather 时必中；连续 op 链生产者不中——触发条件定到写侧生产者形态，`UB_to_GM` 0.8 KB/blk vs 104 KB/blk）
 ```
 
 ### CG-2026-0025
@@ -1086,3 +1103,41 @@ last_seen: ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z Stage 2 �
 ## Resolved（proposal / in-progress / fixed / closed / withdrawn 归档）
 
 （暂无条目）
+
+### CG-2026-0028
+
+```yaml
+gap_id: CG-2026-0028
+layer: BishengIR（`hivm.hir.vreduce` / reduce 链的 UB 预算分配）+ Frontend（vsel 操作数形态）
+capability: >-
+  (a) **双输出整平面 argmax 的归约链 UB 单价 ≈237 B/平面元素**（含 auto-multi-buffer ×2），
+  而单输出同族 C4（`reduce_max` + 原位平方 `reduce_sum`）仅 **32 B/元素**——索引侧的位置表 +
+  eq 掩码 + 候选平面缓冲把单价抬高 ~7x，把 `ch` 从 64+ 压到 **8**；`ch=16` 需 1 618 432 bit
+  （202 304 B）> 1 572 864 bit（196 608 B，`ub overflow, requires N bits while 1572864 bits available`）。
+  `plane=49, N=8, C=2048` 下 `ch=8` 产生 `num_local = ceil(2048/40) = 52` 轮，实测 Task **262.8 µs**
+  （远差于一般网格路径 144.4 µs）⇒ 该特化在双输出上不可采纳。
+  (b) `(C, plane)` 二维 `T.reduce(dim=1)`（归约轴 = 最内轴）被**标量化**：`ch=64` 实测 scalar 98.1 µs /
+  Task 237.0 µs / `UB_to_GM` 96 KB/blk（转置-布局往返）——同日历的 `(C,1,plane)+dim=2` 形态正常。
+  (c) `hivm.hir.vsel` 的 **cond 不接受从更大 UB buffer 切出的 bool 区域**（`vsel op operands' shape are
+  inconsistent`），同一 slice 作 `vcmp` 操作数合法 ⇒ 双输出池化「行级掩码直送 vselect」的 8→6 削 op 不可达。
+blocked_algo: >-
+  「整平面 reduce + 位置表 argmax」的 C4/双输出特化（DESIGN candidate #9 在索引型上的推广）——
+  被迫换算法（改为「扁平整平面 + 沿平面 (1,C) 行记录扫描」；正确性可达但残余受转置往返所累，见 CG-2026-0024）。
+  同时「免转置二维行归约」路线被标量化否决，构成双输出极分解的完整边界。
+evidence:
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/perf_opt/probe_global_reduce.py`（`--ch 8 --check` 逐元素精确 16384/16384；`--ch 16` 报 `ub overflow, requires 1618432 bits while 1572864 bits available`；ch=8 msprof Task 262.795 µs）、`probe_global_2d.py`（ch=64 Task 236.985 µs / scalar 98.139 µs / `UB_to_GM` 96 KB/blk）、`logs/g2d_ch64.log`、`logs/pr_ch8.log`
+  - 知识域：`pattern-library/constants.md` `CONST-dual-output-whole-plane-reduce-ub`（Tier 0，已回写）；`traps-compiler.md` `TRAP-hivm-vsel-cond-slice`（新条目，已回写）
+  - 对照常数：同族 `adaptive_max_pool2d` 单输出 C4 的 `_UB_REDUCE_B_PER_ELEM = 32`（`TRAP-reduce-ub-per-element`）
+  - docs/Tilelang.language/规约操作/T.reduce_max.md（未记载 UB 预算模型与归约轴形态的向量化判据）
+workaround: >-
+  双输出 1x1 用「扁平整平面 + (plane,C) 转置 + 沿平面 (1,C) 行记录扫描」替代整平面 reduce
+  （实测 global-1x1 144.39 → 91.92 µs，-36.3%，逐位精确）；`ch` 由 UB 预算反推（`CH_GLOBAL=104`）。
+  general 路径保留 C 轴向量轴 + 破纪录集合取 max 的三路累加器（每元素 7 条窄向量 op）。
+occurrences: 1
+tasks: [adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z]
+toolchain_stamp: tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: open
+proposal: none（未达 recurring；建议方向 = ① 公布 reduce 链 UB 预算模型（按归约链形态分档），或在 `ub overflow` 诊断中列出逐 buffer 明细；② 对 `(C,plane)` + `reduce(dim=1)` 给出标量化诊断；③ 放宽 `hivm.hir.vsel` 的 cond 操作数形态（支持 UB 子区域）；issue 须用户批准）
+created_by: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4（optimizer 自登记，2026-10-15）
+last_seen: 2026-10-15 adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4
+```

@@ -434,8 +434,8 @@ mode: [developer]
 dtype: [fp16, bf16]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z（函数级）
-toolchain: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261014T010230Z（函数级 / 迁移）；adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z（Stage 4 调优）
+toolchain: tilelang 0.1.2+ba60e99c16439d6fa6a59acdfca162c17b2bf8b2（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；**Stage 4 段** tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23（commit 67a0441 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: none
 ---
 
@@ -562,3 +562,29 @@ quantization 族**首个** TileOPs 迁移算子 / **首个字节载体（fp8）�
 - **口径不可达（`[DESIGN_LIMIT]`，见 `perf_opt/perf_feedback.md`）**：平台空 kernel `Task Duration` 地板 **3.37 µs**（固定开销 ≈2.4 µs）+ 必需 GM 流量后 **4.25 µs**（占 5.5 µs 目标预算 77%）；软件 e4m3 编码器 ~7 µs（≥14 pass）→ 70% Ratio（≤5.52 µs）需编码器 ≤1.27 µs，DQ 结构性不可达；§12.5 回落线（≤1.82/2.99 µs）甚至低于空 kernel 地板。结构性出路 = 补齐 CG-2026-0018 后回退硬件 fp8 窄化（预期 Task ≈4.8 µs / Ratio ≈80%）。
 - **durable 载体**：`T.vshl` 标量化代价并入 traps-compiler.md `TRAP-vexp2-not-exact-pow2` 代价边注（+ repro `TRAP-vexp2-not-exact-pow2.py`；标量化代价侧的 provenance 为任务工作区 `perf_opt/probes/probe_c3.py`，允许失效——原文引用的 `TRAP-vshl-ub-scalarize-cost.py` 未落盘，2026-10-15 终态蒸馏 D2 机械核验纠正）；msprof op Task 固定地板/pass 单价新条 constants.md `CONST-msprof-task-floor-910B3`（+ repro）。
 
+
+
+---
+
+### CASE-pool-adaptivemaxpool2dindices-migration — Stage 4 续档（2026-10-15，toolchain 67a0441）
+
+- **任务/产物**：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/perf_opt/`
+  （`_adaptive_max_pool2d_with_indices_kernel.py` sha256 `8156c03c…`；`opt_log.md` / `perf_records.jsonl` / `copy_floor_calibration.jsonl`）。
+- **结果（`msprof op` Task Duration，median/20）**：`global-1x1` 144.39 → **91.92 µs（-36.3%，1.57x）**；
+  `spp-6x6` 85.57 → **79.86 µs（-6.7%）**；`nondiv-7x7` 81.41 → **72.60 µs（-10.8%）**；双输出在 L0/L1 全用例逐位精确
+  （`index mismatches 0/104487`）。
+- **采纳的改动**：① fp16 `out_H==out_W==1` 新增**扁平整平面**路径（`x: (N,C,1,H*W)` 一次连续 DMA + 单次 `(plane,C)` 转置 +
+  沿平面 `(1,C)` 行记录扫描；扫描期**只用 dtype 宽度平面缓冲**，`CH_GLOBAL=104`）；② general 路径删除死代码 `h_flag` 乘积（8→7 op/元素）；
+  ③ general 路径**单波最小 CH** 分派（spp 48 / nondiv 32）。
+- **证伪/未采纳（避免重复劳动）**：
+  - **C4 整平面 argmax（运行期位置表取代 arange）**：正确性可达（逐元素精确，16384/16384）但**被 UB 单价封顶**——
+    `ch=8` 才编译通过、`num_local=52` 轮、实测 **262.8 µs**；`ch=16` UB overflow（需 202 304 B > 196 608 B）。见 `CONST-dual-output-whole-plane-reduce-ub`。
+  - **二维 `(C,plane)` 行归约（免转置）**：`reduce(dim=1)` 标量化，Task **237.0 µs**（scalar 98.1 µs）。
+  - **免转置按列扫描**（`(C,1)` 跨步列切片作向量操作数）：运行期 **core dump**。
+  - **bool 切片直送 `vselect`**（8→6 op）：编译失败（`hivm.hir.vsel` 形态限制，见 TRAP-hivm-vsel-cond-slice）。
+  - **`(C,plane)→(plane,C)` 平面转置**（`plane=49`）：必被降级为 UB→GM→UB 往返（`UB_to_GM` 104 KB/blk vs 真实写 4.5 KB），
+    是 global 残余缺口（91.9 µs 中 ~60 µs）的主因——**本工具链硬上限**。
+- **新增纪律**：写侧 **store 源必须是连续 op 链**（`vbrc`/`vcast`/`reduce_*`），禁止跨步 UB gather 与「一侧为 1」的 `transpose` 输出；
+  写侧地板标定必须区分「连续 / 跨步」生产者形态（否则产出假地板，见 PL-1.6 更新）。
+- **状态**：`plateau` 收束（`CH_GLOBAL` 邻域 96/104/112/128 无一优于 104；剩余结构候选全部 blocked）。
+  **不产出 `perf_feedback.md`**（`perf-feedback.md` §1 双条件未同时满足：天花板归因于工具链 lowering 而非算法/设计层）。
