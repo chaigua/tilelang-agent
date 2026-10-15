@@ -851,6 +851,73 @@ created_by: evolver 复原登记，2026-10-15（**溯源**：task argmin-_argred
 last_seen: 2026-10-15 argmin-_argreduce_kernel-20261015T023310Z Stage 4（Iteration 2 正确性证伪）
 ```
 
+### CG-2026-0026
+
+```yaml
+gap_id: CG-2026-0026
+layer: BishengIR（`T.reduce_*` 等归约 lowering 的 UB 记账模型）
+capability: >-
+  BishengHIR 的归约 lowering 在 UB 上**按输入 tile 元素数线性记账**，单价由**归约链形态**
+  决定，与「实际 dtype 缓冲清单」无关（前端无预算模型/分配清单可查，只能 compile-time
+  反解）。整平面 max 归约的 NaN 追踪链在 (CH,1,H*W=49) fp16 上实测单价：`reduce_max →
+  vcmp(平面自比较,"eq") → vcast → reduce_min` ≈ **96–128 B/平面元素**（把可用 CH 压到
+  ≤32）；等价的原位平方-sum 形态（`vmul(flat,flat,flat) → reduce_sum`）≈ **32 B/元素**
+  （解锁 CH≤120）；非原位平方（多一个全平面中间量）翻倍到 ≈64 B/元素。单价在 ch=64 与
+  ch=128 **恒定**（严格线性、无固定项），CH 上限 = 196608 / (单价·H*W)。编译期
+  `ub overflow, requires N bits while M bits available` 是唯一可见信号。
+blocked_algo: >-
+  整平面（全局池化）归约路径的 **CH 上限被 lowering 的 UB 记账隐式限制**——「用更宽 CH
+  摊大 DMA 粒度 / 减少每核串行轮数」的空间被压缩（同工具链 UB 内 `T.transpose` 被降级为
+  UB→GM→UB 往返同属该路径的 UB 容量约束，见 CG-2026-0024）。
+evidence:
+  - pattern-library constants.md `CONST-reduce-ub-per-element`（单价表 + CH 上限式；探针须 DCE 免疫）
+  - 知识域 repro（compile-time sweep，反解 N bits）：.agents/skills/tilelang-op-optimize/references/pattern-library/repro/TRAP-reduce-ub-per-element.py
+  - 任务工作区探针（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/probe_ub2.py（无死代码精确镜像：201216 B @ ch=128 fp16 原位平方；401792 B @ ch=64 bool 掩码链）
+  - docs/Tilelang.language/规约操作/ 未记载归约的 UB 记账模型或形态相关单价（未文档化，估量依据 = 上述本机 compile-time sweep）
+workaround: >-
+  NaN 追踪改用**原位平方-sum 等价形**（`isnan(reduce_sum(x*x))`，单价 32 vs 96–128 B/元素）
+  解锁更宽 CH；配合**扁平空间轴** `(N,C,1,H*W)` 单次宽归约（layout.md PL-1.23）把「成本 ∝
+  平面元素」的归约链限制在单次。代价：仍无法逼近同栅格纯拷贝地板（见 CG-2026-0027）。
+occurrences: 1
+tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z]
+toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: open
+proposal: none（未达 recurring；建议方向 = ① 输出归约 lowering 的 UB 预算模型/逐 buffer 分配清单（含形态相关单价），使前端可在设计期核算 CH 上限而非 compile-time 反解；② 或为归约链形态提供可查询的 UB 足迹文档。issue 须用户批准）
+created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（2026-10-15，opt_log.md §10 按 AGENTS.md「Compiler Capability Gap Rule」登记）
+last_seen: 2026-10-15 adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（整平面归约 CH 上限实测）
+```
+
+### CG-2026-0027
+
+```yaml
+gap_id: CG-2026-0027
+layer: BishengIR（归约与 GM→UB 搬运的流水调度 / 跨 pipe 重叠）
+capability: >-
+  同一 kernel 内 `T.reduce_*` 与 GM→UB 的 `T.copy` **无法重叠**：整平面归约 kernel 的
+  `aiv_mte2_time` 实测 **211 GB/s**，而**同栅格同 DMA 粒度的纯拷贝标定**达 **690 GB/s**
+  （[8,2048,7,7] fp16、CH×49 fp16 元素/轮、40 block、910B3）——搬运窗口未被归约计算填充、
+  也不与下一轮 DMA 重叠（`Task ≈ max(mte2,vec)+scalar` 的 max 退化为近似 sum）。循环构造
+  `T.Pipelined(2/3)` 于单元循环实测无增益（未能形成归约 consumer 与 DMA 的双缓冲重叠）。
+blocked_algo: >-
+  global 类池化/归约逼近「同栅格纯拷贝地板」的通路受阻：final 18.86 µs vs 标定地板
+  5.09–6.85 µs（**2.8–3.7x 缺口**），其中一部分即该不重叠（另一部分见 CG-2026-0026）。
+evidence:
+  - 任务工作区 opt_log（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/opt_log.md §3（baseline）/§4 R3（`mte2=9.10 µs` vs 拷贝标定 5.09–6.85 µs）/G5·G9（`T.Pipelined(2/3)` config_no_gain）
+  - 任务工作区标定（溯源，允许失效）：examples/TileOPs/.../perf_opt/copy_floor_calibration.jsonl（同栅格纯拷贝地板 6.85/5.09 µs；mte2 2.13/1.21 µs）
+  - pattern-library elementwise.md `PL-1.6-copy-floor`（轮数主导地板）+ constants.md `CONST-aiv-time-decomposition`（`Task ≈ max(mte2,vec)+scalar` 分解口径）
+  - docs/Tilelang.language/同步管道操作/ 与 线性代数操作/ 未记载归约与搬运的自动流水重叠条件（未文档化，估量依据 = 上述本机实测）
+workaround: >-
+  无有效重叠手段（`T.Pipelined(2/3)` 于单元循环实测无增益）。当前只能靠**减少每核串行轮数**
+  （更宽 CH，受 CG-2026-0026 的 UB 记账约束）压低地板逼近缺口。
+occurrences: 1
+tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z]
+toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: open
+proposal: none（未达 recurring；建议方向 = 归约 kernel 的 reduce 与 GM→UB 自动流水重叠，或提供显式 overlap 原语/文档；issue 须用户批准）
+created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（2026-10-15，opt_log.md §10 按 AGENTS.md「Compiler Capability Gap Rule」登记）
+last_seen: 2026-10-15 adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（mte2 211 GB/s vs 拷贝标定 690 GB/s）
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
 ### CG-2026-0023

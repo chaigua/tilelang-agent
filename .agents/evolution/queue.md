@@ -528,6 +528,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: BP_aiv_duplication_check——MixCV（Mix Block Dim = 2× Block Dim）画像两 AIV 子块指标相同 ⟹ Vector 程序重复执行 ⟹ subid 分片为第一候选（本轮 −34% 单点）
 - evidence:
   - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z：opt_log §9 流程观察 1（发现花了 4 轮——前 3 轮把 vector0/vector1 相同指标读作"分摊或镜像"，R4 才用「若分摊则 ratio 应减半」反证确认）+ R4/R5（v8_aivsplit w2 −34.4%；数据侧已回写 attention.md PL-1.13）
+  - 〔2026-10-15 边界条件追加（不同任务 / 不同算子，反向），task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z〕本条触发前提「MixCV（Mix Block Dim = 2× Block Dim）」**不可省**：对 `T.Kernel(n, is_npu=True)` 的**纯 Vector** kernel，块内只有 1 个 Vector 子块、`subid` 恒为 0（探针把 `1+subid` 写入 `out[cid*2+subid]`、断言 `max(out)==1.0`；`pattern-library/repro/PL-1.13-vector-kernel-subid-zero.py`），按 subid 分片会**静默丢弃一半逻辑单元**（假收益 −20%~−41%，唯一破绽 = `GM_to_UB_datas` 精确减半）。**不计独立确认**（反向边界条件，非对该 BP 正向机制的第二证；数据侧已由本任务回写 attention.md PL-1.13 适用域收窄）；配套流程提案见 VP-2026-0241。
 - repro: repro/PL-1.13-aiv-dup-subid-split.py（知识域，2026-09-17 转正——分片骨架 + 机制归因 + 判据）
 - toolchain_stamp: tilelang 0.1.2+1990aa9fe4 / CANN 8.5.0 / Ascend910B2C / 2026-09-17
 - target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
@@ -4749,6 +4750,54 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
 - decided_by: -
 - decided_note: 源工件（opt_log §9.2 VP-P-2）标为 P（反例/证伪）；按 distillation-rules §3 判定树「含实测数字 / 实证结论（含证伪）→ D」，本条以 D 入队（含 `unexpected` 计数与时延数字，属事实陈述），因无知识域 repro 降级 Tier 1。事实侧的三处 L0 失败与 cases.md `CASE-quant-fp8-quant-migration` Stage 4 续档「否决方向」互为 durable 载体。
+
+## VP-2026-0241
+
+- type: R
+- title: `tilelang-op-optimize` Phase 0「首轮必查项」增一条——**分片/并行/拆分类收益必须先做「工作量守恒核验」**（GM 流量 / 指令数 / 输出覆盖率之一未按比例下降），否则「只做了一半工作」的伪收益会被记成加速
+- evidence:
+  - task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z：`perf_opt/opt_log.md` §8.1 流程问题 R1 + §3.1（标定阶段 subid 分片给出 −20%~−41% 的「加速」，破绽 = `GM_to_UB_datas` 36.8→18.4 KB/block ≈精确减半）× `probe_subid.py`（每 (cid,subid) 写 `1+subid` 到独立槽位：偶槽恒 1.0、奇槽从不被写 ⇒ 纯 Vector kernel `subid` 恒 0）
+  - 数据侧已回写：`pattern-library/attention.md` PL-1.13-aiv-dup-subid-split（适用域收窄）+ `pattern-library/repro/PL-1.13-vector-kernel-subid-zero.py`（判据，可运行）
+  - 同主题 pending P 条 VP-2026-0088（BP_aiv_duplication_check，MixCV 侧检测）：本条为其**流程侧**补充（边界条件已追加至其 evidence）
+- repro: repro/PL-1.13-vector-kernel-subid-zero.py（知识域，2026-10-15 转正——判据 kernel：断言纯 Vector kernel 的 `subid` 恒 0；流程规则侧复现条件 = 读 optimize SKILL.md Phase 0 第 4 步 bullet 清单确认「工作量守恒核验」是否在列）
+- toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0 第 4 步「首轮必查项」列表增一条 bullet）
+    目标: .agents/skills/tilelang-op-optimize/SKILL.md
+    定位锚: "- **编译器陷阱版本戳与 origin_task 核对**：pattern-library traps-*.md 的陷阱结论绑定工具链版本与来源任务（origin_task）——若 tilelang 源码被修改/重编译过，相关结论自动视为待重验，不得直接引用；引用命中条目时在 opt_log 中标注其 origin_task，据此判别可信度；"（在该 bullet 之后插入）
+    new 文本: |
+      - **分片/并行/拆分类收益的工作量守恒核验**：任何「分片 / 双核 / 按 subid 拆分 / N-split」类收益，采纳前必须核验 GM 流量（`GM_to_UB_datas` / `UB_to_GM_datas`）、指令数或输出覆盖率之一**未按比例下降**——「只做了一半工作」会被记成加速。实测教训（2026-10-15 adaptive_max_pool2d）：`T.Kernel(n, is_npu=True)` 的**纯 Vector** kernel `subid` 恒为 0（attention.md PL-1.13 适用域收窄），按 subid 分片把奇数 index 单元交给永不执行的 `subid=1`，Task Duration 出现 −20%~−41% 的**假收益**，唯一破绽是 `GM_to_UB_datas` 精确减半；判据 = 分片前后流量/覆盖率对账（repro：pattern-library/repro/PL-1.13-vector-kernel-subid-zero.py）。
+    动机: 预注入的 PL-1.13 在本任务被要求「先验证」，标定阶段即给出 −20%~−41% 的漂亮数字；若无「工作量守恒核验」纪律，该伪收益会进入采纳流程。收益排序与速度无关，与「是否完成全部工作」有关——核验是零成本前置。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §8.2 BP_001）标为 R；按 distillation-rules §3 判定树，修改对象为流程文件（optimize SKILL.md）⇒ R，Tier 2 仅提案。数据侧（PL-1.13 适用域收窄 + repro）已由本任务内 ED-C 回写，本条只承载流程侧，避免双写。
+
+## VP-2026-0242
+
+- type: R
+- title: `tilelang-op-optimize` references/bottleneck-patterns.md `BP_ub_pressure` 增「**容量/UB 探针必须 DCE 免疫**」纪律——死代码消除会给出偏低的 UB 读数，使探针反解的成本模型系统性错误
+- evidence:
+  - task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z：`perf_opt/opt_log.md` §8.1 流程问题 R2 + §7「已知残留」（`probe_ub.py` 的累积式 level 探针被 DCE 欺骗——未消费的 `reduce_min` 被删，给出 32 B/元素 的**错误**模型）
+  - 修正后对照（同任务 `probe_ub2.py`：精确镜像 + 全部结果被消费）：bool 掩码链真实单价 128 B/元素、原位平方 32 B/元素——`201216 B @ ch=128`（fp16 原位平方）vs `401792 B @ ch=64`（bool 掩码链）
+  - 数据侧已回写：`pattern-library/constants.md` CONST-reduce-ub-per-element（单价表 + CH 上限式；INDEX 一句话含「探针须 DCE 免疫」）+ `repro/TRAP-reduce-ub-per-element.py`
+- repro: repro-missing（流程规则；复现条件 = 读 bottleneck-patterns.md BP_ub_pressure 推荐动作清单，确认「容量/UB 探针 DCE 免疫」是否在列）
+- toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（`BP_ub_pressure` 的「推荐动作」列表末条之后增一条 bullet）
+    目标: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+    定位锚: "- 区分 UB staging 复用与 GM 输入/输出 alias；默认不要假设 GM 输入可以原地写成输出。"（在该 bullet 之后插入）
+    new 文本: |
+      - **容量/UB 探针必须 DCE 免疫**：用编译期探针反解 UB 预算（`ub overflow` 口径）时，探针的**所有中间结果必须被最终输出消费**——死代码消除（DCE）会删掉未消费的 `reduce_*`/计算链，给出**偏低的 UB 读数**。实测教训（2026-10-15 adaptive_max_pool2d）：未消费的 `reduce_min` 使探针把真实 128 B/元素 的掩码链报成错误的 32 B/元素，直接误判可用 `CH`。严格形态：探针做「精确镜像 + 全消费 + 结果落 GM 保活」（同 PL-1.6-copy-floor 的「1 元素 store 保活」，勿用 `(M,1)` 列切片）。
+    动机: 编译器报错是容量类结论的唯一可见信号，若探针自身被 DCE 污染，则反解的「成本模型」系统性错误并误导后续所有选型（本任务曾据此误判 ch 上限，修正后才发现 bool 掩码链单价 128 B/元素）。该纪律是零成本且可机械检查。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §8.2 BP_002）标为 R；按 distillation-rules §3 判定树，修改对象为 skill references 的**流程性内容**（探针纪律）⇒ R，Tier 2 仅提案。数据侧（CONST-reduce-ub-per-element 单价表 + repro）已由本任务内 ED-C 回写，本条只承载探针纪律，避免双写。
 
 > **条目迁移（2026-10-15 apply）**：VP-2026-0238 / 0239 / 0240 经用户批准（Primary 上下文，2026-10-15）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 

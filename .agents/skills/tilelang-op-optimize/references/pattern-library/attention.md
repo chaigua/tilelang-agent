@@ -162,10 +162,16 @@ apis: [T.Kernel, T.Scope, sync_block_set, sync_block_wait, T.serial]
 dtype: [fp16, bf16]
 device: 910B2C
 status: verified
-origin_task: ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z（Stage 4；2026-09-17 蒸馏 D2 溯源归位——原回写误标 20260917T0855Z，实际 task_id 以 .stage_state.json 为准）
-toolchain: tilelang 0.1.2+1990aa9fe4 / CANN 8.5.0 / Ascend910B2C / 2026-09-17；2026-09-20 4515de8 重验存活（task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z 重跑复刻蛇形分片，全量门禁绿）
+origin_task: ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z（Stage 4；2026-09-17 蒸馏 D2 溯源归位——原回写误标 20260917T0855Z，实际 task_id 以 .stage_state.json 为准）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（**适用域收窄**：纯 Vector kernel 的 `subid` 恒为 0，本条不适用）
+toolchain: tilelang 0.1.2+1990aa9fe4 / CANN 8.5.0 / Ascend910B2C / 2026-09-17；2026-09-20 4515de8 重验存活（task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z 重跑复刻蛇形分片，全量门禁绿）；**2026-10-15 适用域收窄**（tilelang 0.1.2+489385e9 / CANN 9.0.0 / Ascend910B3）
 repro: repro/PL-1.13-aiv-dup-subid-split.py
 ---
+
+> **⚠️ 适用域收窄（2026-10-15，adaptive_max_pool2d Stage 4 实测）**：本条的「双 AIV 重复执行 + subid 分片」**只适用于 Mix kernel**（`T.Scope("Vector")` 与 Cube 同块，Mix Block Dim = 2×Block Dim）。
+> 对 `T.Kernel(n, is_npu=True)` 的**纯 Vector** kernel，块内只有 1 个 Vector 子块、**`subid` 恒为 0**——此时按 subid 分片会把奇数 index 的逻辑单元交给**永不执行**的 `subid=1`，**静默丢弃一半工作**。
+> 该陷阱的迷惑性极高：探针 Task Duration 出现 **-20%~-41% 的「加速」**，唯一破绽是 **`GM_to_UB_datas` 精确减半**（实测 global 拷贝 kernel 36.8 → 18.4 KB/block）。
+> **采纳纪律**：任何「分片/双核/按 subid 拆分」类收益，采纳前必须核验 GM 流量、指令数或输出覆盖率之一未按比例下降。
+> 判据（NPU 可运行）：`repro/PL-1.13-vector-kernel-subid-zero.py`——kernel 把 `1+subid` 写入 `out[cid*2+subid]`，断言 `max(out)==1.0`（恒无 2.0）⇒ subid 恒 0。溯源：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md#3.1, probe_subid.py}`（任务工作区）。
 
 ### Mix kernel 双 AIV 重复执行与 subid 分片（−28~−36%）
 

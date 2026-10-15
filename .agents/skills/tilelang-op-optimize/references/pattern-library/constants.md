@@ -320,3 +320,35 @@ repro: repro/CONST-msprof-task-floor-910B3.py
 - **判据**：给定时延目标 T 时，先扣固定地板与流量地板再谈「编码/计算 pass 预算」——本算子 70%-Ratio 目标（≤5.52 µs）留给编码器的预算仅 1.27 µs（≤4 pass），低于软件 e4m3 编码的 ~14 pass 下限 ⇒ 结构性不可达（见 `perf_opt/perf_feedback.md`）。
 - **例外**：`T.vshl` 不适用 0.3 µs/pass 单价——UB tile 上被标量化，实测 ≈ 20 ns/元素（见 traps-compiler.md TRAP-vexp2-not-exact-pow2 代价边注）。
 - **证明**：`python repro/CONST-msprof-task-floor-910B3.py --mode {empty,rw}`（构建 + 跑通；时延由头部 msprof 命令读取）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/perf_opt/probes/probe_floor.py`。
+
+---
+id: CONST-reduce-ub-per-element
+kind: constant
+family: [pooling, reduction, layout]
+apis: [T.reduce_max, T.reduce_sum, T.reduce_min, T.vcmp, T.vmul, T.vcast]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）
+toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+repro: repro/TRAP-reduce-ub-per-element.py
+---
+
+### BishengHIR 归约 lowering 的 UB 单价（按输入 tile 元素数线性记账）
+
+- **量纲**：B / 平面元素（`required_bytes ÷ (ch × H×W)`）。整平面归约（`(CH,1,H*W)` tile，`reduce dim=2`）在 **ch=32/64/96/128 上单价恒定**（严格线性、无固定项；实测 ch=64 与 ch=128 差异 <5%）——即 UB 只与「归约链形态 × 元素数」有关，**与真实 dtype 缓冲清单无关**。
+- **单价表（fp16 平面，`out` 为 `(CH,1,1)`，整数运算在 fp32 域）**：
+
+  | 归约链形态 | B/元素 | 198 KB 预算下 H*W=49 的 CH 上限 |
+  |---|---:|---:|
+  | 仅 `reduce_max`（无 NaN 追踪） | < 24 | ≥128 |
+  | `reduce_max` + **原位** `vmul(flat,flat,flat)` + `reduce_sum` | **≈ 32** | **≈ 120** |
+  | `reduce_max` + 非原位平方平面 + `reduce_sum` | ≈ 64 | ≈ 62 |
+  | `reduce_max` + fp16 掩码平面 + `reduce_min` | ≈ 96 | ≈ 41 |
+  | `reduce_max` + `vcmp(平面自比较)` + bool 平面 + `reduce_min` | ≈ 128 | ≈ 31 |
+
+- **判据**：整平面归约路径的 CH 上限 = `UB_BYTES ÷ (单价 × H*W)`（本设备 `UB_BYTES = 196608`）。**每减少一个「全平面中间量」或降低其位宽**，单价按比例下降 ⇒ 这是解锁更大 CH 的唯一杠杆。
+- **纪律（DCE 陷阱）**：UB 探针必须让**每个中间结果都被最终输出消费**，否则 DCE 会删掉未被消费的 reduce 并给出**虚低单价**（实测教训：未消费的 `reduce_min` 让探针给出 32 B/元素 vs 真实的 128 B/元素；同形 `probe_ub.py` level 3/4 全部失真）。
+- **机制**：`hivm.hir.vreduce` lowering 为归约链物化多份中间张量（IR 可见 `memref.alloc` + `tensor.insert_slice` + `hivm.hir.vreduce`），规模随输入 tile 元素数增长。关闭 auto-multi-buffer（`pass_configs={"npuir.enable_auto_multi_buffer": False}`）**不改变**该记账（实测 open/close 数字完全相同）。
+- **伴随实测（同任务）**：整平面 `reduce` 与 GM→UB `T.copy` **不重叠**——global-1x1 实测 `mte2 = 9.10 µs / 1.92 MB = 211 GB/s`，而同栅格同粒度的纯拷贝标定为 690 GB/s（`T.Pipelined(2/3)` 复测无改善，±1% 噪声内）。
+- **证明**：compile-time sweep 见 `repro/TRAP-reduce-ub-per-element.py` 头部（失败信息含 `ub overflow, requires N bits while M bits available`）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md#3.2, probe_ub2.py}`。

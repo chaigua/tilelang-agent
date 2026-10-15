@@ -8,16 +8,17 @@ kind: constant
 family: [elementwise]
 apis: [T.copy, T.vadd]
 dtype: [fp16, bf16, fp32]
-device: 910B2C
+device: 910B2C, 910B3
 status: verified
-origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z
-toolchain: tilelang 0.1.2+ed787bb（2026-09-07 build）/ Ascend910B2C / CANN 8.5.0
-repro: repro-missing
+origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z（首证：copy-floor 标定法 + MTE2 带宽退化曲线）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（追加：global 类地板由「每核串行轮数」主导 + 轮数自变量扫描）
+toolchain: tilelang 0.1.2+ed787bb（2026-09-07 build）/ Ascend910B2C / CANN 8.5.0；2026-10-15 追加 tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）/ Ascend910B3 / CANN 9.0.0
+repro: repro/CONST-copy-floor-rounds.py
 ---
 
 ### 1.6 copy-floor 标定与 MTE2 带宽退化曲线（elementwise 多输入）✅ 已验证
 
 - **copy-only 探针标定法**：与目标 kernel 同结构（同 persistent/分块/映射）的 3 载入 + 2 vadd 保活（DCE-proof）+ 1 写出探针，一步判定计算链暴露量。lerp_tensor（3 输入 1 输出，7-pass fp32-transit 链）：≥16M 全 dtype delta ≤1.1us（16M 仅 0.34us）——**auto multi-buffer 将全部向量 pass 隐藏于 MTE2 窗口内**，计算链优化在该区间 ROI≈0，直接进入搬运效率维度。
+- **轮数自变量扫描（2026-10-15 adaptive_max_pool2d Stage 4 追加，整平面连续搬运域）**：copy-floor 必须**按将要落地的每核串行轮数**标定，不能只测一个粒度就外推。同流量（1.6 MB）、同 DMA 粒度（CH×49 fp16 元素/轮）下：CH=32 → 13 轮 **10.99 µs**（mte2 3.85）、CH=64 → 7 轮 **6.85 µs**（2.13）、CH=128 → 4 轮 **5.09 µs**（1.21）；即 mte2 只差 3.2x 而 Task 差 2.2x，差额是**每轮 DMA→落盘 的串行延迟（≈0.7–0.9 µs/轮）**。此时带宽不是地板（211–690 GB/s vs fabric ≥1.73 TB/s），**轮数才是**；70% 校准线（地板 ÷ 0.7）也随之从 15.70/9.79/7.27 µs 变化。纪律：① 标定报告须标注轮数；② 单粒度标定值不可外推到其它 CH；③ 探针落盘用「1 元素 store」保活，勿用 `(M,1)` 列切片（stride=plane 会触发列写放大：实测 52 KB/block、Task 93.95 µs 的假地板）。repro：`repro/CONST-copy-floor-rounds.py`（骨架 + 轮数表）。
 - **MTE2 有效带宽随总流量退化**（4-set 轮换，fp16 bs4096，48 vector core）：1M 33.9 → 16M 30.2 → 64M 20.9 → 256M 18.4 GB/s/core；256M 的 3:1 R/W 混合全流量 ~1.26 TB/s 为该设备地板——**"~1.8 TB/s 峰值参考"对混合读写流量不可达**（不要据其估算大 N headroom）。1M 档读带宽含 L2 成分。
 - **访问模式**：grid-stride（48 核聚集于 48×tile 移动窗口）实测优于每核连续分块 +3.2%（256M）——HBM 混合流下聚集窗口访问更优，"连续流 DRAM 局部性"直觉反向（详见 bottleneck-patterns BP 候选）。
 - **标量削减判定式**：mte2_ratio ≥0.95（搬运饱和）时 per-tile 标量/分支开销已被隐藏——静态尾块（去 T.min）全档 tie/-0.6%，guard-free 预判 <0.3%；此类优化仅在 mte2_ratio <0.9 的流水浅区（如 1M 档 0.70–0.84）可能有收益。

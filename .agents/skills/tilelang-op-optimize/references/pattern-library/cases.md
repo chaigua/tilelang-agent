@@ -412,6 +412,18 @@ repro: none
 
 **durable 载体**：max 归约的 NaN 探测陷阱与其合法绕法自包含于 traps-compiler.md TRAP-vcmp-ne-ordered-nan（含知识域 repro）；C 轴向量轴 / 纯 Vector persistent 分核模板见 layout.md PL-1.2/PL-1.4/PL-1.21；几何特化路径模式见 queue VP-2026-0143。本任务函数级 `RETROSPECTIVE.md` 与 `SESSION_TIMING_ANALYSIS.md` 为 provenance（允许失效）。
 
+**Stage 4 续档（2026-10-15，optimize 场景；tilelang 0.1.2+489385e9 / CANN 9.0.0 / Ascend910B3）**：对该集成的四个 benchmark workload 做调优，产出
+`perf_opt/_adaptive_max_pool2d_kernel.py`（基线与 wrapper 未改）。**结果（msprof op Task Duration）**：
+`global-1x1` [8,2048,7,7] fp16 **320.83 → 18.86 µs（17.0x）**；`spp-6x6` [2,128,56,56] fp16 20.37 → **18.89 µs（-7.3%）**；
+`nondiv-7x7` [2,64,55,57] bf16 18.32 → **15.46 µs（-15.6%）**；smoke 仅精度回归（bit-exact）。三 dtype 全 **max_diff = 0.000e+00**（atol=rtol=0）。
+结构改动：① C4 全局路径改**扁平空间轴**（`x` 声明 `(N,C,1,H*W)`，两级窄归约 → 单次宽归约；`GM_to_UB` 336 → 48 KB/block）；
+② NaN 追踪改 **`isnan(reduce_sum(x*x))`（原位平方）**，归约 UB 单价 96-128 → 32 B/平面元素（见 constants.md `CONST-reduce-ub-per-element`；layout.md PL-1.22 ⑧）；
+③ general 路径 **最小可行 CH 单波分派**（spp CH 64→48、nondiv 64→32；layout.md PL-1.4 第六数据点）。
+**负向结论（durable）**：PL-1.13 的 subid 分片**不适用于纯 Vector kernel**（`subid` 恒 0，分片会静默丢弃一半逻辑单元）——见 attention.md PL-1.13 适用域收窄 + `repro/PL-1.13-vector-kernel-subid-zero.py`。
+**未达 70% 口径**（global 18.86 vs 本轮标定 70% 线 7.27–9.79 µs；余下缺口归因于归约 lowering 的 UB 记账限制 CH 与 reduce/DMA 不重叠，属工具链层）；
+**未触发 `[DESIGN_LIMIT]`**（双条件未同时满足：天花板非算法/设计层，且结构加速已在 Stage 4 内消化）。
+provenance（允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md, perf_records.jsonl, workload_inventory.json, copy_floor_calibration.jsonl}`。
+
 pool 家族第二个 TileOPs 迁移算子（AdaptiveMaxPool2dFwdOp，Developer 模式、纯 Vector、Stage 4 跳过；同族追加——结构骨架直接对照前作 `examples/adaptive_avg_pool2d/`（同族前作任务工作区，未上库，允许失效））。要点：①**向量轴 = C 轴**（核内 NHWC 二轴 `T.transpose` 重排后 C 轴 `T.vmax` 归约），与 avg 同构，差异仅在归约算子（max vs sum）与 NaN 追踪；②**max 无代数化简**（非线性 → 常数权重卷积/GEMM 不等价；无逆元 → 前缀差分不可用），"数学等价优化"只余结构特化（C4 全局整平面 `reduce_max` / C4b 恒等纯拷贝）与归约融合；③**NaN 语义显式追踪**（"窗口内任一 NaN → 输出 NaN" + `{+inf,-inf}` 同窗输出 `+inf` 非 NaN）——不能用求和类探测，改用 `eq` 掩码乘性累积（详情见 TRAP-vcmp-ne-ordered-nan）；max 累加器单位元为 `-inf`（`T.clear` 置 0 在全负窗口出错）；④**Stage 3 near-miss**：首版按 DESIGN 字面用 `vcmp(...,"ne")` 做 NaN 探测，L0-10 语义门禁**假阳性通过**（靠 `vmax`/`reduce_max` 的 NaN 传播兜底），5 组最小探针定位后改 `eq` 取反，全部用例复跑仍全过且 `max_diff=0`；⑤**Stage 1 gate-1 重试 1 次**（`S1-REF-PATHS`：ASCII `:行号`/`:函数名` 紧贴路径 + `…` 缩写 token——见 queue VP-2026-0020 证据链追加）；⑥**Stage 5 integrate 一次成功**（`integrate_kernel.py` 对生成 `__init__.py` 仍非幂等，单次运行规避——同 VP-2026-0150）。**实测**：L0 10/10、L1 17 项、L2 7/7、Boundary 8/8 全过；worst `max_diff` fp16 = bf16 = **0.0**（max 是选择、无累加，`atol=rtol=0` 判据成立；同族 avg 为 1.221e-04）；TileOPs 集成 correctness 5/5（max abs err 0.00e+00），msprof 有效 bench 3 例——global-1x1 `[8,2048,7,7]→(1,1)` fp16 322.11µs / Ratio 5.38%、spp-6x6 `[2,128,56,56]→(6,6)` fp16 20.42µs / 7.77%、nondiv-7x7 `[2,64,55,57]→(7,7)` bf16 17.98µs / 4.69%（smoke 4.02µs）。Session 墙钟 ≈55min：Stage 3 40.3%（含 NaN 陷阱探针）+ Stage 1 20.9%。适用触发条件：max/归约类算子迁移（NaN 语义追踪 + 单位元 + 无化简边界）；同族追加以对照前作降风险的设计路径；池化族集成（共享 `tests/ops/test_pool.py` → 单算子 report 计兄弟算子用例，见 queue VP-2026-0152）。
 
 ---

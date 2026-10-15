@@ -34,19 +34,19 @@
 | PL-1.1-transpose-chain | 核内融合转置链（二轴交换链，实测 ~5.4µs；仅支持二轴交换、禁 reshape→transpose）——**2026-10-14 重验收窄**：仅「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态成立；池化族大 shape 的 3D 二轴交换被降级为 UB→GM→UB 往返（见 traps-compiler.md TRAP-transpose-ub-gm-roundtrip） | stale |
 | PL-1.2-caxis-accum | C 轴切片累加（i/j serial，实测 1.98–13.2x） | verified |
 | PL-1.3-host-permute | host permute 路线通常净亏（106–147µs） | verified |
-| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14） | verified |
+| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14）；**最小可行 CH**（第六数据点 2026-10-15：一维扫描 `min{CH: units≤cores}` 取代「折半」判据） | verified |
 | PL-1.5-quickref | 乘常数/运行时 let-bound 倒数 / 3D reduce_sum 链 / H-collapse / fp32 求和序匹配 / launch 开销判定 / host 编译期常量折叠 | verified |
 | PL-1.15-broadcast-perf-tax | vsub/vmul 未文档化列广播可编译可算对但 +12~16% 性能税——合法化≠可用，列因子仍走 vbrc 展开 | verified |
 | PL-1.17-subfp32-fp32-transit | sub-fp32 逐元素 fp32 中转模式（bf16 v-prefix 缺失 + fp16 golden 对齐双触发；lerp+ssd 两证） | verified |
 | PL-1.21-vector-persistent-split | 纯 Vector persistent 分核模板（num_kernels=min(num_logical, aicore×2) + T.serial 静态界 + 尾任务守卫；lerp+adaptive-pool 两证） | verified |
-| PL-1.22-maxreduce-nan-tracking | max 池化/归约向量实现形态：C 轴向量轴 + fp32 比较域 + eq 掩码乘性 NaN 追踪（`reduce_min+==0` 才是任一 NaN）+ `-inf` 单位元 + 无代数化简（adaptive_max + 窗口 max 2D/1D 三数据点；守卫外提需 ≥2 空间轴） | verified |
+| PL-1.22-maxreduce-nan-tracking | max 池化/归约向量实现形态：C 轴向量轴 + fp32 比较域 + eq 掩码乘性 NaN 追踪（`reduce_min+==0` 才是任一 NaN）+ `-inf` 单位元 + 无代数化简（adaptive_max + 窗口 max 2D/1D 四数据点；守卫外提需 ≥2 空间轴）；**C4/整平面域**等代价形态 `isnan(reduce_sum(x*x))`（原位平方，32 vs 掩码链 96-128 B/元素，2026-10-15） | verified |
 | PL-1.23-flat-spatial-axis-reduce | 扁平空间轴归约（整平面/全局池化免转置）：UB tile `(CH,H,W)`→`(CH,1,H*W)` + GM 同步声明，归约轴换成宽最内轴——resnet-global 166.26→16.68µs（9.96x，逐位精确） | verified |
 
 ### elementwise.md — 多输入搬运效率
 
 | ID | 一句话 | 状态 |
 |----|--------|------|
-| PL-1.6-copy-floor | copy-floor 标定法 + MTE2 带宽退化曲线 + 混合流量地板 + grid-stride 反直觉 + 标量削减判定式（数字见条目） | verified |
+| PL-1.6-copy-floor | copy-floor 标定法 + MTE2 带宽退化曲线 + 混合流量地板 + grid-stride 反直觉 + 标量削减判定式（数字见条目）；**轮数自变量扫描**（global 类地板由每核串行轮数主导，≈0.7-0.9 µs/轮，2026-10-15） | verified |
 | PL-1.10-loads-first-decoupling | 单 staging 复用链致 MTE2/VEC 零重叠 → per-input staging + 三输入前置装载（收益数字见条目） | verified |
 | PL-1.14-mte3-strided-ws | 跨引擎 ws 中继写侧必须块连续（band 化 MTE3 3× 回退；读侧逐块入 L1 band 列偏移区两全） | verified |
 | PL-1.19-scatter-col-write-amplification | (M,1) 列切片 UB→GM 写 42× 放大 → 扁平 chunk-major 连续写 | verified |
@@ -63,7 +63,7 @@
 | PL-1.9-twophase | 两相位重构达标 + morph 阶梯方法 + causal 域画像与宽块解锁反转（第五轮） | verified |
 | PL-1.11-causal-mask-scalartrap | 第五轮 causal 域 14.2x：vcmp int16 全形态标量化陷阱 + 算术惩罚掩码 + zbuf l1_b 零初始化（NaN 边界）+ UB ×1.10–1.12 开销 | verified |
 | PL-1.12-task-pipeline-depth2 | TASKDONE 屏障冗余审计（全域 −7~−21%）+ Cube 深度 2 任务流水 + f32 S 载体；Vec 侧同构 blocked；r9 bn 钳位域×bm80 UB 守卫（判据/守卫式见条目） | verified |
-| PL-1.13-aiv-dup-subid-split | Mix kernel 双 AIV 默认重复执行 Vector 程序；subid 边界表达式分片（蛇形均衡）实测 −28~−36%（判据：两 AIV 子块指标相同） | verified |
+| PL-1.13-aiv-dup-subid-split | Mix kernel 双 AIV 默认重复执行 Vector 程序；subid 边界表达式分片（蛇形均衡）实测 −28~−36%（判据：两 AIV 子块指标相同）；**2026-10-15 适用域收窄**：纯 Vector kernel `subid` 恒 0，本条仅适用 Mix kernel（否则静默丢一半工作，假收益破绽 = GM 流量精确减半） | verified |
 | PL-1.18-ssd-steady-structure-floor | 稳态画像以最长任务串 workload 为准 + 段数记账更正（指令数互证法）+ 三胜出（几何 1.078×）+ 十方向否决 + 重建复证（+9.7%；明细见条目） | verified |
 | PL-1.16-expert-dualscope-bypass | Developer 阻塞（标量化 / 条件构造崩溃 / persistent+gemm 崩溃）的结构级绕法：Expert 双 Scope + pass_configs 硬边界（attention+ssd 两证） | verified |
 
@@ -140,6 +140,7 @@
 | CONST-copy-floor-dma-granularity | 同形纯拷贝地板随 **DMA 粒度**变化（(2048,4096) fp16 / 910B3：16 KB 15.82µs=1.06TB/s、64 KB 13.61µs=1.23TB/s；64 KB 档需 4× UB，与算法缓冲不可共存） | verified |
 | CONST-aiv-time-decomposition | `Task Duration ≈ max(mte2, vec) + scalar` 分解口径（三处同档拟合）+ ratio 读法（vec/scalar 是 aiv_time 分量非总时长占比）+ 「UB 字节吞吐」误判更正（链式改 fp16 仅 −1.7%） | verified |
 | CONST-msprof-task-floor-910B3 | msprof op Task 固定地板（空 kernel 3.37µs / 固定开销 ≈2.4µs）+ 必需流量地板 4.25µs + 逐元素 pass 单价 0.23–0.3µs + 拟合式 `Task ≈ aiv_time + 2.4–2.6µs` | verified |
+| CONST-reduce-ub-per-element | BishengHIR 归约 lowering 的 UB 单价：按 `ch×H*W` 线性记账、单价由归约链形态决定（原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素）；CH 上限 = 196608/(单价·H*W)；探针须 DCE 免疫 | verified |
 
 ### cases.md — 案例索引与参考实现集
 
@@ -165,7 +166,7 @@
 | CASE-attention-mha-config-unvalidated | 反例：设计默认 config 路径未编译验证即出厂（bench 期 UB 溢出） | verified |
 | CASE-ssd-chunkscan-migration | mamba/SSD 族 MixCV Expert 迁移完整档案（模式切换 + 六轮 2.91× + 首过集成 + 4515de8 重跑 + 二轮 1.078× + 重建会话 repro 骨架重推导 +9.7%） | verified |
 | CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例）——**Stage 4 续档**（`T.transpose` 链在当前工具链失效 → 扁平归约替代 9.91x + 单波 CH 分派；含「msprof roofline Ratio 不与 latency 成反比」口径更正实例） | verified |
-| CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例） | verified |
+| CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例）——**Stage 4 续档**（C4 扁平宽归约 + 原位平方-sum NaN 追踪 + 单波 CH 判据；PL-1.13 在纯 Vector 上不适用；320.83→18.86 µs） | verified |
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
