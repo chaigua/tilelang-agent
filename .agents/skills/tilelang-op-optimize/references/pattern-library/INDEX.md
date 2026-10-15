@@ -5,6 +5,7 @@
 ## 1. 维护规则（由 optimizer 任务内回写 + `tilelang-skill-evolver` 终态蒸馏共同维护）
 
 - 每次调优任务产出的新模式/代价数据/证伪更正，由调优 Agent 在任务结束前追加到对应**主题文件**（含任务溯源与工具链版本戳）；evolver 是第二个授权写入者（覆盖各主题文件的增量条目，五种 delta：add/update/consolidate/negate/deprecate；含其他 Stage 产出的 D/C 类价值点）；两次写入互补防双写（evolver 跳过已回写条目）。
+- **代价类结论须含量纲（2026-10-15 起）**：条目正文中的性能代价陈述须给出**元素级或单价量纲**（如 `ns/元素`、`µs/pass`、`µs/tile`）并绑定 shape/dtype/workload 上下文；「可接受 / 不显著 / 需预期开销」等**无标度措辞**不构成结论（实测教训：`TRAP-vexp2-not-exact-pow2` 原写「`vshl` 每 tile 一次可接受」，被后续任务实测推翻为单条 op 305.5 µs / ≈20 ns/元素、占满整个 kernel；该条目属预注入知识，未量化的判定直接使该任务首轮未做替换评估）。量化形态参考同库 `CONST-msprof-task-floor-910B3`（地板 + pass 单价 + 拟合式）与 TRAP-vexp2 代价边注（`ns/元素` 与 `µs/pass` 对照）。历史条目不强制回改。
 - **条目溯源（D2）**：新增条目须带 `origin_task`（来源任务 id）与工具链版本戳；**下游引用条目时须标注其 origin_task**（optimizer Phase 0 检索注入、designer 步骤 0.5、复盘引用），据此判别可信度与是否需按版本戳重验。
 - **预算与生命周期**（由 evolver 维护，K-2 字节预算）：INDEX ≤12KB（承载全条目路由表，2026-09-10 从 8KB 上调，超限优先压缩"一句话"列而非删条目）；每主题文件 ≤16KB；`repro/` 每文件 ≤8KB/100 行。超限触发 consolidate（合并、压缩措辞；负面条目只可 deprecate 不可删除）；`update` 优先于 `add`（同主题已有条目时禁止新开）；**工具链变更后相关条目自动降级"待重验"**（`kb_stale_check.py` 机械检测）。
 - **条目自包含（ED-A）**：关键数字、适用条件（shape/dtype/dispatch/workload 上下文）、结论必须内嵌条目正文——provenance（origin_task 与过程文件出处）允许失效，条目仍完整可用；**代码证据唯一合法形态是 `repro/` 内自包含脚本**（`repro: repro-missing` 表示待回填）。**经验需要代码时，用最少的代码表达**（ED-B）：优化点条目（kind: pattern）的代码证据 = 慢→快关键代码更改的最小形态（完整对照或 delta 骨架）+ 优化见解摘要（机制归因到 CONST-\*/TRAP-\* 条目）——经验不随过程文件或最终调优 kernel 的存亡而失效（它们不一定合入主干）。

@@ -4750,6 +4750,10 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 源工件（opt_log §9.2 VP-P-2）标为 P（反例/证伪）；按 distillation-rules §3 判定树「含实测数字 / 实证结论（含证伪）→ D」，本条以 D 入队（含 `unexpected` 计数与时延数字，属事实陈述），因无知识域 repro 降级 Tier 1。事实侧的三处 L0 失败与 cases.md `CASE-quant-fp8-quant-migration` Stage 4 续档「否决方向」互为 durable 载体。
 
+> **条目迁移（2026-10-15 apply）**：VP-2026-0238 / 0239 / 0240 经用户批准（Primary 上下文，2026-10-15）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
+
+## Decided（merged / rejected / expired / conflict 归档）
+
 ## VP-2026-0238
 
 - type: R
@@ -4767,11 +4771,11 @@ decided_by: evolver / human / -   # 裁决者
     new 文本: |
       **机械前置判据（先行，零成本）**：产出前先取本平台该口径的**空 kernel Task 地板**与**必需流量地板**（constants.md `CONST-msprof-task-floor-910B3`：910B3 实测 3.37 / 4.25 µs；任务内 `probes/probe_floor.py` 形态可复测），对照用户/设计给出的目标线（含回落线）做一次比较——**目标线 ≤ 空 kernel 地板**时，「口径/结构不可达」结论由这一行比较直接给出（fp8_quant 2026-10-15：回落线 1.82/2.99 µs < 3.37 µs 地板，无论算法如何优化均不可达；主判据线 5.52 µs 中地板 + 流量已占 77%）。同时给出**必要 pass 数 × 实测单价**的上界（单价标定见 bottleneck-patterns.md `BP_ub_traffic_floor` 前置标定小节）：`可达下界 ≈ 地板 + 必要 pass 数 × 单价`，缺口无法由 pass 数压缩填平时按「口径不可达」处置而非继续迭代。该判据与 §1 两条件并列，不替代它们。
     动机: 现行 §1 两条件（设计层归因 + >2x/矛盾）都需先做出「结构性估计」；地板比较只依赖平台常数与目标线，能在估计之前把不可达类目标定性，避免把「平台固定开销 + 编码链发射开销」误读为可优化空间（本任务实测该情形下最终 11.26 µs 距目标 2.04×，且回落线低于地板）。
-- status: pending
+- status: merged
 - confirmations: -/-
 - created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
-- decided_by: -
-- decided_note: -
+- decided_by: human
+- decided_note: 2026-10-15 apply（用户于 Primary 上下文批准）：按 delta 定位锚（§1 条件表后）插入「机械前置判据（先行，零成本）」段，含目标线 vs 空 kernel 地板比较与「必要 pass 数 × 实测单价」上界要求。E-4 预验证 PASS（副本应用 → 锚文本命中；standards_check 对 hash-locked 标准文件按工具规定执行 lock 更新后仅余既有失败；kb_lint 0 failures）。附随机械动作：`.agents/skills/_shared/standards/standards.lock.json` 中 perf-feedback.md 的 SHA256 同步更新（**仅该键**；hardware-cost-model.md 既有漂移刻意未触碰，其既有 SC-HASH-MISMATCH 保持可见）。同批 apply：VP-2026-0239 / VP-2026-0240。
 
 ## VP-2026-0239
 
@@ -4790,11 +4794,11 @@ decided_by: evolver / human / -   # 裁决者
     new 文本: |
       - **代价类结论须含量纲（2026-10-15 起）**：条目正文中的性能代价陈述须给出**元素级或单价量纲**（如 `ns/元素`、`µs/pass`、`µs/tile`）并绑定 shape/dtype/workload 上下文；「可接受 / 不显著 / 需预期开销」等**无标度措辞**不构成结论（实测教训：`TRAP-vexp2-not-exact-pow2` 原写「`vshl` 每 tile 一次可接受」，被后续任务实测推翻为单条 op 305.5 µs / ≈20 ns/元素、占满整个 kernel；该条目属预注入知识，未量化的判定直接使该任务首轮未做替换评估）。量化形态参考同库 `CONST-msprof-task-floor-910B3`（地板 + pass 单价 + 拟合式）与 TRAP-vexp2 代价边注（`ns/元素` 与 `µs/pass` 对照）。历史条目不强制回改。
     动机: 「可接受」类措辞把判定责任推给读者且无标度可核——本次该形态直接导致一条预注入陷阱条目在 21× 量级的瓶颈上给出误导性放行结论；量纲化使后续任务能一眼比较「代价 vs 本算子预算」。
-- status: pending
+- status: merged
 - confirmations: -/-
 - created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
-- decided_by: -
-- decided_note: -
+- decided_by: human
+- decided_note: 2026-10-15 apply（用户于 Primary 上下文批准）：按 delta 定位锚（§1「条目溯源（D2）」条之前）插入「代价类结论须含量纲（2026-10-15 起）」条。E-4 预验证 PASS（锚文本命中；kb_lint 0 failures / 无新增 warnings，INDEX.md 既有字节预算 warning 不变）。同批 apply：VP-2026-0238 / VP-2026-0240。
 
 ## VP-2026-0240
 
@@ -4814,13 +4818,11 @@ decided_by: evolver / human / -   # 裁决者
     new 文本: |
       原条目追加：**① final 采集前的清理时点**：死缓冲 / 无用声明 / 仅初始化无消费者的临时量（`T.vshl` 路径遗留的 `one_i`/`pw` 类）在 `phase=final` 采集**之前**清理完毕——final 记录写入后 `perf_opt/{op}.py` 进入冻结态（gate 4 对每个 tune workload 只认一条 `phase=final`，且 final 行的 `artifact_sha256` 与文件一致性参与对账，改动文件会使已写记录失效）。**② 合法的 post-final 修改通道**：确需在 final 之后再改产物时，由 conductor 以 `precision_fix` / 续跑调度重开 Stage 4，对该文件**重采全部 tune workload 的 `phase=final` 记录**（append 新行，不改写既有行），并在 opt_log 的 Final Summary 注明本次 final 覆盖旧 final 的原因与范围。**③ 无法清理时的披露项**：若清理在测量后才被发现（本次实况），按 `opt_log.md` Final Summary「已知残留（如实披露）」固定小节登记残留物、其对性能的影响判定（本任务 = 对热循环 0 影响，初值循环在 `T.serial` 之外）与后续处置建议。
     动机: append-only 契约与「final 后冻结」在本任务形成闭环缝隙：清理会违反契约、不清理则死缓冲随交付件出厂，两个选项均未成文（实际只能由 conductor 另行调度）。把时点（final 前）与合法通道（重采 final）写清，可使同类情形零成本归位；披露小节则保证「不清理」也有可检索记录。
-- status: pending
+- status: merged
 - confirmations: -/-
 - created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
-- decided_by: -
-- decided_note: -
-
-## Decided（merged / rejected / expired / conflict 归档）
+- decided_by: human
+- decided_note: 2026-10-15 apply（用户于 Primary 上下文批准）：SKILL.md Phase 3 第 1 条追加 ①②③ 三句（final 采集前清理时点 / 合法 post-final 重采通道 / 无法清理时的披露项）。落盘形态 = 定位锚原条目原文 + 追加三句；delta 的「原条目追加：」判为编辑指示，未作为正文落盘（防把元指令写入流程文档），正文内容零删减。E-4 预验证 PASS（锚文本命中；standards_check 无新增 SC-INLINE-DUP / SC-REF-PATH）。同批 apply：VP-2026-0238 / VP-2026-0239。
 
 ## VP-2026-0003
 - type: P

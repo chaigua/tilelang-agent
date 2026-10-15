@@ -15,6 +15,8 @@
 
 条件不满足时**禁止产出** `perf_feedback.md`——参数级性能不足（tiling 可解）留在 Stage 4 迭代内，永不触发本机制。
 
+**机械前置判据（先行，零成本）**：产出前先取本平台该口径的**空 kernel Task 地板**与**必需流量地板**（constants.md `CONST-msprof-task-floor-910B3`：910B3 实测 3.37 / 4.25 µs；任务内 `probes/probe_floor.py` 形态可复测），对照用户/设计给出的目标线（含回落线）做一次比较——**目标线 ≤ 空 kernel 地板**时，「口径/结构不可达」结论由这一行比较直接给出（fp8_quant 2026-10-15：回落线 1.82/2.99 µs < 3.37 µs 地板，无论算法如何优化均不可达；主判据线 5.52 µs 中地板 + 流量已占 77%）。同时给出**必要 pass 数 × 实测单价**的上界（单价标定见 bottleneck-patterns.md `BP_ub_traffic_floor` 前置标定小节）：`可达下界 ≈ 地板 + 必要 pass 数 × 单价`，缺口无法由 pass 数压缩填平时按「口径不可达」处置而非继续迭代。该判据与 §1 两条件并列，不替代它们。
+
 `[DESIGN_LIMIT]` 是**非阻塞**信号：伴随 `TUNING_COMPLETED` 返回（调优闭环照常收束最优版本），**不是** `[DESIGN_ERROR]`（正确性阻塞信号，Stage 3 中断语义）。实验裁决 A/B 的「备选结构性胜出 / 实测推翻判定常数」是该信号的一等来源（[core-split-strategy.md](core-split-strategy.md) §2.4）。
 
 ## 2. `perf_feedback.md` 固定 schema（`perf_opt/perf_feedback.md`）
