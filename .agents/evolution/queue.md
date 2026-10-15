@@ -1092,6 +1092,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - task fp8_quant-_fp8_quant_kernel-20261014T153942Z Stage 3：`_fp8_quant_kernel.py` 步骤 5c（每 tile 一次 `2^(ec+6)`，int32），每次编译均打印该警告（`/tmp/opencode/final_all.log`，session-local，允许失效）；`docs/Tilelang.language/逻辑操作/T.vshl.md`（int32/int16/int64 支持，无向量吞吐说明）
   - 交叉引用：Tier 0 traps-compiler.md TRAP-vexp2-not-exact-pow2 的代价边注；TRAP-expert-v-operands（operand 形态决定标量化）同族
+  - 〔2026-10-15 量化补充证据（**同 op 谱系续调，按 VP-2026-0035 先例不计独立确认，维持 1/2**），task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize；同算子 Stage 3 迁移为 origin_task）〕**本条待合入形态收窄**：`T.vshl` 放进**逐元素链**时的代价已实测为**单点元凶级**——fp8_quant 8k/fp16 基准 `aiv_scalar_ratio`=0.966（scalar 228.5 µs / vec 8.0 µs），单点隔离（`probes/probe_c3.py`，在 8.23 µs 的 `c2` 态上单加一条 `T.vshl(one_i (32,64) int32, ei, pw)`）实测 **305.5 µs / ≈20 ns/元素**（`scalar_ratio` 0.979），占满整个 kernel；替换为向量化 `T.vsub`+`T.vexp2` 后同 kernel **238.5 → 11.3 µs（21×）**、`vec_ratio` 0.034→0.86、「每 tile 一次可接受」的量化前提在逐元素链上被推翻。代价侧量化已 Tier 0 落入 TRAP-vexp2-not-exact-pow2 代价边注（含判据「UB 上出现 `hivm.hir.vshl` 警告且标量占比 >0.5 ⇒ 评估向量化替代」）——**合入时建议改为对该条目的 update（判据形态）而非新开独立条目**，避免与 TRAP-vexp2 代价边注重复；本条重新评估最小 repro 仍为 `repro-missing`（`perf_opt/probes/probe_c3.py` 为任务工作区 provenance，允许失效）
 - repro: repro-missing（需 NPU；最小形态 = 含 `T.vshl` 的 kernel，观察编译警告并以 profile 量标量化区块的发射/时长）
 - toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
@@ -1101,7 +1102,7 @@ decided_by: evolver / human / -   # 裁决者
 - confirmations: 1/2
 - created_by: task fp8_quant-_fp8_quant_kernel-20261014T153942Z 2026-10-14
 - decided_by: -
-- decided_note: D 类无知识域 repro（现象载体为编译警告 + 需 profile 量化）→ 降级 Tier 1。
+- decided_note: D 类无知识域 repro（现象载体为编译警告 + 需 profile 量化）→ 降级 Tier 1。**2026-10-15 补充**：代价已量化（单点 305.5 µs / ≈20 ns/元素，逐元素链上「每 tile 一次可接受」前提被推翻），内容已由 Tier 0 TRAP-vexp2-not-exact-pow2 代价边注承载 ⇒ 合入形态建议为该条目的 update（判据形态）；证据来自同 op 谱系续调任务，不计独立确认，维持 1/2。
 
 ## VP-2026-0227
 
@@ -1111,6 +1112,7 @@ decided_by: evolver / human / -   # 裁决者
   - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §12 修正附录（append-only 证伪更正——§8 的「同一 roofline 下 Ratio ∝ 1/latency」外推 ≈23.2% 被官方单算子 report 实测推翻）+ §12.2 metric 定义链（`total_fops` = `ArithmeticUtilization.csv` 实测累加**非** manifest 理论 flops、`total_bytes` = L2 read miss × cacheline、`AI = total_fops/total_bytes`、`performance = total_fops/duration`、`roofline_peak = min(AI×bw_peak, computility)`、`ratio = performance/roofline_peak`）+ §12.3（10.12x 时延 vs 1.26x Ratio 的分解：fops 16.86M→2.20M ≈7.66x，performance 0.1043→0.1315 TOps/s 仅 1.32x）+ §12.4 可达性（≈4 µs 地板 ⇒ 上限 ≈0.55/4.5326 ≈ **12%**）
   - report（provenance，允许失效）：`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`（report.md / benchmark.md / run.json；status=passed，correctness 46/46，Avg Max Abs Error 0.00e+00，Ratio Range 2.90%–4.04%）
   - 交叉引用：`profile-collection.md` §4.1（纯选择/带宽受限算子 Ratio 判读口径，VP-2026-0175 两证合入——本条补「分子同变」与「目标可达性筛查」两块，互补不重复）；queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数，1/2）；attention.md PL-1.12 指标结构段（Computility 按 48 核计而实机 24；奖励利用率不奖励 padding 缩减）
+  - 〔2026-10-15 边界/正对照证据（**不构成本条自定的第二证候选**——本任务 `total_fops` 恒定、未发生结构改写导致的 op 数变化，故 confirmations 维持 1/2），task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize；不同算子族，quantization）〕同一规则的另一分支被实测：fp8_quant 消除单点标量化（`T.vshl`→`vexp2` + `BLOCK_ELEMS` 2048→4096）后 **`total_fops` 保持 ≈17.83 M 未下移**（由 roofline `performance` 1.468–1.534 TOps/s × duration 反解核对，AI 仍 = 16.9974）⇒ **Ratio 提升 ≈ latency 提升（21.2× vs 21×，1.62%→34.15%；21.1× / 22.0× 同档）**。即本条的「分子同变」机制在**分子恒定**分支下退化为 `Ratio ∝ 1/duration`——判别动作 = 由 `performance × duration` 反解 `total_fops` 并与基线对比（分子动了则 Ratio 与时延解耦，未动则同步）。同任务另有可达性筛查的第二实例：主判据线 ≤5.52 µs 而平台空 kernel 地板 3.37 µs + 必需流量地板 4.25 µs（占预算 77%）⇒ 分母侧结构不可达，与上式同构（`ratio_max = (total_fops/时延地板)/computility`）。溯源：`perf_opt/opt_log.md` §7/§8 机制 A 核对 + `perf_feedback.md`（任务工作区，允许失效）；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3
 - repro: repro-missing（需 msprof + 目标算子环境；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 run.json 的 total_fops / computility / duration 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`（本任务 1.26x vs 10.12x）；③ 目标可行性：`(total_fops/时延地板)/computility < 目标` ⇒ 判结构不可达）
 - toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；report 侧 TileOPs Reporting 0.1.0
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
@@ -1122,7 +1124,7 @@ decided_by: evolver / human / -   # 裁决者
 - confirmations: 1/2
 - created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
 - decided_by: -
-- decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。
+- decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。**2026-10-15 补充**：fp8_quant Stage 4 的机制 A 核对（`total_fops` 恒定 ⇒ Ratio ≈ latency 同步提升）+ 空 kernel 地板可达性筛查记为**边界/正对照证据**（该任务未改变 op 数，按本条自定的第二证候选条件不计独立确认）——待一条「结构改写压低 `total_fops`」的调优任务出现方能达 2/2。
 
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
@@ -4707,6 +4709,116 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task argmin-_argreduce_kernel-20261015T023310Z 2026-10-15
 - decided_by: -
 - decided_note: 蒸馏期机械发现（非任务工件产出）；与 VP-2026-0187 同属「机械门禁死态」族，建议同批审批。
+
+## VP-2026-0236
+
+- type: P
+- title: 「元素吞吐受限」阶段的**达标性前置标定**——先以 3–4 个 ablation 标定本算子族的逐元素 pass 单价（µs/pass）与平台固定地板，再做目标线换算，避免把元素吞吐瓶颈误判为「单点可解」
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize）：`perf_opt/opt_log.md` §9.1 流程问题 ①（「单点元凶」假设 vs 元素吞吐现实——Round 1 修复 `T.vshl` 单点后立刻转为 ~20 个等权 pass 的元素吞吐受限）+ §9.3 BP-pass-unit-calibration 候选 + §3 四次 ablation 单价表（`ab_nolog` −0.52 / `ab_noexp` −0.34 / `ab_noreduce` −1.06 / `ab_nodiv2d` −0.22 µs，≈0.23–0.3 µs/pass）+ `probes/probe_floor.py`（空 kernel 3.37 / readwrite 4.25 µs）
+  - 同任务实测闭环：单价标定后可机械判定「70% ⇒ ≤5.52 µs 不可达」——编码器 ~7 µs ≥14 pass、即便归零 Task 亦 ≥4.25 µs（Ratio ≤90.9%），据此一轮收束而非继续扫 pass 级融合（`r2_fused` 无增益实测）
+  - 数据侧已自包含：pattern-library constants.md `CONST-msprof-task-floor-910B3`（地板 + pass 单价 + 拟合式；本条承载 optimize 流程的**标定时点**）
+  - 交叉引用：bottleneck-patterns.md `BP_ub_traffic_floor`（本条的落点，见 delta）；queue VP-2026-0227（Ratio 可达性筛查，metric 侧对偶）；VP-2026-0233（结构分支正确性门，采数纪律侧）
+- repro: repro-missing（知识域最小 repro 待同族调优任务回填——最小形态 = 在同一 base kernel 上做 3–4 次「删一个大 op」ablation 得单价表 + 空 kernel 地板，断言 `目标预算 ≥ 地板 + 必要 pass 数 × 单价` 的可达性判定与实际收敛行为一致）
+- toolchain_stamp: tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 / Vector 40）/ 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（`BP_ub_traffic_floor` 追加「前置标定」小节，置于「推荐动作」之前）
+    新增小节正文：**前置标定（做目标线换算之前）**——当现象指向「元素吞吐」而非单一热点 op（pass 数多、标量占比已低、增大 tile 已无收益）时，先用 3–4 个 ablation（每轮删一个大 op，如 reduce / 超越 op / 2D 除法 / 归一化）标定本算子族的**逐元素 pass 单价**（fp8_quant 2026-10-15 实测 ≈0.23–0.3 µs/pass）与**平台固定地板**（空 kernel Task 3.37 µs、read+cast+store 4.25 µs，见 constants.md `CONST-msprof-task-floor-910B3`），再做目标预算的可达性判定：`目标预算 ≥ 地板 + 必要 pass 数 × 单价`。判据：预算缺口无法由 pass 数压缩填平时（如编码链 ≥14 pass、融合实测无增益），该阶段的方向性结论是「结构/口径不可达」而非继续找单点。动机：单一热点 op 修复后瓶颈会整段迁移到等权 pass 集合，此时「再找一个元凶」的假设会空耗轮次；前置标定把「是否可达」提前变成可算术命题（本任务若首轮即标定可省 1 轮）。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
+- decided_by: -
+- decided_note: P 类（方法/时机模式）；来自 opt_log §9.3 的 BP proposal（源标为「候选，供 evolver 判定」）。数据侧（地板/单价数值）已 Tier 0 入 constants.md `CONST-msprof-task-floor-910B3`，本条只承载 `BP_ub_traffic_floor` 的**标定时点**方法（update 优先于 add，不新开 BP）；同族第二证候选 = 任何在元素吞吐阶段做过 ablation 单价表的调优任务。
+
+## VP-2026-0237
+
+- type: D
+- title: 反例三形态（证伪）：pass 级融合**无增益** + `T.reduce(reduce_mode="absmax")` 与 `T.vselect` 构造符号位**静默错值**（`unexpected=262320/524288`）——元素吞吐阶段成本由「元素数 × pass 单价」决定，语句数/loop 结构不是降本方向
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize）：`perf_opt/opt_log.md` §4 Round 2 表（`r2_fused` 融合 cast+abs、量化 mul+clamp、byte+store 为一个大 2D loop：**−2.4% 无增益** 且 L0 `unexpected=262320`；`r2a_absmax` 仅换 `reduce_mode="absmax"`：L0 `unexpected=262320`；Round 1 `r1c_select` 用 `T.vselect(cond, cneg, czero, sbv)` 构造符号位：L0 `unexpected=262320`）+ §8 归因 3（pass 级融合实测无增益）
+  - 对照（有增益的形态）：同任务 `r1_vexp2`（单点替换）238.5→11.92 µs、`r1_blk4096`（tile 形态）再 −5.1%；`r1b_recrip`（2D `vdiv`→倒数乘）−0.7% 判无增益
+  - 交叉引用：constants.md `CONST-msprof-task-floor-910B3`（pass 单价口径）；queue VP-2026-0233（结构分支正确性门前置——本条三形态的错值均被 L0 拦住，属正例）；traps-compiler.md `TRAP-vselect-inplace-carried-state`（vselect 另一失效形态）、`TRAP-parallel2d-bm-ge2-scalarize`
+- repro: repro-missing（需 NPU；最小形态 = 逐组 absmax 量化链上分别把 reduce 换成 `reduce_mode="absmax"`、符号位换成 `T.vselect` 形态，断言与参考字节逐字节一致 + 对比语句合并前后的 Task Duration）
+- toolchain_stamp: tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    negate 小条目（置于 TRAP-vexp2-not-exact-pow2 邻域并互链）：**「合并语句省成本」与两个静默坏值形态**——① pass 级融合（把 cast+abs、量化 mul+clamp、byte 写出合并为一个大 2D `T.Parallel` loop）在逐组量化链上**无增益**（−2.4%）；元素吞吐阶段的成本由「元素数 × 逐元素 pass 单价」决定，与语句数/loop 结构无关（fp8_quant 2026-10-15：编码链 ~20 个等权 pass ≈0.23–0.3 µs/pass）；② `T.reduce(..., reduce_mode="absmax")` 与 `T.vselect(cond, a, b, dst)` 构造符号位两形态在本工具链实测**静默错值**（同形错误计数 `unexpected = 262320 / 524288`），两者均在 L0 门被拦截、且无性能收益 ⇒ 属「形态不可用」而非「参数不当」。判据：结构分支在采数对比前先过逐元素精确门（`torch.equal` 级），错值档的「更快」是伪收益。
+- status: pending
+- confirmations: 1/2
+- created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件（opt_log §9.2 VP-P-2）标为 P（反例/证伪）；按 distillation-rules §3 判定树「含实测数字 / 实证结论（含证伪）→ D」，本条以 D 入队（含 `unexpected` 计数与时延数字，属事实陈述），因无知识域 repro 降级 Tier 1。事实侧的三处 L0 失败与 cases.md `CASE-quant-fp8-quant-migration` Stage 4 续档「否决方向」互为 durable 载体。
+
+## VP-2026-0238
+
+- type: R
+- title: `perf-feedback.md` §1 触发判定增机械前置判据——「目标线（含回落线）是否低于平台空 kernel Task 地板」一行判定「口径/结构不可达」，并把「必要 pass 数 × 单价」上界纳入证据要求
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261015T064614Z：`perf_opt/opt_log.md` §9.1 流程问题 ②（本轮最有判别力的证据是空 kernel 地板 3.37 µs 与必需流量地板 4.25 µs——「目标线是否低于空 kernel 地板」是一条极强的机械判据）+ §8（回落线 ≤1.82/2.99 µs **低于**空 kernel 地板 3.37 µs ⇒ 无论算法如何优化都不可达；主判据线 ≤5.52 µs 中地板 + 流量已占 77%）+ §6（`[DESIGN_LIMIT]` 双门槛判定与附录补记路由）
+  - 现行 `_shared/standards/perf-feedback.md` §1 只有「设计层归因 + 结构性加速 >2x / 假设矛盾」两条件与 T-1 参照锚定段，**无**地板比较这一零成本机械判据；§2 schema 的「实测」章节亦未要求给出地板/流量地板数字
+  - 同类第二实例：queue VP-2026-0227（adaptive_avg_pool2d 的 `ratio_max` 可达性上限 ≈12% ⇒ 70% 结构不可达，同属「先算上限再设硬目标」方法）
+- repro: repro-missing（流程规则；复现条件 = 读 `perf-feedback.md` §1，确认是否含「目标线 vs 空 kernel 地板」判据与「pass 单价 × pass 数」上界要求）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3 / 2026-10-15；地板数字依据 constants.md `CONST-msprof-task-floor-910B3`
+- target_doc: .agents/skills/_shared/standards/perf-feedback.md
+- delta: |
+    动作: update（§1 条件表之后插入一段机械前置判据）
+    定位锚: "条件不满足时**禁止产出** `perf_feedback.md`——参数级性能不足（tiling 可解）留在 Stage 4 迭代内，永不触发本机制。"
+    new 文本: |
+      **机械前置判据（先行，零成本）**：产出前先取本平台该口径的**空 kernel Task 地板**与**必需流量地板**（constants.md `CONST-msprof-task-floor-910B3`：910B3 实测 3.37 / 4.25 µs；任务内 `probes/probe_floor.py` 形态可复测），对照用户/设计给出的目标线（含回落线）做一次比较——**目标线 ≤ 空 kernel 地板**时，「口径/结构不可达」结论由这一行比较直接给出（fp8_quant 2026-10-15：回落线 1.82/2.99 µs < 3.37 µs 地板，无论算法如何优化均不可达；主判据线 5.52 µs 中地板 + 流量已占 77%）。同时给出**必要 pass 数 × 实测单价**的上界（单价标定见 bottleneck-patterns.md `BP_ub_traffic_floor` 前置标定小节）：`可达下界 ≈ 地板 + 必要 pass 数 × 单价`，缺口无法由 pass 数压缩填平时按「口径不可达」处置而非继续迭代。该判据与 §1 两条件并列，不替代它们。
+    动机: 现行 §1 两条件（设计层归因 + >2x/矛盾）都需先做出「结构性估计」；地板比较只依赖平台常数与目标线，能在估计之前把不可达类目标定性，避免把「平台固定开销 + 编码链发射开销」误读为可优化空间（本任务实测该情形下最终 11.26 µs 距目标 2.04×，且回落线低于地板）。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0239
+
+- type: R
+- title: pattern-library 维护规则增「代价类结论须量化量纲」——「可接受 / 显著」类代价边注须给出元素级或单价量纲（ns/元素、µs/pass）并绑上下文，否则视为未量化结论
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261015T064614Z：`perf_opt/opt_log.md` §9.1 流程问题 ③——`TRAP-vexp2-not-exact-pow2` 原写「`vshl` 每 tile 一次可接受」，实测被推翻（单条 305.5 µs / ≈20 ns/元素，占满整个 kernel）；该条目属**预注入**知识（本任务 kb_search 命中 TRAP 族），未量化的「可接受」判定直接使 Round 0 未做替换评估
+  - 已落地的量化形态（本任务 optimizer 回写）：`traps-compiler.md` TRAP-vexp2-not-exact-pow2 代价边注含 `ns/元素` 与 `µs/pass` 对照 + 判据；`constants.md` `CONST-msprof-task-floor-910B3` 含 pass 单价 0.23–0.3 µs
+  - 同类先例：INDEX.md §5 已对 `kind: pattern` 的代码证据（ED-B）与分级断言有要求，但**无**对「代价边注」的量纲要求；风险形态 = 「可接受」「显著」「需预期开销」等无标度措辞（本次即被实测推翻）
+- repro: repro-missing（流程规则；复现条件 = 读 pattern-library/INDEX.md §1/§5，确认是否含「代价类结论量纲」要求）
+- toolchain_stamp: 流程规则（无运行时依赖）/ 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/INDEX.md
+- delta: |
+    动作: update（§1 维护规则的「条目溯源（D2）」条目之前插入一条）
+    定位锚: "- **条目溯源（D2）**：新增条目须带 `origin_task`（来源任务 id）与工具链版本戳；"
+    new 文本: |
+      - **代价类结论须含量纲（2026-10-15 起）**：条目正文中的性能代价陈述须给出**元素级或单价量纲**（如 `ns/元素`、`µs/pass`、`µs/tile`）并绑定 shape/dtype/workload 上下文；「可接受 / 不显著 / 需预期开销」等**无标度措辞**不构成结论（实测教训：`TRAP-vexp2-not-exact-pow2` 原写「`vshl` 每 tile 一次可接受」，被后续任务实测推翻为单条 op 305.5 µs / ≈20 ns/元素、占满整个 kernel；该条目属预注入知识，未量化的判定直接使该任务首轮未做替换评估）。量化形态参考同库 `CONST-msprof-task-floor-910B3`（地板 + pass 单价 + 拟合式）与 TRAP-vexp2 代价边注（`ns/元素` 与 `µs/pass` 对照）。历史条目不强制回改。
+    动机: 「可接受」类措辞把判定责任推给读者且无标度可核——本次该形态直接导致一条预注入陷阱条目在 21× 量级的瓶颈上给出误导性放行结论；量纲化使后续任务能一眼比较「代价 vs 本算子预算」。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0240
+
+- type: R
+- title: `tilelang-op-optimize` Phase 3 补「final 采集前清理 + final 记录后冻结」契约——`perf_records.jsonl` append-only × 「每 tune workload 恰一条 `phase=final`」使 final 测量后的产物清理不可行（死缓冲被迫残留出厂）
+- evidence:
+  - task fp8_quant-_fp8_quant_kernel-20261015T064614Z：`perf_opt/opt_log.md` §7「最终产物自检 / 已知残留（如实披露）」——最终 `perf_opt/_fp8_quant_kernel.py` 仍保留 Stage 3 遗留的两个死缓冲 `one_i`（`(block_m,dim)` int32，仅初始化、无消费者）与 `pw`（同形，无消费者），是 `T.vshl` 路径的遗留物；**未在测量后清理的原因** = `perf_records.jsonl` append-only + gate 要求每个 tune workload 恰有一条 `phase=final` 记录，清理会改变文件 SHA256 而无法在不违反契约的前提下重记 final ⇒ 「文件在 final 测量后冻结」；实际处置被推迟到 conductor 后续 `precision_fix` / 续跑调度
+  - 现行 SKILL.md Phase 3 第 1 条（`phase=final` 采集）与第 180 行 `perf_records.jsonl` 契约段均无「final 采集后可否再改文件 / 如何合法重记」的通道
+  - 影响面：所有 optimize 任务——死缓冲随 final 快照出厂（UB 占用不可回收、可读性下降）；本任务实测对热循环 0 性能影响（初值循环在 `T.serial` 之外、只执行一次），属产物卫生与契约缝隙而非缺陷
+- repro: repro-missing（流程规则；复现条件 = 读 SKILL.md Phase 3 第 1 条与 `perf_records.jsonl` 契约段，确认是否含「final 采集前清理项」与「final 后冻结 + 合法重记通道」）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 3 第 1 条追加三句）
+    定位锚: "1. 选各 kernel 已合并 current best 作为 `perf_opt/{op}.py`，对所有 tune workload 在最终文件上重新采集 `phase=final` 记录，并对 smoke 做最终精度回归。"
+    old 文本: （即上述定位锚原文所在条目）
+    new 文本: |
+      原条目追加：**① final 采集前的清理时点**：死缓冲 / 无用声明 / 仅初始化无消费者的临时量（`T.vshl` 路径遗留的 `one_i`/`pw` 类）在 `phase=final` 采集**之前**清理完毕——final 记录写入后 `perf_opt/{op}.py` 进入冻结态（gate 4 对每个 tune workload 只认一条 `phase=final`，且 final 行的 `artifact_sha256` 与文件一致性参与对账，改动文件会使已写记录失效）。**② 合法的 post-final 修改通道**：确需在 final 之后再改产物时，由 conductor 以 `precision_fix` / 续跑调度重开 Stage 4，对该文件**重采全部 tune workload 的 `phase=final` 记录**（append 新行，不改写既有行），并在 opt_log 的 Final Summary 注明本次 final 覆盖旧 final 的原因与范围。**③ 无法清理时的披露项**：若清理在测量后才被发现（本次实况），按 `opt_log.md` Final Summary「已知残留（如实披露）」固定小节登记残留物、其对性能的影响判定（本任务 = 对热循环 0 影响，初值循环在 `T.serial` 之外）与后续处置建议。
+    动机: append-only 契约与「final 后冻结」在本任务形成闭环缝隙：清理会违反契约、不清理则死缓冲随交付件出厂，两个选项均未成文（实际只能由 conductor 另行调度）。把时点（final 前）与合法通道（重采 final）写清，可使同类情形零成本归位；披露小节则保证「不清理」也有可检索记录。
+- status: pending
+- confirmations: -/-
+- created_by: task fp8_quant-_fp8_quant_kernel-20261015T064614Z 2026-10-15
+- decided_by: -
+- decided_note: -
 
 ## Decided（merged / rejected / expired / conflict 归档）
 

@@ -81,7 +81,7 @@
 | TRAP-UB-dynsubview-dominance | task 级 UB 行 + 嵌套循环动态偏移 subview → auto-multi-buffer 非支配 IR（Q≥128） | verified |
 | TRAP-expert-v-operands | Expert v 算子操作数规则（vcmp 拒绝 tir.Cast 等） | verified |
 | TRAP-transpose-epilogue-poison | 活跃源 transpose epilogue 毒化整 kernel（2.6x；绕法 = 增维视图） | verified |
-| TRAP-parallel2d-bm-ge2-scalarize | 2D T.Parallel(bm,N) 融合 ite 在 bm≥2 标量化（与操作数形态无关；链式/per-row 绕法） | verified |
+| TRAP-parallel2d-bm-ge2-scalarize | 2D T.Parallel(bm,N) 融合 ite 在 bm≥2 标量化（与操作数形态无关；链式/per-row 绕法）；**2026-10-15 适用域收窄**：plain 逐元素 2D loop（单向量 op/算术/cast）在 bm≥2 正常向量化，触发项含循环体内 ite 形态 | verified |
 | TRAP-vbrc-same-shape-empty-broadcast | vbrc 同形 src/dst → 空广播维数组 MLIR verify fail | verified |
 | TRAP-vselect-inplace-carried-state | 原位 vselect(cond,A,B,B) 多迭代 T.serial 丢 loop-carried 状态（tile-0 局部值）；绕法 = noalias select + T.copy 回写 | verified |
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
@@ -92,8 +92,8 @@
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露） | verified |
 | TRAP-vcast-same-dtype-rounds | `T.vcast` 同 dtype（f32→f32）退化为 round-to-integer、静默坏值——同 dtype 搬运用 `T.copy`（按 dtype 在 trace 期分派；`vcast` 只用于真 dtype 变化） | verified |
 | TRAP-npuir-reshape-dst-buffer-shadow | npuir 分支 `T.reshape` 被 `npuir_reshape(src,dst)` 覆盖（第二参 = 目标 buffer，非 shape list）；通用形 `T.reshape(A,[m,n])` 语义漂移（含 repro） | verified |
-| TRAP-parallel-f32-uint8-cast-rounding | `T.Parallel` 内直接 `T.cast(f32,"uint8")` 非最近舍入（16/64 偏 `round()`）+ uint8 字节实际落 i8 空间（≥128 饱和 127 = fp8 NaN 载荷）；绕法 = 两步 `vcast rint` 后窄化 + signed 空间（含 repro） | verified |
-| TRAP-vexp2-not-exact-pow2 | `T.vexp2` = `exp(x·ln2)` 非精确 2^k（rel err ~6e-8 使 `n.5` tie 全反向）；精确 `2^k` 走 `T.vshl(1,k)`（k=0..14 逐位精确；`vshl` 被标量化）（含 repro） | verified |
+| TRAP-parallel-f32-uint8-cast-rounding | `T.Parallel` 内直接 `T.cast(f32,"uint8")` 非最近舍入（16/64 偏 `round()`）+ uint8 字节实际落 i8 空间（≥128 饱和 127 = fp8 NaN 载荷）；绕法 = 两步 `vcast rint` 后窄化 + signed 空间；**2026-10-15 补充**：`vcast` int32→int8 形态不可用，字节窄化链载体是 f32（含 repro） | verified |
+| TRAP-vexp2-not-exact-pow2 | `T.vexp2` = `exp(x·ln2)` 非精确 2^k（rel err ~6e-8 使 `n.5` tie 全反向）；精确 `2^k` 走 `T.vshl(1,k)`（k=0..14 逐位精确；**`vshl` 被标量化 —— 实测 (32,64) tile 单独 305.5µs / ≈20ns/元素，须换 `vexp2` 向量化路线**）（含 repro） | verified |
 | TRAP-transpose-ub-gm-roundtrip | UB 内 `T.transpose` 可被降级为 **UB→GM→UB 往返**（5.6→138.2µs；`UB_to_GM_datas` 48KB/block）——代价强依赖 shape/dtype 形态（`(64,56)→(56,64)` f16 仍走 UB 内）；绕法 = 免转置扁平归约（PL-1.23）（含 repro） | verified |
 | TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
 | TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
@@ -138,6 +138,7 @@
 | CONST-npuir-f32-division-not-ieee-rounded | npuir fp32 除法非 IEEE correctly rounded：`T.vdiv` 2-D ~6.1% lane 1 ulp 偏、标量除法式 135/256 值 1–2 ulp 偏、**列形态 (M,1)/(M,1) 逐位精确**（含 repro） | verified |
 | CONST-copy-floor-dma-granularity | 同形纯拷贝地板随 **DMA 粒度**变化（(2048,4096) fp16 / 910B3：16 KB 15.82µs=1.06TB/s、64 KB 13.61µs=1.23TB/s；64 KB 档需 4× UB，与算法缓冲不可共存） | verified |
 | CONST-aiv-time-decomposition | `Task Duration ≈ max(mte2, vec) + scalar` 分解口径（三处同档拟合）+ ratio 读法（vec/scalar 是 aiv_time 分量非总时长占比）+ 「UB 字节吞吐」误判更正（链式改 fp16 仅 −1.7%） | verified |
+| CONST-msprof-task-floor-910B3 | msprof op Task 固定地板（空 kernel 3.37µs / 固定开销 ≈2.4µs）+ 必需流量地板 4.25µs + 逐元素 pass 单价 0.23–0.3µs + 拟合式 `Task ≈ aiv_time + 2.4–2.6µs` | verified |
 
 ### cases.md — 案例索引与参考实现集
 

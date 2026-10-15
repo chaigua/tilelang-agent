@@ -231,6 +231,8 @@ repro: repro/repro_parallel2d_bm2_scalarize.py
 
 `for i,j in T.Parallel(bm,N): cand[i,j]=T.if_then_else(x[i,j]==ext[i,j], T.cast(j,"float32"), BIG)` 在 bm≥2 时 scalar ratio 0.84–0.95（(2,4096) 222µs）；bm=1 同形态向量化正常（tiled (1,5120) 25.9µs）。**操作数变体对照证伪旧归因**：(bm,1) 直接索引 m[i,0]（0.95）、ext_brc 物化 + x_work staging（0.948）——两者同样标量化，触发器是循环形态本身。绕法：bm≥2 用显式向量 op 链（vbrc/vcmp/vselect，r1a 形态 47µs）。**旧绕法「per-row (1,W) 展开循环」已在 2026-10-15 收窄**（argmin Stage 4，tilelang 417dae9 + CANN 9.0.0 + 910B3）：该写法只在「每行**独立**缓冲」时正确——若 per-row 展开写入**共享 (bm,N) 候选缓冲**（`for r in range(bm): for i,j in T.Parallel(1,N): cand[r+i, j] = ...`）则静默错值（(2048,4096) fp16 实测 y0 = −3 vs ref 3211，且时延 12.91–15.25 µs「更快」＝伪收益）；独立 per-row 缓冲形态正确但在本工具链下整体标量化（154.98 µs），无可采纳空间。专条见 **TRAP-scf-for-row-offset-silent-miscompile**。证伪更正留痕：argmax opt_log Iteration 4（session-1 嫌疑 (a)/(b) 均否）；argmin opt_log Iteration 2（per-row 展开形态的正确性证伪 + 证伪更正记录）。
 
+**〔2026-10-15 适用域收窄（第三数据点，origin_task fp8_quant-_fp8_quant_kernel-20261015T064614Z，scenario=optimize Stage 4）〕**上文「触发器是循环形态本身」对**普通逐元素 2D loop 不成立**：`(block_m, dim)`（fp16 例为 `(32,64)`）的 2D `T.Parallel` 循环体内只放单一向量 op / 整型算术 / 纯 cast 时**正常向量化**——在基准态 `c2`（8.23 µs，`vec_ratio` 0.812、`scalar_ratio` 0.155）上单加一条 `loop2d_int`（`qi = ei+6`，2D int32 loop）/ `loop2d_f32` / `loop2d_vadd`（`T.vadd(ei, six_i, qi)`）/ `vcast_i2f`（`T.vcast(ei, f32, rint)`）分别测得 **8.47 / 8.36 / 8.53 / 8.19 µs**（与 base 同档、噪声内，`scalar_ratio` 均 0.15–0.16）。即本条的触发条件含**循环体内 `T.if_then_else` 融合条件选择形态**这一项，`bm≥2` 单独不构成触发（该 kernel 实测 96.6% 标量化的元凶经单点隔离为单条 `T.vshl`——见 TRAP-vexp2-not-exact-pow2 代价边注——与 2D `T.Parallel` 无关；本条标题的「与操作数形态无关」指**操作数**变体，与本次收窄的**循环体形态**维度不冲突）。**负面侧（plain 2D 逐元素 loop 正常向量化）的独立最小 repro：`repro-missing`（待补）**；既有 `repro/repro_parallel2d_bm2_scalarize.py` 覆盖正向侧。溯源（任务工作区，允许失效）：`perf_opt/opt_log.md` §3 单点隔离表 + `perf_opt/probes/probe_c3.py`；另见 cases.md `CASE-quant-fp8-quant-migration` Stage 4 续档；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3。
+
 ---
 id: TRAP-vbrc-same-shape-empty-broadcast
 kind: trap
@@ -434,6 +436,7 @@ repro: repro/TRAP-parallel-f32-uint8-cast-rounding.py
 - **现象 ①（舍入）**：`T.Parallel` 体内对**分数** f32 表达式直接 `T.cast(x, "uint8")`（lowering 为 `hivm.hir.vcast` f32→i8）**不是最近舍入**：64 点探针中 16 个值偏离 `round()`，既非 trunc 也非 round-to-nearest-even。**先整数化再窄化**才是可靠形态：`T.vcast(src_f32, tmp_i32, round_mode="rint")` → `T.vcast(tmp_i32, tmp_f32, round_mode="rint")` → `T.cast(tmp_f32, "uint8")`（0/64 与 `round()` 一致）。
 - **现象 ②（符号空间）**：codegen 把 `uint8` 降到 **i8**（`memref<...xi8>`）；f32→uint8 直接 cast 对 ≥128 的值**饱和到 127**（= e4m3 NaN 载荷），表现为输出大片 NaN。正确写法是让字节出在 **signed i8 空间**（`bits - 128·[q<0]`，clamp 到 `[-128,127]`）。
 - **与前端 warning 的关系**：`src/transform/npu_loop_vectorize.cc:801` 的 warning「Parallel cast lowering uses fixed round mode 'rint'」在 f32→i8/ui8 **窄化**路径上**与实际行为不符**（该 warning 的截断/取整语义登记见 queue VP-2026-0205；本条以 repro 给出「窄化路径非 rint」的反例）。文档面：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` 规格表无 `f32|ui8` 行（仅 `f16|ui8`）。
+- **现象 ③（窄化源类型，2026-10-15 补充，origin_task fp8_quant-_fp8_quant_kernel-20261015T064614Z optimize Stage 4）**：`T.vcast` 的 **int32→int8** 形态在本工具链下不可用——探针里 `int32 buffer → u8` 的 store 路径两次触发 `vcast int32_t_to_int8_t_rintmode` 报错（探针侧缺陷，非 kernel 缺陷）。据此，写 uint8 字节载体的可靠窄化链存在于 **f32 载体**：`f32 --vcast(rint)--> i32 --vcast(rint)--> f32 --T.cast--> u8`（与现象 ① 的「先整数化再窄化」同一条链）；整型（i32）中间量直接窄化到 i8/u8 字节空间在本工具链无可采纳形态，字节落盘的载体是 f32。溯源（任务工作区，允许失效）：`perf_opt/` 探针侧两次触发记录；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3。**该形态的独立最小 repro：`repro-missing`（待补）。**
 - **证明**：`python repro/TRAP-parallel-f32-uint8-cast-rounding.py`（exit 0；断言直接 cast 与 `round()` 分歧、两步 rint 逐值一致）。
 - 族内位置：与 TRAP-vcast-same-dtype-rounds（同 dtype 退化 rint）、TRAP-vcast-shape-and-gm-source（vcast 形状/源约束）同属 npuir cast/舍入族；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0020`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-parallel-f32-uint8-cast-rounding.py}`。
 
@@ -445,8 +448,8 @@ apis: [T.vexp2, T.vshl, T.vcast]
 dtype: [float32, int32]
 device: 910B3
 status: verified
-origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
-toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）；代价边注量化 fp8_quant-_fp8_quant_kernel optimize Stage 4（2026-10-15）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14；代价边注量化 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro/TRAP-vexp2-not-exact-pow2.py
 ---
 
@@ -455,7 +458,7 @@ repro: repro/TRAP-vexp2-not-exact-pow2.py
 - **现象**：tile 级 `T.vexp2` 实现为 `exp(x·ln2)`，对整数指数返回非精确值（`2^-4 → 0.0624999962747097`，相对误差 ~6e-8，15 个整数指数中 1 个与 `2.0**k` 不等）。用它当 mantissa 缩放因子时，**所有精确 `n.5` tie 被推过错误一侧**（实测 fp16 4/16384、bf16 18/16384 字节错，全部为 `n.5`）。
 - **绕法**：精确 `2^k` 走 **`T.vshl(1_int32, k)` → `T.vcast(..., "rint")`**（k = ec+6，实测 k=0..14 逐位精确）再以精确幂除得 `|q|·2^(3-ec)`；编码骨架的字段连续性（`rint` 达 16 时经 `(ec+7)·8+mantissa` 进位）使 ±1 指数误差自校正——但**scale 因子本身必须精确**。
 - **证明**：`python repro/TRAP-vexp2-not-exact-pow2.py`（exit 0；断言 ①`vexp2` 路线与精确幂在每探针指数上不等、②`vshl` 路线对 k=0..14 逐位复现 `2.0**k`）。
-- **代价边注**：`T.vshl` 在 UB 上被标量化（编译警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`）——每 tile 一次可接受，放进逐元素热点则发射开销显著（见 queue VP-2026-0214）。
+- **代价边注（2026-10-15 Stage 4 实测量化，origin_task: fp8_quant-_fp8_quant_kernel optimize）**：`T.vshl` 在 UB 上被标量化（编译警告 `Op 'hivm.hir.vshl' will execute by scalar instruction with low effiency`）——**旧结论「每 tile 一次可接受」已被实测推翻**：把 `2^(ec+6)` 的精确整数幂构造（`T.vshl(one_i (32,64) int32, qi, pw)`）放进编码链后，**单单这一条 op 就占满整个 kernel**——fp8_quant 8k/fp16 实测 `Task Duration` 305.5 µs（`aiv_scalar_ratio` 0.979，`aiv_vec_time` 仅 5.3 µs），即 `(32,64)` int32 tile 的 vshl ≈ **20 ns/元素**（对比同一 tile 的普通逐元素 pass ≈ 0.23–0.3 µs / pass）。替换为**向量化的 `T.vsub` + `T.vexp2`**（`2^(3-ec) = exp2(3-ec)`，lowering 为 `VMul`+`VExp`）后整个 kernel 降到 11.3 µs（`aiv_vec_ratio` ~0.86，转为向量受限）——**同一算子 20× 提速的结构性单点**。判据：UB 上出现 `hivm.hir.vshl` 编译警告且 kernel 标量占比 >0.5 ⇒ 立即评估替换为向量化幂/移位替代（`vexp2` 或整数乘 2^k + `vbitcast`），不得按「每 tile 一次」放过。**代价**：`vexp2` 非精确（见上），用于 mantissa 缩放会翻转精确 `n.5` tie 的舍入方向（fp8_quant 中仍落在 `tie_1lsb` 接受类，`unexpected=0`）。repro：`repro/TRAP-vexp2-not-exact-pow2.py`（vshl 精确 vs vexp2 近似的确定性断言；代价侧由本任务 `perf_opt/probes/probe_c3.py` 的 vshl 单点隔离测得，provenance 为任务工作区、允许失效）。
 - 族内位置：与 TRAP-vrsqrt-plain-precision（近似超越指令精度）同属「近似超越/幂运算陷阱」族；与 CONST-npuir-f32-division-not-ieee-rounded 同属软件编码的精确性链路。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vexp2-not-exact-pow2.py}`。
 
 ---

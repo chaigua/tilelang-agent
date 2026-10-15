@@ -518,8 +518,8 @@ mode: [developer]
 dtype: [fp8_e4m3, float32, float16, bfloat16]
 device: 910B3
 status: verified
-origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（函数级；op 级 fp8_quant-fp8_quant-20261014T152721Z）
-toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（函数级；op 级 fp8_quant-fp8_quant-20261014T152721Z）；Stage 4 续档 fp8_quant-_fp8_quant_kernel-optimize（2026-10-15）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ torch 2.9.0 / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；Stage 4 续档 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: none
 ---
 
@@ -539,3 +539,14 @@ quantization 族**首个** TileOPs 迁移算子 / **首个字节载体（fp8）�
 **实测**（Session 墙钟 8054.4s ≈ 134.2 min，含 ~21.4 min 用户等待；op 级 elapsed 6674s / dispatches 2；函数级 elapsed 5571s——S1 attempts 3〔1492+603+73s，1 fail runtime = S1-PLACEHOLDER 机械误报〕、S2 attempts 2〔272s fail design_revision + 521s complete〕、S3 attempts 1〔2602s，首轮 `[PRECISION_PASS]` 19/19〕）：Stage 3 内嵌分层门禁全过（L0/L1/L2/Boundary 19/19），fp8 字节级判据「契约域内不一致 ⊆ {精确 `-0.0`}」。TileOPs 单算子 report `status=passed`：**正确性 8/8**（含 fp32/fp16/bf16）、benchmark **3/3** msprof 有效（`invalid_profile_count=0`）——kv-index-8k-d64-fp16 **238.42µs**（roofline 1.619%）/ bf16 238.62 / 4k-d128-fp32 238.44（1.569%）；**带宽均 1.75 TB/s**（≈ fabric 聚合上限，算子带宽受限）。设计期 `verify_equiv.py` 5/5 `EQUIV_PASS`（E4：契约域 397568 样本不一致 7 个全为精确 `-0.0`、非预期不一致 0、NaN 16 lane 属契约域外）。
 
 **适用触发条件**：低比特/字节载体（fp8、int8、自定义编码）算子迁移或设计——对外 dtype 契约保持的「软件编码 + 载体 + `.view`」绕过模式；软件编码的舍入/符号/幂精确性三陷阱核对；「与参考逐字节一致」类断言的角点集全定义域覆盖 + 旧式回归守卫；设计期组合体编译探针（勿以逐 op COMPILE_OK 代替）；TileOPs 显式输出 kernel 的 wrapper 胶水适配。
+
+**Stage 4 续档（2026-10-15，task fp8_quant-_fp8_quant_kernel optimize；工具链 tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3，AIV=40；`perf_opt/opt_log.md` / `perf_records.jsonl` / `perf_feedback.md`）**：Stage 3 交付的 238.5 µs 是**纯标量化伪影**，与 shape/带宽无关（fp16/bf16/fp32 三 workload 恒 238.4–238.6 µs，而 fp32 流量多 64%）。
+
+- **根因（减法探针定位）**：baseline `aiv_scalar_ratio = 0.966`（scalar 228.5 µs / vec 8.0 µs）。逐段 bisect（`probes/probe_bisect.py`）把跳变锁在 `c2→c3`（8.2 → 305.5 µs）；再单点隔离（`probes/probe_c3.py`）证明**元凶是单条 `T.vshl`**——`T.vshl(one_i (32,64) int32, qi, pw)` 被标量化，单独即 305 µs（≈20 ns/元素）。同时证伪了「2D `T.Parallel(block_m, dim)` 整体标量化」的假设：plain f32 2D 元素级 loop 正常向量化（`loop2d_f32` = 8.36 µs，与 base 同档），`T.vshl` 才是唯一瓶颈。
+- **修复**：精确幂构造 `(2^9)/2^(ec+6)`（`vshl`）→ **向量化 `T.vsub(c3, ec_f, pwf)` + `T.vexp2(pwf, lv, tmp)` + `T.vmul(av, lv, num)`**（`2^(3-ec) = exp2(3-ec)`）。代价 = `vexp2` 非精确 → 精确 `n.5` tie 翻转，但落在 `_classify_mismatches` 的 `tie_1lsb` 接受类（`unexpected = 0`、cos ≈ 1.000，`--level all` 全过）。
+- **第二收益**：`BLOCK_ELEMS` 2048 → **4096**（`block_m` 32→64，serial task 数减半、MTE2 跨度 2.16→1.44 µs），另 −5~6%。
+- **实测**：238.485 / 238.505 / 238.265 → **11.26 / 11.30 / 10.84 µs（21.2× / 21.1× / 22.0×）**；Ratio 1.62/1.62/1.57% → **34.15/34.03/34.34%**（`total_fops` 实测保持 ≈17.83 M，**机制 B 未发生**——分子未随 op 削减而下移）。`aiv_vec_ratio` 0.034 → 0.86（转向量受限），`scalar_ratio` 0.966 → 0.10。
+- **否决方向（均有实测）**：numpy-free 融合（把 cast+abs、量化 mul+clamp、byte+store 合并成大 2D loop）**无增益**（−2.4%，且 `reduce_mode="absmax"` 形态实测静默错值 `unexpected=262320`）；reciprocal-mul 替代 2D `vdiv` −0.7%；`T.vselect` 构造符号位**静默错值**（`unexpected=262320`）；`BLOCK_ELEMS=8192` 编译失败（UB）。成本为**元素吞吐受限**：4 次 ablation 给出 pass 单价 ~0.23–0.3 µs（`reduce` 1.06 / `vlog2` 0.52 / `vexp2` 0.34 / 2D `vdiv` 0.22 µs）。
+- **口径不可达（`[DESIGN_LIMIT]`，见 `perf_opt/perf_feedback.md`）**：平台空 kernel `Task Duration` 地板 **3.37 µs**（固定开销 ≈2.4 µs）+ 必需 GM 流量后 **4.25 µs**（占 5.5 µs 目标预算 77%）；软件 e4m3 编码器 ~7 µs（≥14 pass）→ 70% Ratio（≤5.52 µs）需编码器 ≤1.27 µs，DQ 结构性不可达；§12.5 回落线（≤1.82/2.99 µs）甚至低于空 kernel 地板。结构性出路 = 补齐 CG-2026-0018 后回退硬件 fp8 窄化（预期 Task ≈4.8 µs / Ratio ≈80%）。
+- **durable 载体**：`T.vshl` 标量化代价并入 traps-compiler.md `TRAP-vexp2-not-exact-pow2` 代价边注（+ repro `TRAP-vexp2-not-exact-pow2.py`；标量化代价侧的 provenance 为任务工作区 `perf_opt/probes/probe_c3.py`，允许失效——原文引用的 `TRAP-vshl-ub-scalarize-cost.py` 未落盘，2026-10-15 终态蒸馏 D2 机械核验纠正）；msprof op Task 固定地板/pass 单价新条 constants.md `CONST-msprof-task-floor-910B3`（+ repro）。
+

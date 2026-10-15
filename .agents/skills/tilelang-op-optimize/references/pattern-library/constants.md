@@ -296,3 +296,27 @@ repro: repro/CONST-aiv-time-decomposition.py
 - **证明**：`python repro/CONST-aiv-time-decomposition.py`（逐 op 类标定脚本 + 头部断言说明；msprof 重测按头部命令人工执行）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Baseline-现象结论, logs/round1/q_*.log}`。
 
 > 〔新增 2026-10-15 蒸馏，origin_task: argmin-_argreduce_kernel-20261015T023310Z（Stage 4 / scenario=optimize）；两条均为 D 类 Tier 0 合入，repro 为 ED-C 机械转正（信息域自包含脚本，代码零改动、仅头部登记）。〕
+
+---
+id: CONST-msprof-task-floor-910B3
+kind: constant
+family: [general, elementwise, reduction, quantization]
+apis: [msprof, T.Kernel]
+dtype: []
+device: 910B3
+status: verified
+origin_task: fp8_quant-_fp8_quant_kernel optimize Stage 4（2026-10-15）
+toolchain: tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40）
+source: fp8_quant Stage 4 floor probes（perf_opt/profiles/probe/）+ perf_records.jsonl
+repro: repro/CONST-msprof-task-floor-910B3.py
+---
+
+### msprof op `Task Duration` 固定地板 + 逐元素 pass 单价（910B3 / AIV=40 / 8k×64 fp16 形）
+
+- **空 kernel 地板**（只写 `(block_m,)` scale 向量、不读 X、无 2D 计算）：**Task Duration = 3.37 µs**（`aiv_time` 1.01 µs）⇒ **平台固定发射/调度开销 ≈ 2.4 µs**（与 adaptive_avg_pool2d Stage 4 的 `~3.6 µs` 固定地板先例同量级、互为独立数据点）。
+- **必需流量地板**（读 4KB/tile fp16 + cast + u8 store，无编码器）：**Task = 4.25 µs**（`aiv_time` 1.85，`aiv_vec_time` 0.88）。
+- **逐元素 pass 单价**：`(block_m, dim)` = (32/64, 64) UB tile 上单个 tile 级或 2D-loop 逐元素 op ≈ **0.23–0.3 µs/pass /核**（本任务 4 次 ablation 差值：`vlog2`(VLog+VMul) −0.52 µs、`vexp2`(VMul+VExp) −0.34 µs、`T.reduce` dim=64 max −1.06 µs、2D `vdiv` −0.22 µs；~20 pass 的软件 e4m3 编码链合计 ≈ 7 µs）。
+- **拟合式（两档同形）**：`Task Duration ≈ aiv_time + 2.4…2.6 µs`（baseline 236.5→238.5；final 9.3→11.3）。可达性下界 ≈ `2.4 + max(流量地板, pass数×单价)`。
+- **判据**：给定时延目标 T 时，先扣固定地板与流量地板再谈「编码/计算 pass 预算」——本算子 70%-Ratio 目标（≤5.52 µs）留给编码器的预算仅 1.27 µs（≤4 pass），低于软件 e4m3 编码的 ~14 pass 下限 ⇒ 结构性不可达（见 `perf_opt/perf_feedback.md`）。
+- **例外**：`T.vshl` 不适用 0.3 µs/pass 单价——UB tile 上被标量化，实测 ≈ 20 ns/元素（见 traps-compiler.md TRAP-vexp2-not-exact-pow2 代价边注）。
+- **证明**：`python repro/CONST-msprof-task-floor-910B3.py --mode {empty,rw}`（构建 + 跑通；时延由头部 msprof 命令读取）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/perf_opt/probes/probe_floor.py`。
