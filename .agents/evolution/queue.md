@@ -1114,6 +1114,7 @@ decided_by: evolver / human / -   # 裁决者
   - report（provenance，允许失效）：`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`（report.md / benchmark.md / run.json；status=passed，correctness 46/46，Avg Max Abs Error 0.00e+00，Ratio Range 2.90%–4.04%）
   - 交叉引用：`profile-collection.md` §4.1（纯选择/带宽受限算子 Ratio 判读口径，VP-2026-0175 两证合入——本条补「分子同变」与「目标可达性筛查」两块，互补不重复）；queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数，1/2）；attention.md PL-1.12 指标结构段（Computility 按 48 核计而实机 24；奖励利用率不奖励 padding 缩减）
   - 〔2026-10-15 边界/正对照证据（**不构成本条自定的第二证候选**——本任务 `total_fops` 恒定、未发生结构改写导致的 op 数变化，故 confirmations 维持 1/2），task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize；不同算子族，quantization）〕同一规则的另一分支被实测：fp8_quant 消除单点标量化（`T.vshl`→`vexp2` + `BLOCK_ELEMS` 2048→4096）后 **`total_fops` 保持 ≈17.83 M 未下移**（由 roofline `performance` 1.468–1.534 TOps/s × duration 反解核对，AI 仍 = 16.9974）⇒ **Ratio 提升 ≈ latency 提升（21.2× vs 21×，1.62%→34.15%；21.1× / 22.0× 同档）**。即本条的「分子同变」机制在**分子恒定**分支下退化为 `Ratio ∝ 1/duration`——判别动作 = 由 `performance × duration` 反解 `total_fops` 并与基线对比（分子动了则 Ratio 与时延解耦，未动则同步）。同任务另有可达性筛查的第二实例：主判据线 ≤5.52 µs 而平台空 kernel 地板 3.37 µs + 必需流量地板 4.25 µs（占预算 77%）⇒ 分母侧结构不可达，与上式同构（`ratio_max = (total_fops/时延地板)/computility`）。溯源：`perf_opt/opt_log.md` §7/§8 机制 A 核对 + `perf_feedback.md`（任务工作区，允许失效）；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3
+  - 〔2026-10-15 round-3 续调证据（**同 op 谱系续调，不计独立确认，维持 1/2**），task `adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z`〕**分母塌缩机制**——同一 resnet-global workload 删掉 fp32 全平面 `vcast`（改 fp16 同型精简链）后 Ratio 2.81% → **45.40%**（16.2x），但时延仅 −2.9%（ab 合并中位 −3.79%）：`computility` 分母由**实测向量 op 的 dtype 混合比**加权（`(64·fp32_prop + 32·misc_prop)·freq·40`），删 fp32 op 使其占比塌缩 ⇒ `computility` **4.53 → 0.28 TOps/s**，而分子 `perf` 几乎不变（0.1271 → 0.1271 TOps/s）⇒ **Ratio 上升几乎全部来自分母口径收缩，非硬件利用率改善**——本条的「Ratio 非硬件利用率」结论在**分母随 op 混合比变动**分支下进一步强化。**同任务另一实证：Ratio 硬目标与 latency 目标直接冲突**——同一 fp16 精简链把 `CH_GLOBAL` 设为 120（4 轮）Ratio 达 **68.97%**（逼近 70%），但时延 17.27 µs 相对 round-2 收束 **+2.9% 回退**，按「时延为唯一主指标」未采纳（单常量改动即可切换，`profiles/probe/round3/r3gf_f16same_ch120`）。溯源：`perf_opt/opt_log.md` §13.12（双口径分列）+ `perf_opt/ratio.py`（compute-roofline 复算，与官方 report 复算 2.805% vs 2.902% / AI 5.4772 校验一致）；toolchain tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 - repro: repro-missing（需 msprof + 目标算子环境；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 run.json 的 total_fops / computility / duration 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`（本任务 1.26x vs 10.12x）；③ 目标可行性：`(total_fops/时延地板)/computility < 目标` ⇒ 判结构不可达）
 - toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；report 侧 TileOPs Reporting 0.1.0
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
@@ -1126,6 +1127,87 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
 - decided_by: -
 - decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。**2026-10-15 补充**：fp8_quant Stage 4 的机制 A 核对（`total_fops` 恒定 ⇒ Ratio ≈ latency 同步提升）+ 空 kernel 地板可达性筛查记为**边界/正对照证据**（该任务未改变 op 数，按本条自定的第二证候选条件不计独立确认）——待一条「结构改写压低 `total_fops`」的调优任务出现方能达 2/2。
+
+## VP-2026-0246
+
+- type: D
+- title: 归约 UB 单价补充数据点（910B3/CANN 9.0.0/tilelang 31738b0）：fp16 同型精简链 `reduce_sum(f16→f16)+单次 vcast` ≈ **48 B/平面元素**；**常驻 staging buffer 亦按同一归约单价计费** ⇒ slab（一次大 DMA + 核内分段归约）不可实现（单次归约输入 ≤ ≈125 平面 / 6144 fp16 元素）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.4 P8（单价 48 B/元素；plane=49 允许 CH=64、拒绝 CH=128）+ §13.5 G16（slab 编译期 sweep：`ub overflow, requires 1608192 bits while 1572864 bits available` = 201 024 B ≈ 128×49×32；`f16same P256 SUB64` = 402 048 B；`f32 P128 SUB32` = 251 136 B）+ §13.13（结构族覆盖度：slab 被 UB 记账 blocked）
+  - 探针（溯源，允许失效）：`perf_opt/probe_r3_gf.py`（ch32/64/96/120 分档）、`perf_opt/probe_r3_slab.py`（slab sweep）
+  - 数据侧目标：`pattern-library/constants.md` `CONST-reduce-ub-per-element`（单价表）；缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0026`（本轮 occurrences 1→2 → recurring）
+- repro: repro-missing（沿用 `repro/TRAP-reduce-ub-per-element.py` 家族方法学〔compile-time sweep 反解 N bits〕，但 f16 同型链与常驻 staging buffer 两形态尚未补入该 repro 骨架——待同族任务回填）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    update `CONST-reduce-ub-per-element`（单价表追加一行 + 常驻 buffer 计费注）：
+    ① 单价表新增行「`reduce_sum(f16→f16) + 单次 vcast`（fp16 同型精简链）| **≈ 48** | **≈ 64**」——位于「原位平方 + reduce_sum ≈32」与「非原位平方 ≈64」之间（198 KB 预算 / H*W=49 时 CH 上限 ≈64）；
+    ② 新增判据注：「**常驻 staging buffer 亦按同一归约单价计费**——`big(P,1,HW)` 常驻 + 核内子块归约（slab）在编译期即 `ub overflow`（`f16same P128 SUB32` → 201 024 B > 196 608 B；`P256 SUB64` → 402 048 B；`f32 P128 SUB32` → 251 136 B）⇒ 单次归约输入 ≤ ≈125 平面（6144 fp16 元素），DMA 粒度与归约粒度不可解耦」（机制：归约 lowering 对常驻 buffer 复用同一 per-element 记账，见条目「机制」段）。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 价值点 VP-G（源工件自标 repro-missing）。按 ED-A：缺知识域 repro（f16 同型链与常驻 buffer 形态未入既有 repro 骨架）⇒ 降级 Tier 1 入队标 `repro-missing`，不阻塞结论记录。target 为 pattern-library 主题文件（Tier 0 写域），repro 回填后即可直接合入；本条为**同族已有条目的 update**（`CONST-reduce-ub-per-element` 已 verified）。第二证候选 = 任一整平面归约任务中实测 f16 同型链单价或 slab 编译边界（不同任务）。
+
+## VP-2026-0247
+
+- type: D
+- title: 空转固定开销地板随 Block Dim 增长（910B3/CANN 9.0.0）：2 block = 3.63 µs / 24 block = 3.64 µs / 40 block = 4.81 µs——40-block 向量 kernel 的固定开销占优化后总时延 ~30%（tiling 不可突破）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.2 Step 0 地板标定（`F_empty(40)` = 4.81 / 5.31 / 4.80 µs 两次独立复测；`F_empty(24)` = 3.64；`F_empty(28)` = 3.35；smoke 2-block = 3.63）+ §13.15 BP_003；探针 `perf_opt/probe_floor.py --kind empty`
+  - 同族对照：`CONST-msprof-task-floor-910B3` 已记 fp8_quant 空 kernel 3.37 µs（8k×64 形）并注「与 adaptive_avg_pool2d Stage 4 的 ~3.6 µs 固定地板先例同量级、互为独立数据点」——本条补「随 Block Dim 增长」这一自变量
+- repro: repro-missing（知识域最小 repro 待同族任务回填——最小形态 = 同一空转 kernel 扫 Block Dim ∈ {2,24,40}，读 msprof Task Duration，断言随块数单调不降且 ≈3.6→4.8 µs 量级；既有 `repro/CONST-msprof-task-floor-910B3.py` 的 `--mode empty` 固定 40 block，未覆盖 Block Dim 自变量）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    update `CONST-msprof-task-floor-910B3`（追加「固定开销随 Block Dim」行 + 判据注）：**空转固定开销地板随 Block Dim 增长**——同平台 910B3 向量 kernel：2 block = **3.63 µs** / 24 block = **3.64 µs** / 40 block = **4.81 µs**（40-block 档两次独立复测 4.81/5.31/4.80）；即小核数（≤24）档固定开销 ≈3.6 µs、40 核档升至 ≈4.8 µs（+1.2 µs）。判据：给定时延目标 T 时，先扣**按目标 Block Dim 标定的**固定地板（而非固定用 3.37/3.6 µs 单点值）再谈可优化空间——resnet-global round-3 优化后 16.29 µs 中固定开销 4.81 µs 占 **~30%**，任何 tiling 优化都无法突破。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 价值点源自 §13.2/§13.15 BP_003 的**数据侧**（流程侧另立 VP-2026-0250，按 merge-policy §1「同时含数据与流程 → 拆两条」）。D 类缺知识域 repro（既有 repro 未覆盖 Block Dim 自变量）⇒ 降级 Tier 1 标 `repro-missing`。target 为已有常数条目（update 形态）。
+
+## VP-2026-0248
+
+- type: P
+- title: fp16 精简归约链（慢→快关键更改）：全局池化整平面归约把 `vcast→f32 平面→reduce_sum(f32)` 换成 `reduce_sum(f16→f16) + 单次 vcast`——UB 单价 64→48 B/元素、向量 UB 流量减半，resnet-global `aiv_vec_time` 3.88→2.12 µs / Task ab −3.79%；代价 = f16 累加精度（max_diff 1.2e-4→4.9e-4，仍在 1e-3 容差内）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.6（G11 branch `round3_f16sum`）、§13.7（ab 交错协议 resnet r2-merged 16.610 vs r3_f16sum 15.980 µs，pair_diffs −0.68/−0.63/−0.34，3/3 同向 = B_better）、§13.11（`aiv_vec_time` 3.88→2.12、`mte3` 1.36→1.00 µs）、§13.14-2（精度边际：L0/L1 ≤4.883e-04、L2 9.766e-04，`atol=rtol=1e-3` 余量 ~2.4%）
+  - 探针（溯源，允许失效）：`perf_opt/probe_r3_gf.py`（f16same ch64 vec 3.88→2.12）
+  - 机制归因：constants.md `CONST-reduce-ub-per-element`（fp16 同型链 48 vs 经 fp32 平面 64 B/平面元素 ⇒ 解锁 CH=64）；**bf16 不适用**——`T.reduce_sum` 无 bf16 累加形态（见 `.agents/evolution/capability-gaps.md#CG-2026-0029`）
+- repro: repro-missing（最小形态 = 同一整平面归约 kernel 的 fp16 路径上，A/B「vcast→f32 平面→reduce_sum(f32)」vs「reduce_sum(f16→f16)+vcast」，断言 ① 向量 UB 流量 / `aiv_vec_time` 显著下降；② `max_diff` 仍在容差内。效应载体 = `repro/PL-1.23-flat-spatial-axis-reduce.py` 的 dtype 变体，待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    update `PL-1.23-flat-spatial-axis-reduce`（追加「dtype 变体：fp16 同型精简归约链」段，含慢→快最小代码对照 + 见解摘要）：
+    **慢**：`flat(f16) → vcast(flat, flat32, rint) → reduce_sum(flat32, gacc, dim=2)`；**快**：`reduce_sum(flat, g16, dim=2) → vcast(g16, gout, rint)`（删除 f32 全平面中转）。
+    机制归因：BishengHIR 归约 UB 单价按**归约链全平面中间量**计费（`CONST-reduce-ub-per-element`：f16 同型链 ≈48 vs 经 f32 平面 ≈64 B/平面元素），且向量侧 UB 流量减半（每元素 f16 读 1× 写 1× 替代 f32 平面写）——`aiv_vec_time` 3.88→2.12 µs、Task ab −3.79%（resnet-global，[8,2048,7,7]→(1,1) fp16）。
+    代价与边界：f16 累加精度 max_diff 1.2e-4→4.9e-4（L0/L1 阻塞级 ≤4.883e-04，仍在 `atol=rtol=1e-3` 内，余量 ~2.4%）；**bf16 不适用**（`T.reduce_sum` 无 bf16 累加形态，须保留 fp32 中转，见 CG-2026-0029）；回退路径 = 恢复 `vcast→f32 平面→reduce_sum` 并 `CH_GLOBAL` 降回 32（代价 resnet ≈+5%）。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 价值点 VP-H（源工件 P，慢→快关键更改，含优化见解摘要 + 代码骨架）。按 Tier 1：首次证据（1/2），缺知识域 repro（效应载体待补）标 `repro-missing`。第二证候选 = 任一整平面/全局归约算子在 fp16 路径上做同型链替换的任务（不同任务）。
+
+## VP-2026-0249
+
+- type: P
+- title: 单波占用优先的 CH 判据 v2——`CH` 在「单波集合（`num_logical(CH) ≤ 向量核数`）」内按 ① 核占用最大 → ② 尾块浪费最少 → ③ 更宽 CH 排序；取代 round-1 的「折半」判据，spp-6x6 CH 64→48（24→36 核）Task ab −5.27%，nondiv 因 step-② 保持 CH=32 零回退
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.6（G14 branch `round3_genh`）、§13.7（ab 交错协议 spp r2-merged 16.320 vs r3_genh 15.460 µs，pair_diffs −0.83/−0.93/−0.90，3/3 同向 = B_better）、§13.9（winner：spp/nondiv 均 G14）、§13.11（BlockDim 24→36、`aiv_time` 13.28→12.04 µs；nondiv CH 保持 32、BlockDim 28）
+  - 规则脚本（溯源，允许失效）：`perf_opt/check_ch_rule.py`（全 L0/L1/L2 形状前后对比）
+  - 对照：round-1 的「折半」判据已入 `layout.md` PL-1.4 第五数据点；G13 `CH_GENERAL=48` 对比显示 spp 改善但 nondiv +4.8% 回退 ⇒ 需形状感知判据（本条细化）
+- repro: repro-missing（最小形态 = 对一组单波候选 CH 按 v2 三元排序独立复算选中档并与实测 Task 对照——断言 spp 类选 48、nondiv 类选 32；效应载体 = `repro/PL-1.4-single-wave-ch.py` 的 v2 变体，待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    update `PL-1.4-tiling-heuristic`（「单波判据」段追加 v2 形态）：**CH 判据 v2（单波占用优先）**——`CH* = argmax_{CH ∈ 单波集合} 排序键（① CH 映射的核占用 `min(num_logical, vector_cores)` 最大 → ② 尾块浪费最少 `(ceil(C/CH)*CH − C)` 最小 → ③ 更宽 CH）`，其中「单波集合」= `{CH : num_logical(CH) ≤ vector_cores}`（`num_logical` 按路径口径）。取代 round-1 的「`units(base)·2 > cores` 则 base 否则折半」判据（折半仅覆盖两档，无法同时解释 spp「48 优于 64」与 nondiv「32 优于 48」）。
+    实测（adaptive_avg_pool2d general 路径，2026-10-15）：spp-6x6 CH 64→48（24→36/40 核）`aiv_time` 13.28→12.04 µs、Task ab **16.320→15.460 µs（−5.27%）**；nondiv-7x7 因尾块判据保持 CH=32（`64 = 48+16` 的尾块浪费使 48 回退 +4.8%）⇒ 零回退。机制：单波内提高核占用直接增并行度；尾块浪费判据防止「多一波/多通道空转」的伪增益。
+- status: pending
+- confirmations: 1/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 价值点 VP-I（源工件 P，慢→快关键更改含三元判据）。按 Tier 1：首次证据（1/2），缺知识域 repro 标 `repro-missing`。第二证候选 = 任一多单元 persistent 纯 Vector 算子做 CH 单波分档的任务（不同任务/不同算子）。
 
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
@@ -4869,6 +4951,73 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z 2026-10-15
 - decided_by: -
 - decided_note: 源工件（opt_log §8.2 BP_003）标为 R（原文建议「traps-compiler.md 增条目 + skill 证伪协议补维度」）；按 merge-policy §1 边界「同时含数据与流程 → 拆两条」：数据侧（新 TRAP 条目 + INDEX 一句话）已由本任务内 ED-C 回写，本条只承载流程侧。与 VP-2026-0075（证伪协议第 4 条前置编译警告排查，已 merged）同节、相邻条目。
+
+## VP-2026-0250
+
+- type: R
+- title: `tilelang-op-optimize` Phase 0「首轮必查项」增「**空转/固定开销标定**」必做项（与读地板并列），并在 `profile-collection.md` 记录「固定开销地板随 Block Dim 增长」
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.15 R4 + BP_003——40-block 向量 kernel 空转 Task Duration **4.81 µs**（占优化后总时延 ~30%），若不在 Step 0 标定会把「不可压缩的固定开销」误当作「实现低效」；smoke 2-block kernel = 3.63 µs、24 block = 3.64 µs（`profiles/probe/round3/floor_empty_*` 三档）
+  - 数据侧已另立 VP-2026-0247（D，`CONST-msprof-task-floor-910B3` update）；本提案只承载流程侧（按 merge-policy §1「同时含数据与流程 → 拆两条」）
+  - 相邻条目：queue VP-2026-0236（元素吞吐阶段达标性前置标定 → `BP_ub_traffic_floor`）、VP-2026-0243（copy-floor 标定须把写侧生产者形态当自变量）——本条补「空转/固定开销」这一 Step 0 必做项，三者互补不重复
+- repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-optimize/SKILL.md` Phase 0「首轮必查项」小节，确认「空转/固定开销标定」是否在列；数据侧见 `constants.md CONST-msprof-task-floor-910B3`）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0「首轮必查项」小节的标定类 bullet 之后追加）
+    定位锚: "③ 陷阱条目版本戳与 origin_task 核对（工具链变更则重验，`kb_stale_check.py`）。"（在该条之后插入）
+    new 文本: |
+      ④ **空转/固定开销标定**（与读地板标定并列的 Step 0 必做项）：用与目标结构同 Block Dim 的**空转 kernel**（每 block 仅 1 元素读+写）标定固定发射/调度开销，与「读地板」一并记入 Step 0。判据：目标时延 = 固定开销 + 可优化空间；固定开销占比 > 25% 时该 workload 的 headroom 已被压缩（实测教训 2026-10-15 adaptive_avg_pool2d：40-block 向量 kernel 空转 4.81 µs 占优化后 16.29 µs 的 30%，任何 tiling 优化无法突破；固定开销随 Block Dim 增长——2 block 3.63 / 24 block 3.64 / 40 block 4.81 µs，见 `constants.md CONST-msprof-task-floor-910B3`）。
+    配套（`profile-collection.md`）: 记录「固定开销地板随 Block Dim 增长」并注明标定须用**目标 Block Dim** 档位（勿用固定单点值）。
+    动机: Phase 0 现有必查项覆盖「读地板」，但固定开销是独立且不可优化的一项；不先标定会把平台固定开销误判为实现低效，把整轮消耗在不可压缩项上。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件 §13.15 R4 + BP_003（BP_003 源工件自标 P，但其内容为 skill 流程修改 ⇒ 按 distillation-rules §3 判定树归 R；与 R4 同内容，合并为一条防重复提案）。target 文件另含 `profile-collection.md`（配套记录项，apply 时按 §8 一并核对）。
+
+## VP-2026-0251
+
+- type: R
+- title: `iteration-diagnosis.md` 增纪律——把「地板标定的自变量」外推到真实 kernel 前，必须做一次「只改该自变量」的真实 kernel 对照
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.15 R5——读地板确实随轮数下降（13→1 轮 9.64→5.64 µs），但真实 C4 kernel 把轮数 13→4 反而更慢（CH 32→120 实测 17.27 µs）；**地板标定的自变量（纯 DMA 轮数）与真实 kernel 的瓶颈项（串行链数据量 × 每元素率）不是同一个** ⇒ 直接外推会得出相反的调优方向
+  - 对照实测（溯源，允许失效）：`perf_opt/probe_r3_gf.py` f16same ch32 16.67 / ch64 16.06 / ch96 17.31 / ch120 17.27 µs（只改轮数自变量的真实 kernel 扫描）
+  - 相邻条目：queue VP-2026-0243（copy-floor 标定须把写侧生产者形态当自变量 + 地板 << baseline 先怀疑假地板）——本条补「外推前的真实 kernel 单变量对照」，同族互补
+- repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-optimize/references/iteration-diagnosis.md`「已知迭代结论/地板外推」相关小节，确认「单变量真实 kernel 对照」纪律是否在列；数据侧见 constants.md `CONST-msprof-task-floor-910B3` / elementwise.md `PL-1.6`）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    动作: update（「已知迭代结论 / 地板标定」小节追加纪律）
+    new 文本: |
+      **地板自变量外推前须做「只改该自变量」的真实 kernel 对照**：地板标定（copy-floor / 读地板）用的是**纯 DMA 探针**，其自变量（如每核串行轮数）与真实 kernel 的瓶颈项不一定是同一个（真实 kernel 常由「串行链数据量 × 每元素率」而非轮数主导）。把标定曲线直接外推到真实 kernel 之前，必须做一次**只改该自变量、其余结构不变**的真实 kernel 对照并实测——否则可能得出相反方向（实测教训 2026-10-15 adaptive_avg_pool2d：读地板 13→1 轮 9.64→5.64 µs 单调下降，但真实 C4 kernel 把轮数 13→4 反而更慢 17.27 µs；只改 CH 的真实 kernel 扫描 ch32/64/96/120 = 16.67/16.06/17.31/17.27 µs 才暴露真实瓶颈）。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件 §13.15 R5。
+
+## VP-2026-0252
+
+- type: R
+- title: optimize 产物契约补「append-only × 每 workload 恰一条 `phase=final`」冲突的标准处置——全部原始记录留档 sidecar（`perf_records_full_history.jsonl`），主 `perf_records.jsonl` 保留迭代行 + 每 workload 唯一权威 final 行
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.14-1——round-3 `phase=merged`/`final` 因「final 重采」产生两组 `r3-merged` 记录（中间版 sha `762ad3bf…` 触发 `ub overflow` → 修正版 sha `52f23f2e…`），与 `perf_records.jsonl` 的 append-only 纪律（禁改删既有行）及 gate `S4-PERF-RECORDS-RECON` 的「每 tune workload 恰一条 `phase=final`」（`gate_lint.py len(phases["final"]) != 1`）**三方不可同时满足**；处置 = 全部 47 行原始记录（每轮每次测量）一字不改留档于 sidecar `perf_opt/perf_records_full_history.jsonl`，主文件保留全部 baseline/candidate/merged 迭代行 + 每 workload 唯一权威 final 行（末 3 行 sha `52f23f2e69d6…`、raw 目录 `profiles/final/round3/r3-merged_631c34fa/`）
+  - 相邻条目：queue VP-2026-0240（已 merged，optimize Phase 3「final 采集前清理 + final 后冻结 + 合法重记通道」）——本条补其**冲突场景的标准处置形态**（重采产生多 final 行时的 sidecar 留档），互补不重复（0240 讲「何时可重采」，本条讲「重采后旧 final 行如何留档」）
+  - 机制位置：`gate_lint.py` `S4-PERF-RECORDS-RECON`（`len(phases["final"]) != 1`）+ `perf_records.jsonl` append-only（optimize SKILL.md Phase 2 步骤 7）
+- repro: repro-missing（流程规则；复现条件 = 构造「同一 workload 两条 `phase=final`」的 `perf_records.jsonl` 跑 `python3 .agents/tools/gate_lint.py` 观察 `S4-PERF-RECORDS-RECON` 报错；处置正确性 = sidecar 行数 == 主文件行数 + 被移出行，且主文件每 workload 恰一条 final）
+- toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 3 产物契约相关小节，或 Phase 2 步骤 7 之后，追加「final 重采与 append-only 冲突的标准处置」）
+    new 文本: |
+      **「append-only」与「每 tune workload 恰一条 `phase=final`」冲突时的标准处置**：当 `phase=final` 因重采（结构修正 / 中间合并版被取代 / 采集污染清理）产生**多于一条**记录时，两条契约与 gate `S4-PERF-RECORDS-RECON`（`len(phases["final"]) != 1`）不可同时满足。标准处置：① **全部原始记录一字不改留档于 sidecar `perf_opt/perf_records_full_history.jsonl`**（每轮每次测量逐行保留，含被取代的多条 final）；② 主 `perf_records.jsonl` 保留全部 `baseline/candidate/merged` 迭代行（append-only 语义覆盖的部分）+ **每 workload 唯一权威 `phase=final` 行**（被取代的 final 行移入 sidecar，内容完整）；③ 在 opt_log 的 Final Summary / 已知残留小节登记本处置的原因、范围与 sidecar 路径。目的：迭代历史零丢失（sidecar 可对账）+ gate 可通过（主文件唯一 final）+ append-only 不被静默违反（移除项有完整留档）。
+    动机: `perf_records.jsonl` 的 append-only 纪律与 gate 的唯一 final 要求在「final 重采」场景结构性冲突，此前无从文处置，实测仅能靠任务内临场判断（本任务 §13.14-1）；把 sidecar 留档形态成文可使同类情形零成本归位且证据不丢失。
+- status: pending
+- confirmations: -/-
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
+- decided_by: -
+- decided_note: 源工件 §13.14-1（流程信号）。与 VP-2026-0240（已 merged）互补——0240 定「final 后冻结 + 合法重采通道」，本条定「重采后的多 final 记录留档处置」。
 
 > **条目迁移（2026-10-15 apply）**：VP-2026-0238 / 0239 / 0240 经用户批准（Primary 上下文，2026-10-15）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 

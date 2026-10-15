@@ -167,7 +167,7 @@
 | CASE-attention-twophase-causal-regen | 两相位 causal 域重生成 + 第五轮（标量化判别链 14.2x）+ 第六轮（屏障审计/深度 2/Ratio 口径/r9 守卫）调优档案 | verified |
 | CASE-attention-mha-config-unvalidated | 反例：设计默认 config 路径未编译验证即出厂（bench 期 UB 溢出） | verified |
 | CASE-ssd-chunkscan-migration | mamba/SSD 族 MixCV Expert 迁移完整档案（模式切换 + 六轮 2.91× + 首过集成 + 4515de8 重跑 + 二轮 1.078× + 重建会话 repro 骨架重推导 +9.7%） | verified |
-| CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例）——**Stage 4 续档**（`T.transpose` 链在当前工具链失效 → 扁平归约替代 9.91x + 单波 CH 分派；含「msprof roofline Ratio 不与 latency 成反比」口径更正实例） | verified |
+| CASE-pool-adaptiveavgpool2d-migration | pool 族首个迁移档案（C 轴向量轴 + 四几何特化路径 + 3 轮设计修订 + 首轮精度过 + 集成 bench 3 例）——**Stage 4 续档 round 1/2**（`T.transpose` 链在当前工具链失效 → 扁平归约替代 9.91x + 单波 CH 分派；含「msprof roofline Ratio 不与 latency 成反比」口径更正实例）；**round 3**（fp16 精简归约链 −3.79% + CH 判据 v2 −5.27% + 地板标定 4.81 µs 固定开销；累计 resnet 10.20x） | verified |
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例）——**Stage 4 续档**（C4 扁平宽归约 + 原位平方-sum NaN 追踪 + 单波 CH 判据；PL-1.13 在纯 Vector 上不适用；320.83→18.86 µs） | verified |
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7）；**Stage 4 续档**（2026-10-15：扁平整平面读 + dtype 宽度扫描 + 写侧生产者纪律 + 双输出单波 CH；global 144.4→91.9µs/1.57x；C4 双输出被归约链 UB 单价封顶） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |

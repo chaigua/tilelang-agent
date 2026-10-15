@@ -882,26 +882,45 @@ capability: >-
   （解锁 CH≤120）；非原位平方（多一个全平面中间量）翻倍到 ≈64 B/元素。单价在 ch=64 与
   ch=128 **恒定**（严格线性、无固定项），CH 上限 = 196608 / (单价·H*W)。编译期
   `ub overflow, requires N bits while M bits available` 是唯一可见信号。
+  **第二任务扩展（adaptive_avg_pool2d round 3，2026-10-15）**：① fp16 **同型精简链**
+  `reduce_sum(f16→f16) + 单次 vcast` ≈ **48 B/平面元素**（介于 32 与 64 之间；plane=49
+  允许 CH=64、拒绝 CH=128）；② **常驻 staging buffer 本身也按同一归约单价计费**——
+  「一次大 DMA（P 平面）+ 核内分段归约」的 slab 结构在编译期即 `ub overflow`
+  （`f16same P128 SUB32` → 1608192 bit vs 1572864 bit = 201 024 B ≈ 128×49×32；
+  `f16same P256 SUB64` → 402 048 B；`f32 P128 SUB32` → 251 136 B）⇒ 单次归约输入被
+  锁在 ≈125 平面（6144 fp16 元素）内，DMA 粒度与归约粒度**不可解耦**。
 blocked_algo: >-
   整平面（全局池化）归约路径的 **CH 上限被 lowering 的 UB 记账隐式限制**——「用更宽 CH
   摊大 DMA 粒度 / 减少每核串行轮数」的空间被压缩（同工具链 UB 内 `T.transpose` 被降级为
-  UB→GM→UB 往返同属该路径的 UB 容量约束，见 CG-2026-0024）。
+  UB→GM→UB 往返同属该路径的 UB 容量约束，见 CG-2026-0024）。第二任务补充：「**核内 slab
+  结构**（每核一次大 DMA + UB→UB 子块归约，以解耦 DMA 粒度与归约粒度）」被常驻 staging
+  buffer 的同单价计费封死（G16，编译期 blocked）——即「1 轮读地板 5.64 µs vs 13 轮 9.64 µs」
+  的地板收益无法通过 slab 结构兑现。
 evidence:
   - pattern-library constants.md `CONST-reduce-ub-per-element`（单价表 + CH 上限式；探针须 DCE 免疫）
   - 知识域 repro（compile-time sweep，反解 N bits）：.agents/skills/tilelang-op-optimize/references/pattern-library/repro/TRAP-reduce-ub-per-element.py
   - 任务工作区探针（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/probe_ub2.py（无死代码精确镜像：201216 B @ ch=128 fp16 原位平方；401792 B @ ch=64 bool 掩码链）
-  - docs/Tilelang.language/规约操作/ 未记载归约的 UB 记账模型或形态相关单价（未文档化，估量依据 = 上述本机 compile-time sweep）
+  - 第二任务探针（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/probe_r3_slab.py（slab 编译期 sweep：`ub overflow, requires 1608192 bits while 1572864 bits available`）+ `perf_opt/probe_r3_gf.py`（f16 同型链单价 48 B/元素，ch64 允许 / ch128 拒绝）+ `perf_opt/opt_log.md` §13.4 P8 / §13.5 G16
+  - docs/Tilelang.language/规约操作/ 未记载归约的 UB 记账模型或形态相关单价，也未记载常驻 buffer 的计费方式（未文档化，估量依据 = 上述本机 compile-time sweep）
 workaround: >-
   NaN 追踪改用**原位平方-sum 等价形**（`isnan(reduce_sum(x*x))`，单价 32 vs 96–128 B/元素）
   解锁更宽 CH；配合**扁平空间轴** `(N,C,1,H*W)` 单次宽归约（layout.md PL-1.23）把「成本 ∝
-  平面元素」的归约链限制在单次。代价：仍无法逼近同栅格纯拷贝地板（见 CG-2026-0027）。
-occurrences: 1
-tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z]
-toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
-status: open
-proposal: none（未达 recurring；建议方向 = ① 输出归约 lowering 的 UB 预算模型/逐 buffer 分配清单（含形态相关单价），使前端可在设计期核算 CH 上限而非 compile-time 反解；② 或为归约链形态提供可查询的 UB 足迹文档。issue 须用户批准）
+  平面元素」的归约链限制在单次。第二任务补充：整平面均值归约改用 **fp16 同型精简链**
+  （`reduce_sum(f16→f16) + 单次 vcast`，单价 64→48 B/元素，解锁 CH=64）。代价：仍无法逼近
+  同栅格纯拷贝地板（见 CG-2026-0027）；slab（大 DMA + 分段归约）无绕法，被迫接受
+  「DMA 粒度 = 归约粒度」的耦合。
+occurrences: 2
+tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z, adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z]
+toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第二任务重验 tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: recurring
+proposal: >-
+  **目标层**：BishengIR（归约 lowering 的 UB 预算分配）。
+  **建议改动**：① 公布/输出归约 lowering 的 UB 预算模型与逐 buffer 分配明细（含形态相关单价，并按 dtype 与归约链形态分档），使前端可在设计期核算 CH 上限而非 compile-time 反解；② 分离「常驻 staging buffer」与「归约链中间量」的计费口径——常驻 buffer 应按实际声明形状计费，使「一次大 DMA + 核内分段归约」的 slab 结构可用（当前同单价计费使其编译期即溢出）；③ 或在 `ub overflow` 诊断中列出逐 buffer 明细（当前仅给出总 required/available bits）。
+  **收益量化（两任务实测）**：avg pool round 3 slab 结构被阻塞——若可用，单次大 DMA + 分段归约可把地板从 13 轮 9.64 µs 逼近 1 轮 5.64 µs（≈ −4 µs / −40%）；max pool 侧单价分档使 CH 从 ≤32 提到 ≤120（layout.md PL-1.22 ④）。
+  **受影响算子清单**：adaptive avg/max pool 2d（整平面/退化网格）、adaptive_max_pool2d_with_indices（双输出）、任何整平面归约 + 大 DMA 粒度诉求的池化/归约算子。
+  **issue 草稿（[npuir]，须用户批准后提交）**：`[npuir] vreduce UB accounting charges resident staging buffers at the per-element reduce unit price, blocking slab (single big DMA + in-core segmented reduce) structures`。
 created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（2026-10-15，opt_log.md §10 按 AGENTS.md「Compiler Capability Gap Rule」登记）
-last_seen: 2026-10-15 adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（整平面归约 CH 上限实测）
+last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z Stage 4（round 3：fp16 同型链 48 B/元素 + slab 常驻 staging buffer 同单价计费 → 编译期 blocked）
 ```
 
 ### CG-2026-0027
@@ -915,24 +934,74 @@ capability: >-
   （[8,2048,7,7] fp16、CH×49 fp16 元素/轮、40 block、910B3）——搬运窗口未被归约计算填充、
   也不与下一轮 DMA 重叠（`Task ≈ max(mte2,vec)+scalar` 的 max 退化为近似 sum）。循环构造
   `T.Pipelined(2/3)` 于单元循环实测无增益（未能形成归约 consumer 与 DMA 的双缓冲重叠）。
+  **第二任务重验（adaptive_avg_pool2d round 3，2026-10-15）**：同栅格 DMA-only kernel
+  （`dma_gm4d_ch32_r13`）Task 仅 **8.75 µs**（含 4.81 µs 空转固定开销 ⇒ 真实搬运 ≈3.9 µs），
+  而真实 C4 kernel 的 `aiv_mte2_time` 跨度 = 整条串行链 11.62 µs —— 即 mte2 跨度被
+  「DMA 等归约 consumer 释放 UB」拉长（复现同一不重叠）；`npuir.enable_auto_multi_buffer=True`
+  （G17）实测并无重叠收益（`config_no_gain`）。
 blocked_algo: >-
   global 类池化/归约逼近「同栅格纯拷贝地板」的通路受阻：final 18.86 µs vs 标定地板
   5.09–6.85 µs（**2.8–3.7x 缺口**），其中一部分即该不重叠（另一部分见 CG-2026-0026）。
+  第二任务补充：round-3 resnet 的剩余缺口（16.29 vs 1 轮读地板 5.64 µs）同样主要由此构成
+  （`mte2` 11.08 µs = 整条串行链）。
 evidence:
   - 任务工作区 opt_log（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/opt_log.md §3（baseline）/§4 R3（`mte2=9.10 µs` vs 拷贝标定 5.09–6.85 µs）/G5·G9（`T.Pipelined(2/3)` config_no_gain）
   - 任务工作区标定（溯源，允许失效）：examples/TileOPs/.../perf_opt/copy_floor_calibration.jsonl（同栅格纯拷贝地板 6.85/5.09 µs；mte2 2.13/1.21 µs）
+  - 第二任务探针/标定（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/{profiles/probe/round3/dma_gm4d_ch32_r13, probe_r3_gf.py} + `perf_opt/opt_log.md` §13.4 P6 / §13.5 G17（`npuir.enable_auto_multi_buffer=True` config_no_gain）
   - pattern-library elementwise.md `PL-1.6-copy-floor`（轮数主导地板）+ constants.md `CONST-aiv-time-decomposition`（`Task ≈ max(mte2,vec)+scalar` 分解口径）
   - docs/Tilelang.language/同步管道操作/ 与 线性代数操作/ 未记载归约与搬运的自动流水重叠条件（未文档化，估量依据 = 上述本机实测）
 workaround: >-
-  无有效重叠手段（`T.Pipelined(2/3)` 于单元循环实测无增益）。当前只能靠**减少每核串行轮数**
-  （更宽 CH，受 CG-2026-0026 的 UB 记账约束）压低地板逼近缺口。
-occurrences: 1
-tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z]
-toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
-status: open
-proposal: none（未达 recurring；建议方向 = 归约 kernel 的 reduce 与 GM→UB 自动流水重叠，或提供显式 overlap 原语/文档；issue 须用户批准）
+  无有效重叠手段（`T.Pipelined(2/3)` 于单元循环实测无增益；`npuir.enable_auto_multi_buffer=True` 同）。
+  当前只能靠**减少每核串行轮数**（更宽 CH，受 CG-2026-0026 的 UB 记账约束）压低地板逼近缺口。
+occurrences: 2
+tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z, adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z]
+toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第二任务重验 tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: recurring
+proposal: >-
+  **目标层**：BishengIR（归约 kernel 的流水调度）。
+  **建议改动**：在「GM→UB `T.copy` → reduce consumer」链上实现自动双缓冲重叠，或提供显式 overlap 原语（如按 pipelined stage 声明 reduce 依赖）；至少在 docs 记载归约与搬运的自动流水重叠条件（含 `auto_multi_buffer` 是否覆盖该链）。
+  **收益量化（两任务实测）**：max pool mte2 211 GB/s vs 同栅格纯拷贝 690 GB/s（3.3x 带宽缺口，2.8–3.7x 时延缺口）；avg pool round 3 mte2 跨度 = 整条串行链 11.62 µs vs 同栅格 DMA-only 8.75 µs（含 4.81 µs 固定开销）。
+  **受影响算子清单**：adaptive avg/max pool 2d、argreduce/row-reduction、任何「搬运 + 核内归约」串行链算子。
+  **issue 草稿（[npuir]，须用户批准后提交）**：`[npuir] T.reduce_* does not overlap with GM->UB T.copy in the same kernel (serialized chain; auto multi-buffer default / Pipelined have no effect)`。
 created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（2026-10-15，opt_log.md §10 按 AGENTS.md「Compiler Capability Gap Rule」登记）
-last_seen: 2026-10-15 adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（mte2 211 GB/s vs 拷贝标定 690 GB/s）
+last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z Stage 4（round 3：DMA-only 8.75 µs vs 真实链 11.62 µs；auto_multi_buffer config_no_gain）
+```
+
+### CG-2026-0029
+
+```yaml
+gap_id: CG-2026-0029
+layer: Frontend API / BishengIR（归约 dtype 形态 + v 算子 UB 子区域操作数形态）
+capability: >-
+  (a) **`T.reduce_sum` 无 bf16 累加形态**——整平面均值归约在 bf16 输入下不能走「输入 dtype 内部累加」
+  的精简链（`reduce_sum(bf16→bf16) + 单次 vcast`），必须保留 **fp32 全平面中转**
+  （`vcast → f32 平面 → reduce_sum(f32)`），使 BishengHIR UB 单价从 fp16 同型链的 ≈48 B/平面元素
+  抬到 ≈64 B/平面元素（plane=49 时 CH 上限降至 62 档，且多一份全平面缓冲 + 一次全平面 vcast）。
+  (b) **`T.vcast` 不接受 UB 子区域形状**——对 4-D 常驻 buffer `big[K,SUB,1,HW]` 的前导轴切片
+  做 `vcast` 报 `The input/init operands and result have the same rank`（G9/G16 `direct` 变体），
+  即「一次大 DMA + 核内子块 cast」路径不可表达（与 CG-2026-0028(c) 的 `hivm.hir.vsel` cond
+  不接受 UB 子区域同族——v 算子的 region 操作数形态限制）。
+blocked_algo: >-
+  (a) bf16 全局池化（nondiv-7x7-bfloat16 等）无法采用 fp16 侧的「同型精简归约链」优化
+  （该优化在 fp16 路径贡献 resnet-global `aiv_vec_time` 3.88→2.12 µs / Task ab −3.79%，见 layout.md
+  PL-1.23 dtype 变体）——bf16 被迫保留 fp32 中转与更高 UB 单价，性能路径与 fp16 不对称。
+  (b) 核内 slab/sub-region 归约的 `direct` 变体（大 buffer 前导轴切片上直接 cast）不可表达，
+  与 CG-2026-0026 的常驻 staging buffer 计费共同封死「大 DMA + 分段处理」结构。
+evidence:
+  - 任务工作区（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/opt_log.md §13.4 P8 / §13.5 G16（bf16 单价 ≈64 vs fp16 同型 ≈48 B/平面元素；`T.vcast` 子区域报 `The input/init operands and result have the same rank`）+ `perf_opt/probe_r3_slab.py`（direct 变体编译报错）
+  - 对照常数：pattern-library constants.md `CONST-reduce-ub-per-element`（fp16 链单价表）；同族 region 形态缺口 CG-2026-0028(c)
+  - docs/Tilelang.language/规约操作/T.reduce_sum.md 与 数据类型转换操作/T.vcast.md 未记载跨 dtype 累加形态与 UB 子区域操作数限制（未文档化，估量依据 = 上述本机 compile-time 实测）；round 1/2 的 opt_log §11 曾声称「`T.vcast` 不接受 UB 子区域」已登记并递增 occurrences，蒸馏核对 capability-gaps.md **无对应条目**（声称未落盘），按先例以一手工件复原登记
+workaround: >-
+  (a) bf16 路径保留 fp32 全平面中转（无法用 fp16 侧的同型精简链）；(b) 子区域 cast 改走
+  独立 staging buffer 形态（受 CG-2026-0026 常驻 buffer 单价约束，slab 仍不可行）。代价：
+  bf16 路径多一份 f32 全平面缓冲 + 一次全平面 vcast，且 CH 档位低于 fp16。
+occurrences: 1
+tasks: [adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z]
+toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+status: open
+proposal: none（未达 recurring；建议方向 = ① `T.reduce_sum` 支持 bf16 输入的内部累加形态（或文档化「bf16 必须 fp32 中转」及其 UB 代价）；② 放宽 `T.vcast` 的操作数区域形态（支持 UB 子区域/前导轴切片，与 `vcmp` 的合法 slice 形态对齐）；issue 须用户批准）
+created_by: evolver 复原登记，2026-10-15（**溯源**：task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 的 opt_log.md §13.14-3 声明两类新实证未落盘（该 dispatch 硬约束「只写 perf_opt/」），evolver 按 AGENTS.md 缺口规则与 2026-10-15 先例登记）
+last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z Stage 4（round 3 G9/G16 探针）
 ```
 
 ## Recurring（达升级阈值，待推动补齐）
