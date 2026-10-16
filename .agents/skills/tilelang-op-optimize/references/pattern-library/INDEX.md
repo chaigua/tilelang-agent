@@ -88,7 +88,7 @@
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
 | TRAP-vcast-shape-and-gm-source | `T.vcast` 形状须一致（无 broadcast/reshape）+ 源须为 UB（GM 源 BiShengHIR pipeline 失败）；伴随：runtime let-bound 标量可作 vmul src2 | verified |
 | TRAP-hivm-vsel-cond-slice | `hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**（同 slice 作 `vcmp` 操作数合法）→ 双输出池化「行级掩码直送 vselect」的削 op 不可达；**否定 v 算子 API 前须穷举 whole-buffer/切片/bool-cond/rank 形态** | verified |
-| TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro） | verified |
+| TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro）；**2026-10-16 计数类延伸**：`[x≠0]` 的合法形态 = 有序 EQ 补式 `N − Σ[x==0]`（NaN 计入非零，±0 不计入，亚正规不 FTZ，NPU 运行期三 dtype 实证；`T.vnot` dtype 表无 bool ⇒ 取反路线不可行） | verified |
 | TRAP-npuir-ref-backend-golden-capability | NPU 参考后端（torch_npu）两形态能力缺口：`dilation!=1` 抛 `AclNN_Parameter_Error`（op 未执行）+ `return_indices=True` 的 indices **静默损坏**（int8 mask buffer，全 dilation）；纯选择类算子回退 CPU golden 逐位一致 | verified |
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露）；**2026-10-15 收窄为「pattern 生产者特有」**——运行期构建的位置表（非 `arange`）可绕过（逐元素精确），但双输出下被归约链 UB 单价 237 B/元素与轮数封顶（见 CONST-dual-output-whole-plane-reduce-ub） | verified |
@@ -100,6 +100,7 @@
 | TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
 | TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
 | TRAP-scf-for-row-offset-silent-miscompile | 运行时 `scf.for` 循环变量作**共享缓冲行偏移**（`for r in range(bm): … cand[r+i, j] = …`）→ **静默错值**（(2048,4096) fp16 y0=−3 vs ref 3211）；错值档「更快」= 伪收益，须先过 `torch.equal` 精确门（含 repro；与 TRAP-tir-range-loop-not-unrolled / TRAP-parallel2d-bm-ge2-scalarize 同族） | verified |
+| TRAP-primfunc-compile-time-if-buffer-def | `@T.prim_func` 内**解析期（Python 层）`if` 定义 buffer** → 分支内名字不逃逸：条件真报 `ParserError: Undefined variable`、条件假同源可编译/运行（**缺陷随 shape 潜伏**，落尾块宽度即炸）；绕法 = 工厂层按变体返回独立 prim_func（含 repro；本文件 §C11 parser var-table 作用域的具体形态） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -158,7 +159,7 @@
 | CASE-attention-gqa-expert-full | Expert attention 迁移完整档案（设计修订链 + debug_log D1–D6） | verified |
 | CASE-attention-expert-stage4 | attention expert Stage 4 三轮调优档案（含 [DESIGN_LIMIT] 修正闭环） | verified |
 | CASE-argmax-argreduce-stage4 | argmax Stage 4 档案（C6 预注册裁决翻转 2.2×/2.6× + 标量化归因证伪更正；几何 11.5×）+ **同族第二实例** argmin Stage 4（几何 1.30× / DMA 粒度地板 / bm 阶梯重标定 / `[DESIGN_LIMIT]`） | verified |
-| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad；argmax 首证 + **argmin 第二证**〔910B3/CANN 9.0.0 逐字节复现 + 胶水代码 + bench 数值〕+ **第三证缺陷 ⑤**：多 `@T.prim_func` 名 + wrapper 未上浮采数名 → report `partial`/欠归因） | verified |
+| CASE-argmax-argreduce-integration | TileOPs reduce 族集成契约参考（N_padded 声明宽度 / wrapper config 转调 _select_config / argmin +inf pad；argmax 首证 + **argmin 第二证**〔910B3/CANN 9.0.0 逐字节复现 + 胶水代码 + bench 数值〕+ **第三证缺陷 ⑤**：多 `@T.prim_func` 名 + wrapper 未上浮采数名 → report `partial`/欠归因）+ **第四数据点**：count_nonzero（wrapper config 继承 GPU 启发式的预防性重接线 + 缺陷 ⑤ 未复现对照） | verified |
 | CASE-attention-developer-stage4 | developer 谱系同门对照档案 | verified |
 | CASE-deepseek-v4-highperf | Expert 跨引擎结构先例（vcmp/flag 协议） | verified |
 | CASE-ref-flash-attn-npuir | **参考实现集首条**：两相位结构参照锚点（[DESIGN_LIMIT] 强制对照） | verified |
@@ -176,6 +177,7 @@
 | CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
 | CASE-quant-fp8-quant-migration | quantization 族首个 / **字节载体（fp8）首例**（软件 e4m3 编码 + uint8 载体 + host `.view` 保契约；舍入/符号/幂三陷阱 + 覆盖缺口假 PASS；集成 8/8 + bench 3/3 BW 1.75 TB/s） | verified |
 | CASE-norm-groupnorm-migration | norm 族 GroupNorm 迁移档案（affine 分层 + Stage 5 fp16 二次舍入逐位定位 + UB 平台值第三结构数据点 + 矩式方差第二证；集成 19/0/2、bench 4 例 6.0–11.1µs / 1.75 TB/s） | verified |
+| CASE-reduction-countnonzero-migration | reduction 族**首个 logical_reduce / 计数类**迁移（count_nonzero kind → int64 契约 + 元素预算双路径 [8 B/元素探针 / E_cap=8192 / 硬上限 24576] + `@T.prim_func` 解析期 if 陷阱 + wrapper `default_config` 重接线；集成 37/37 + bench 4 例 msprof 有效） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

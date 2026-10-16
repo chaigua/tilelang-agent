@@ -352,7 +352,7 @@ apis: []
 dtype: [fp16, bf16, fp32]
 device: 910B2C, 910B3
 status: verified
-origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0）+ argmin-_argreduce_kernel-20261015T023310Z（第三证：缺陷 ⑤ 多 prim_func 采数名歧义）
+origin_task: argmax-_argreduce_kernel-20260924T031005Z（首证，910B2C / CANN 8.5.0）+ argmin-_argreduce_kernel-20261014T151121Z（第二证，910B3 / CANN 9.0.0）+ argmin-_argreduce_kernel-20261015T023310Z（第三证：缺陷 ⑤ 多 prim_func 采数名歧义）+ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第四数据点：wrapper config 继承 GPU 启发式的预防性重接线 + 缺陷 ⑤ 未复现）
 toolchain: 首证 tilelang 0.1.2+ubuntu.22.4.npuir / Ascend910B2C / CANN 8.5.0 / git 013dbbf5；第二证 tilelang 0.1.2+ac0522ed260caa64c885a8c57b46d3651efca7ce（dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（20 AICore / 40 Vector）/ 2026-10-14；第三证 tilelang 0.1.2+417dae9（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 repro: repro-missing
 ---
@@ -371,6 +371,7 @@ repro: repro-missing
 - **durable 载体**：argreduce 边界语义（±0.0 全序 / NaN→哨兵 `2^30`）自包含于 traps-runtime.md TRAP-argreduce-edge-semantics；`T.reshape` 被 `npuir_reshape(src,dst)` 覆盖自包含于 traps-compiler.md TRAP-npuir-reshape-dst-buffer-shadow（含知识域 repro）；索引失配指纹见 error-fixer references/precision-patterns.md。
 - 溯源（任务工作区，未上库，允许失效）：`examples/argmin/_argreduce_kernel/{DESIGN.md#§0.2/§5.6/§1.6.1-E5/§9.1, RETROSPECTIVE.md Stage 1/2/3}` + `examples/argmin/RETROSPECTIVE.md Stage 5` + 集成侧 integration_log.md。
 - **缺陷 ⑤（第三证 / 新形态，2026-10-15，argmin 的 Stage 4 optimize 集成跑）：多 `@T.prim_func` 名 + wrapper 未上浮采数名 → report `status=partial`（correctness 42/42 全过）**。现象：perf_opt 版 kernel 文件（`perf_opt/_argreduce_kernel.py`）含 **4 个不同名的 `@T.prim_func`**（`main` / `argreduce_tiled` / `argreduce_partial` / `argreduce_merge`），而 baseline kernel 文件只有 `main` 一个 distinct 名。后果（6 个 msprof case，报告 `examples/TileOPs/reports/tileops/20261015_061354_481681_ArgminFwdOp/`，基线对照 `…/20261015_003723_597141_ArgminFwdOp/` `status=passed` 6/6 valid）：① 派生名歧义时取到**某一个** kernel——lm-head 两 dtype 派生 `argreduce_merge` → 只捕获 merge 段，记 **3.640/3.180 µs（`profiler_valid=true`）**，而 C6 真实 workload 时延 = partial + merge = **11.898/11.914 µs**（**看似 valid 实为欠归因**）；② 派生 `None` 时退回**无过滤全捕获**——non-aligned 两 dtype 捕获到 `MemSet_*` + `PadV3_*` + `main` 三 op → **`profiler_valid=false`**，记 5.420/5.400 µs（含 Op 层 pad/fill 算子），而 kernel-only 实测 3.192/3.317 µs；③ 唯一「恰好正确」的 hidden-state 两 dtype（派生 `None` 但窗口内仅 1 op）记 31.601 µs / 36.421 µs。机制（源码口径）：`tileops/benchmark/msprof.py::_derive_kernel_name_from_prim_func`（Pass 2 静态源码扫描）在候选模块内 distinct `@T.prim_func` 名 > 1 时返回 `None`/歧义；`msprof.py` 的解析链为「显式 `kernel_name` → `functor.msprof_kernel_name` → `functor.kernel.msprof_kernel_name` → `TILEOPS_MSPROF_KERNEL_NAME` → 派生名」。同族对照（tier-2 解析正例）：argmax wrapper 显式 `self.msprof_kernel_name = getattr(self.kernel, "msprof_kernel_name", None) or "main"` 把工厂的 `_func.msprof_kernel_name` 上浮到 Op 层，故其 C6 双发射可归因；argmin wrapper 缺这一行（Stage 5 integration_log §issues 曾以「report-layer cosmetic」记录该现象——本次实证其**非 cosmetic**）。判读口径：`run.json.summary.invalid_profile_count > 0` 或「case 时延显著低于 workload 流量下界」⇒ 先查派生采数名与捕获段数，再谈性能。**该缺陷属 integration 期接线缺口，`optimize` 场景下 wrapper 仅允许翻转 switch 块、本任务范围内不可修**（处置提案见 queue VP-2026-0232 / VP-2026-0234）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/{integration_log.md#issues, ../../argmin.py, perf_opt/perf_records.jsonl}`。
+- **第四数据点（count_nonzero 计数类迁移，910B3 / CANN 9.0.0 / 2026-10-16）——同缺陷类的`预防性`命中 + 缺陷 ⑤ 未复现的两点事实**。① **wrapper 出厂 config 继承 GPU 期启发式**：脚手架产出的 `count_nonzero.py` 保留 48 KiB SMEM 启发式，manifest `(2048,4096)` ⇒ `block_m=8` ⇒ `8×4096 = 32768` 元素 > kernel 侧硬上限 **24576 元素**（8 B/元素探针口径）⇒ 首跑会以 `ub overflow` 编译失败，且该启发式无法表达 `N > E_cap` 的列分块路径。本任务在**第一次 report 之前**依 integrator 已知修复目录重新接线（`default_config` 委托 `_select_config(self.M, self.N, dtype_str)["block_m"]`，kernel/tests/manifest 零改动）⇒ 集成一次通过、report `status=passed`（correctness 37/37、benchmark 7/7）。**口径补充**：kernel 侧 `_resolve_block_m` 的防御性回落**不是** wrapper 接线的替代（回落只让编译不炸，出厂契约仍以 kernel tiling 单源为准）。② **缺陷 ⑤ 未复现**：本任务 kernel 同含多 `@T.prim_func` 变体（resident / 列分块 / 列分块带尾块），但 report 4/4 msprof case 有效（`invalid_profile_count=0`、`profiler_fallback_count=0`、`kernel_filter_fallback_count=0`）——与缺陷 ⑤ 的 partial 形态形成对照；仅 `report.md` 的 `Kernel` 列显示 `main`（本任务判定为 reporting-layer 展示行为，与 argmin 的欠归因非同一现象），差异条件（wrapper 是否上浮 `msprof_kernel_name` / 派生名歧义）待后续同族任务定钉。溯源（任务工作区，未上库，允许失效）：`examples/TileOPs/tileops/kernels/reduction/count_nonzero/{count_nonzero.py, count_nonzero_kernel/{integration_log.md, integration_report.json}}`。
 
 ---
 
@@ -608,3 +609,27 @@ quantization 族**首个** TileOPs 迁移算子 / **首个字节载体（fp8）�
   写侧地板标定必须区分「连续 / 跨步」生产者形态（否则产出假地板，见 PL-1.6 更新）。
 - **状态**：`plateau` 收束（`CH_GLOBAL` 邻域 96/104/112/128 无一优于 104；剩余结构候选全部 blocked）。
   **不产出 `perf_feedback.md`**（`perf-feedback.md` §1 双条件未同时满足：天花板归因于工具链 lowering 而非算法/设计层）。
+
+---
+id: CASE-reduction-countnonzero-migration
+kind: case
+family: [reduction]
+mode: [developer]
+dtype: [fp16, bf16, fp32]
+status: verified
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（函数级）/ count_nonzero-count_nonzero-20261016T004109Z（op 级，Stage 5 集成）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16
+repro: none
+---
+
+### `examples/count_nonzero/_logical_reduce_kernel/`（任务工作区，未上库；集成副本 `examples/TileOPs/tileops/kernels/reduction/count_nonzero/`，同任务工作区）
+
+reduction 家族**首个 logical_reduce / 计数类** TileOPs 迁移（`CountNonzeroFwdOp`，`op_kind=count_nonzero` ⇒ 逐行 **int64** 计数输出，与共享工厂的兄弟 kind `any`/`all` 的 bool/int8 输出**契约不同**）。零返工：`retry_count=0`、各 `stage_retry_count=0`、Stage 0/1/2/3/5 各 1 attempt、Stage 3 attempt 1 即 `[PRECISION_PASS]`（Stage 4 按 harness 跳过）。
+
+- **语义/契约（设计师第一件事）**：源共享工厂按 `op_kind` 分派**不同归约原语与不同输出 dtype**——错认 kind 契约（把 `count_nonzero` 当 bool 类）会让整条精度验证链失效。host/Op 层语义 = `movedim(dims→last) → contiguous → reshape(M,N)` + 非浮点 dtype（bool/int32/int64/complex）预转 float32；kernel 声明 **raw N**（`_kernel_handles_padding=True`，host 不 pad）。
+- **设计主选（元素预算 + 双路径）**：容量判据从「48 KB SMEM 启发式」换成**元素预算**——编译期探针实测「`vcmp(eq) → vcast(i1→f32) → reduce_sum(dim=1)` 指示链」**UB 单价 8.00 B/元素**（与 dtype 无关）⇒ 单 block 硬上限 24576 元素、竞态安全档 `E_cap = 8192`。**路径 R**（`N ≤ E_cap`，全 N 驻留 + `reduce dim=1`）/**路径 C**（`N > E_cap`，`bm=1` 列分块在线累加 + 静态尾块），`_pick_tile_n` 取「整除 N 的 256 倍数优先」。零计数补式 `y = N − Σ[x == 0]`（有序 EQ，NaN 安全）落在 `(bm,)` 微缓冲。
+- **陷阱（本任务新增知识条目）**：`@T.prim_func` 内解析期 `if` 定义 buffer → 分支名不逃逸（tail>0 报 `Undefined variable`，tail==0 同源可编译 ⇒ 缺陷随 shape 潜伏）——见 traps-compiler.md `TRAP-primfunc-compile-time-if-buffer-def`（含知识域 repro）；计数类合法判决形态见 `TRAP-vcmp-ne-ordered-nan` 第二数据点。
+- **集成（Stage 5）**：脚手架生成的 wrapper 仍带 GPU 期 `default_config`（48 KiB SMEM 启发式 → manifest `(2048,4096)` 取 `bm=8` ⇒ `8×4096 = 32768 > 24576` 元素 ⇒ 编译期 `ub overflow`，且无法表达 `N > E_cap` 的列分块路径）——wrapper 胶水改为委托 kernel 的 tiling 单源 `_select_config(M, N, dtype)["block_m"]`（kernel/tests/manifest 零改动；同族缺陷档案见 `CASE-argmax-argreduce-integration`）。harness 集成/report/kernel main 的运行前置 = `PYTHONPATH=<tilelang repo root>`（本仓 `tilelang` 非 pip 安装）。
+- **实测**：函数级 L0/L1/L2/Boundary 全过（`torch.equal`、int64 精确）；集成 report `status=passed`——正确性 **37/37**、benchmark **7/7**（4 例 msprof 有效）：`sparsity-hidden [2048,4096]` fp16 22.7405 µs（roofline 42.16%）/ bf16 29.2006 µs、`sparsity-seq [32,16384]` fp16 4.5001 µs（路径 C）、`3d-multidim-reduce [4,128,4096]` fp16 9.6602 µs；带宽口径 1.75 TB/s。
+- **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束），但其**能力动机**（大 N 可处理）由 NPU 自身 UB 元素预算驱动的列分块承接——源工厂不迁移 ≠ 其能力动机不迁移。
+- **durable 载体**：两条 trap 条目（`TRAP-primfunc-compile-time-if-buffer-def` 含 repro / `TRAP-vcmp-ne-ordered-nan` 计数类延伸）；元素预算单价与适用域限定见 constants.md `CONST-reduce-ub-per-element`（追加数据点入队 VP-2026-0263）；行归约「布尔指示平面→补式」形态集入队 VP-2026-0265。本任务 `RETROSPECTIVE.md`（op 级/函数级）/ `SESSION_TIMING_ANALYSIS.md` / 集成侧 `integration_log.md` 为 provenance（任务工作区，未上库，允许失效）。

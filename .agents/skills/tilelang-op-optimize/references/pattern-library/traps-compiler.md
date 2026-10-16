@@ -339,8 +339,8 @@ apis: [T.vcmp, T.vcast, T.vmul, T.vselect, T.reduce_min, T.vmax, T.reduce_max]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z
-toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第二数据点：计数类的合法形态延伸 + NPU 运行期实证）
+toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16
 repro: repro/TRAP-vcmp-ne-ordered-nan.py
 ---
 
@@ -350,6 +350,7 @@ repro: repro/TRAP-vcmp-ne-ordered-nan.py
 - **后果（静默失效加假阳性通过）**：以 `v != v` 作 NaN 掩码时掩码恒假（标志位永不触发），而端到端 NaN 用例仍可能"通过"——因为 `T.vmax` / `T.reduce_max` 在本工具链会传播 NaN，"窗口内任一 NaN 胜出"被该未文档化行为顺带修对。adaptive_max_pool2d 迁移 Stage 3 首版即此形态（`vcmp(...,"ne")` + `vmax` 累积），L0-10 NaN/±inf 语义门禁首轮假阳性通过；经 5 组最小探针逐层剥离定位，改用 `eq` 取反后语义判定变为确定性路径、全部用例复跑仍全过且 `max_diff=0`。
 - **合法绕法（本工具链实测，逐位正确）**：NaN 探测走 IEEE 正确的 `"eq"`（或 `"le"`/`"ge"`）取反——行级 `cond = T.vcmp(x, x, "eq")` → `T.vcast(cond, f32)` 得 {0,1} 掩码 → 逐元素 **in-place `T.vmul(flag, mask, flag)`**（`flag` 初值 1：0 吸收、1 中性）→ 末尾 `vcmp(flag, 0, "eq")` 即 `has_nan`（整平面 C4 路径以 `T.reduce_min` 收尾）。全程只用 IEEE 正确的比较模式，不依赖 `T.vmax`/`T.reduce_max` 的 NaN 行为。文档侧：`docs/Tilelang.language/比较操作/T.vcmp.md` §2.3 只列合法枚举，未说明 NaN 行为。
 - **证明**：`python repro/TRAP-vcmp-ne-ordered-nan.py`（exit 0：`ne` 自比 NaN 行全 0 复现 + `eq` 为 `isnan` 的 IEEE 补集断言 + eq-mask 乘性累积 `flag==0 ⟺ 列含 NaN` 断言 + NaN-free 操作数对 `ne` 正常）。与 TRAP-expert-v-operands（vcmp 操作数形态与 int16 标量化）互补：前者管操作数形态与执行代价，本条管比较模式的 NaN 语义。溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcmp-ne-ordered-nan.py}`。
+- **〔2026-10-16 第二数据点：计数/谓词类的合法形态〕** 需要「非零 / 非等」判决的**计数类**算子（`count_nonzero` 形态）在本工具链的合法表达式是**有序 EQ 的补式**：`y = N − Σ_j [x_j == 0.0]`——① 数学恒等（行内 `#{x≠0} + #{x=0} = N`）；② `eq` 为 IEEE 正确 ⇒ NaN 不满足 `== 0` ⇒ NaN 计入非零，与 torch `count_nonzero` 及源侧 unordered-NE 判决一致（用 `ne` 判非零会把 NaN 误判为零）；③ 取反路线不可行——`T.vnot` 的 dtype 表不含 `bool/int1`（`docs/Tilelang.language/逻辑操作/T.vnot.md` dtype 表；bool 仅可作片上中间结果、不可 load/store GM，同文档注），故 `[x≠0]` 只能以补式表达；④ **补式的落点在行级微缓冲**（`N − Σ` 在 `(bm,)` 微元上做 1 次 `vsub`），不是在全宽平面做 `1 − ind`（后者 +1 个 4 B/元素平面与 +1 个全宽 pass）。**运行期实证（NPU，非仅文档）**：fp16/bf16/fp32 三路 `vcmp(eq)→vcast(i1→f32, rint)→reduce_sum(dim=1)` 链在 `count_nonzero` L0-12 / L1-4 上逐位精确——`[NaN,0,-0,1,-1]` 行计数 2（NaN 计入非零、±0 不计入）、最小亚正规行（fp16 2^-14 谱系 / fp32 2^-149 谱系）计数与 torch 一致（**亚正规不做 FTZ**）；纯算法侧判别力对照（有序-NE 路线在 NaN 行报出 42 处差异）见 `examples/count_nonzero/_logical_reduce_kernel/verify_equiv.py`（torch CPU，provenance 允许失效）。溯源：`examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§1.6.1-E1, _logical_reduce_kernel.py#run_L0 L0-12 / run_L1 L1-4}`（任务工作区，未上库，允许失效）；工具链同 front-matter 第二数据点。
 
 ---
 id: TRAP-npuir-vbrc-region-dropped
@@ -589,3 +590,25 @@ repro: repro-missing
 - **证明（本任务工作区，未上库，允许失效）**：`perf_opt/_adaptive_max_pool2d_with_indices_kernel_round1_gen.py` 的 G6 分支编译报该错；
   改用 `vcmp` 产出的专用 bool 缓冲后同分支 L0 全过（`perf_opt/logs/` 内有 stderr）。
   溯源：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/perf_opt/opt_log.md` §3.3 F6。
+
+---
+
+id: TRAP-primfunc-compile-time-if-buffer-def
+kind: trap
+family: [general, reduction, migration]
+apis: [T.prim_func, T.alloc_shared, T.alloc_fragment, T.Kernel]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（Stage 3）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-primfunc-compile-time-if-buffer-def.py
+---
+
+### `@T.prim_func` 内解析期（Python 层）`if` 定义 buffer——分支内名字不逃逸，缺陷随 shape 潜伏
+
+- **现象**：在 `@T.prim_func` 体内用 Python 层 `if <静态条件>:` 的分支内 `T.alloc_shared(...)` 定义缓冲、随后在 **sibling 分支**引用该名字时——① 条件为真 → 构建期抛 `ParserError: Undefined variable: <name>`（经 `DiagnosticError` 包裹，异常链文本可匹配）；② 条件为假（该分支体整体被跳过）→ **同源可正常编译**（repro 断言 B，隔离子进程 exit 0）。⇒ 缺陷**潜伏且随 shape 变**：可除尽宽度（无尾块）一路全绿，一旦「可选宽度」非零即编译失败。同一份更大形态（完整守卫尾块体 + 守卫 epilogue 分支）在条件为假时另观察到编译器进程 SIGSEGV（该最小触发未定钉，repro 只断言可靠的 parse-error 签名并如实标注）。
+- **量纲/边界**：纯前端解析期行为，与 dtype、tile 规模、设备无关（本任务最小形态 M=8 / N=8192 / fp16 复现）；断言 A/B 为 compile-only，不需要 NPU 设备。
+- **绕法（本工具链实测可用）**：把结构性条件提升到 `@tilelang.jit` **工厂层**，按变体返回**独立 prim_func**（一 variant 一 prim_func）——repro 断言 C：两形态均编译通过，且在有 NPU 设备时逐位精确（`torch.equal`，`x[:, ::3] = 1.0` 的行非零计数精确）。本任务三形态 = 路径 R（resident）/ 列分块无尾块 / 列分块带静态尾块。
+- **族内位置**：本文件 §C11「parser var-table 作用域问题」（无细节的裸条目）在此获得可复现的具体形态与最小触发。与 `TRAP-tir-range-loop-not-unrolled`（Python `range` 非编译期展开）同属「Python 层直觉 ≠ 前端语义」族——两者的共同事实：Python 层的条件/循环不构成前端可用的结构分派，结构决策的有效表达位置是 `@tilelang.jit` 工厂层。
+- **证明**：`python repro/TRAP-primfunc-compile-time-if-buffer-def.py`（exit 0，`ALL ASSERTIONS PASS`；A = tail>0 抛 `Undefined variable` / B = tail==0 干净编译（隔离进程）/ C = 工厂层两 prim_func 变体编译且（设备存在时）精确）。溯源（任务工作区，未上库，允许失效）：`examples/count_nonzero/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-primfunc-compile-time-if-buffer-def.py}`；同族决策记录见该任务 `_logical_reduce_kernel.py` docstring（"one dedicated prim_func per variant"）。

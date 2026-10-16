@@ -494,13 +494,20 @@ evidence:
   - repro/__pycache__/TRAP-multitile-bm-gt1-segfault.cpython-311.pyc（前次任务，
     2026-09-23；触发矩阵见 DESIGN.md examples/argmax/_argreduce_kernel §9.1-C-5）。
   - DESIGN.md §9.1-C-5 / §9.2-R3（本任务引用其结论未复现崩溃本身）。
+  - 〔2026-10-16 本工具链**不复现**（适用域收窄）〕count_nonzero-_logical_reduce_kernel-20261016T005019Z
+    Stage 1 编译期探针：列分块形态 + `bm>1`（fp16 `2×4096`×4 tile / `8×512`×32 tile / fp32 `2×1024`×16 tile）
+    在 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 上
+    **全部编译通过**（结论落笔于该任务 DESIGN.md §9.4）。⇒ 本条目适用域限定为**原工具链**
+    （dev root build 2026-09-24 / CANN 8.5.0 / Ascend910B2C）；另一工具链上的可编译性单独立论，
+    旧结论不构成对新设计的否决（版本戳纪律）。**occurrences 不计**（本条非新识别，属复核记录）。
+    provenance（任务工作区，未上库，允许失效）：`examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§9.4, history_version/design_probe_tileloop.py}`
 workaround: tiled 路径强制 bm=1（工厂期保证）；小 M 大 N 负载改 N-split 两段 kernel。
 occurrences: 1  # 前次任务识别；本链 Stage 1（DESIGN §9.4-R9）发现登记丢失并补录、Stage 4 引用未复现崩溃本身
 tasks: [argmax-_argreduce_kernel-stage3-前次任务, argmax-_argreduce_kernel-20260924T031005Z]
 toolchain_stamp: tilelang 0.1.2 (dev root build 2026-09-24) / CANN 8.5.0 / Ascend910B2C
 status: open
 created_by: argmax/_argreduce_kernel DESIGN §9.4 补录（2026-09-28）
-last_seen: argmax-_argreduce_kernel-20260924T031005Z（2026-09-28）
+last_seen: count_nonzero-_logical_reduce_kernel-20261016T005019Z（2026-10-16，同组合在新工具链不复现——复核记录，非独立识别）
 ```
 
 ### CG-2026-0015
