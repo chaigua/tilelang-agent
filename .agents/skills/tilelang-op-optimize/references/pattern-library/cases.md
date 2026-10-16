@@ -310,7 +310,7 @@ capability-gaps 登记簿（`.agents/evolution/capability-gaps.md`）open 条目
 |--------|-----|---------------|
 | CG-2026-0001 | codegen (Developer mode) | Developer 形态 codegen 能力缺口 |
 | CG-2026-0002 | BishengIR（cbuf→cbuf copy） | cbuf→cbuf 搬运不支持（vbrc 清零 lowering + Expert T.copy L1→L1 双形态；recurring） |
-| CG-2026-0003 | TileLangIR pass (Expert fixpipe lowering) | Expert fixpipe lowering 与 BishengIR 版本配对缺口 |
+| CG-2026-0003 | TileLangIR pass (Expert fixpipe lowering) | Expert fixpipe lowering 与 BishengIR 版本配对缺口——**2026-10-16 recurring**：第二形态 = Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性被 CANN 9.0.0 `bishengir-compile` 判 `Dialect '' not found`（既有 fwd Expert 核在当前工具链不可编译；详见 CG-2026-0003 条目 proposal） |
 | CG-2026-0004 | tladapter/codegen (load_nd2nz 区域描述符下推) | load_nd2nz 跨步区域静默误读（绕法见 traps-runtime.md TRAP-load-nd2nz-strided） |
 | CG-2026-0005 | Frontend API / codegen | 前端 API 能力缺口 |
 | CG-2026-0006 | TileLangIR pass / codegen（向量算子融合与 f16 打包发射） | 向量算子融合缺口（f16≈f32 发射速率的机制根源，见 attention.md PL-1.9-hardlimits） |
@@ -320,8 +320,9 @@ capability-gaps 登记簿（`.agents/evolution/capability-gaps.md`）open 条目
 | CG-2026-0010 | codegen（Developer mode persistent+gemm） | Developer 模式 persistent 分核 + gemm 混排运行时崩溃 |
 | CG-2026-0011 | Frontend API（gemm dst L0C region 写 / acc 相加原语） | gemm dst 不支持 L0C region 写、两 L0C acc 无相加原语 |
 | CG-2026-0012 | BishengIR（auto-multi-buffer 动态 subview 支配性） | 动态偏移 UB subview 进嵌套循环产出非支配 IR |
+| CG-2026-0030 | BishengIR（bishengir-compile 后端崩溃） | `S == 32` 段错误（persistent+Pipelined+动态 extent copy+gemm+行原子骨架；CANN 9.0.0，见 traps-compiler.md TRAP-bishengir-crash-s32 含 repro） |
 
-> BLOCKED 终态任务的反例根因链条目同入本节（由 evolver 追加，标注「反例」）。
+> BLOCKED 终态任务的反例根因链条目同入本节（由 evolver 追加，标注「反例」）：**CASE-attention-mha-bwd-migration**（`multi_head_attention` bwd 迁移，`BLOCKED_ENVIRONMENT`——bwd 三核全 `[PRECISION_PASS]`，阻塞面在 fwd Expert 核的工具链错配 + gate 5 多 Kernel 共 wrapper 结构性冲突）。
 
 ---
 id: CASE-argmax-argreduce-stage4
@@ -683,3 +684,28 @@ reduction 家族**第三个 logical_reduce / 谓词 OR 类** TileOPs 迁移（`A
 - **实测**：函数级 L0 26 / L1 26 / L2 14 行 / Boundary 27 行全过；`--level all` exit 0，**101 次精确比对 0 差异**（bool 输出逐位）；路径 R ↔ 路径 C 在「同一有效数据 + 补 0.0」下 `torch.equal`。集成 report `status=passed`——正确性 **42/42**（`avg max abs error = 0.00e+00`）、benchmark **6/6**、3 例 msprof 有效（`invalid_profile_count=0`）：`mask-validation-4k [32,4096]` bool dim=-1 2.7401 µs（roofline 10.94%）/ `mask-validation-32k [32,32768]` 6.6801 µs（35.88%）/ `3d-multidim-reduce [4,128,4096]` dim=[0,2] 11.1002 µs（43.18%）；带宽 1.75 TB/s。
 - **门禁/集成交互（非设计缺陷的返工与外观清理，供后续同族任务预判）**：① `S2-MIG-DIM0` 裸子串 `"n/a"` 被源路径 `reduction/any` 命中（词边界修复见 queue VP-2026-0197，本次为**第四次**独立复现；代价 = `design_revision` 回退 130 s + 消耗 1 单位 `retry_count`）；② `integrate_kernel.py::rewrite_wrapper_import` 对 scaffolder **已预置** baseline/perf_opt 选择块的 wrapper 非幂等（产生重复表头；integrator 手工去重并备份 `any_kernel/history_version/any_wrapper_s5_preseed_dup.py`，功能无害）——见 queue 新增 R 类提案；③ 集成/report 运行前置 = `/workspace/venv/bin/python` + `PYTHONPATH=<repo root>` 于 `examples/TileOPs/` 下（本仓 `tilelang` 非 pip 安装）。
 - **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束）；其「大 N 可处理」的能力动机由 NPU 侧元素预算驱动的列分块路径承接。同工厂兄弟档案见 `CASE-reduction-countnonzero-migration`（契约 int64）与 `CASE-reduction-all-migration`（谓词 AND，四项反转的另一侧）。
+
+---
+id: CASE-attention-mha-bwd-migration
+kind: case
+family: [attention, mixcv]
+mode: [developer, expert]
+dtype: [fp16, bf16, fp32]
+status: verified
+origin_task: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（op 级）/ multi_head_attention-_{flashattn_bwd_preprocess_kernel,gqa_bwd_kernel,flashattn_bwd_postprocess_kernel}-20261016（函数级，各自独立 Stage 1–3）
+toolchain: tilelang 0.1.2(+1bc8dbc3) dev root build + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）；fwd 既有产物戳为 CANN 8.5.0 / Ascend910B2C（未在当前工具链验证过）
+repro: none（三枚 trap 各自的 repro 已单列；本条为档案聚合）
+---
+
+### `examples/multi_head_attention/`（任务工作区，未上库；集成副本 `examples/TileOPs/tileops/kernels/attention/multi_head_attention/`，**同文件追加**进既有 fwd 包）
+
+attention 族**首个 attention-backward 迁移**（GPU `MultiHeadAttentionBwdOp` → NPU TileOPs，同文件追加，不拆 fwd/bwd）：按 manifest `kernel_map` 提取 3 个 kernel——`_flashattn_bwd_preprocess_kernel`（row-wise `delta = rowsum(o ∘ do)`）/ `_gqa_bwd_kernel`（主 kernel，5 GEMM + 行原子 dq；MHA = GQA 的 `H_kv = H` 特化）/ `_flashattn_bwd_postprocess_kernel`（dq 纯 dtype 下转换回写）。**终态 `FAILED` / `BLOCKED_ENVIRONMENT`**，但三个 bwd kernel 全部 `[PRECISION_PASS]` 且经 conductor 独立二次校验复核 —— 反例价值集中在**工具链与门禁结构**而非 kernel 正确性。
+
+- **语义解读的迁移要点（含源侧陷阱）**：① `make_dq_layout` 是 GPU 侧 Ampere 8×8 mma fragment 重排，与**生产者 kernel 共享物理契约**；NPU 主 kernel 以自然 BSHD + 逐行 1-D 行原子写 dq ⇒ 保留注解会让读侧按 `π ≠ id` 置换解释地址、**静默错值**（无报错无 NaN），故必须**舍弃**（判定 = 读对端 kernel 的 NPU 实现确认产物布局 + 读 op 层确认共用同一 `torch.zeros_like` 缓冲）。② 源 `qkt = K·Qᵀ`（`[kv, q]`）使 `lse`/`delta` 成为**列因子**——NPU 上列因子需 `vbrc` 展开或吃未文档化列广播税（PL-1.15），改声明为 `[q, kv]` 后命中文档化行广播、零额外 op。③ 指数基域可降代：`T.vexp2` 的 lowering 是 `exp(x·ln2)`（2 op），把参数重标定为自然域（`x·scale − lse` → `x·sm_scale − lse·ln2`）省 1 个整 tile 向量 op（发射受限算子上 ≈11% 单点削减）。④ causal 掩码搬到指数域惩罚 + 平面循环不变量提升：`by·bm+i ≤ k_idx·bn+j` 两边同减左项得 `j − i ≤ d0`（`(j−i)` 与循环变量无关 ⇒ 每任务物化一次）。
+- **主 kernel 的三处「设计骨架形态在本工具链不可用」（Stage 3 首轮 L0 冒烟即暴露）**：① `T.Parallel` 2-D 平面 + 逐操作数 affine cast **静默丢行项** → 改嵌套 `T.serial` 标量构造（`TRAP-parallel-affine-cast-plane`，含 repro）；② `T.Pipelined` 内 `T.gemm(size=<runtime extent>)` ⇒ 伪 `cbuf overflow` → 尾块动态性只留 GM↔UB copy 与行原子、GEMM 全 tile + 操作数预清零（`TRAP-gemm-dynamic-size-cbuf`，含 repro）；③ 同一 UB buffer 兼作 mask 暂存与 g2 输出 ⇒ 下游静默读损坏值（causal 档 `dk` 最大 1.96e4）→ 独立 `dsd` 缓冲（`TRAP-vec-cube-ub-scratch-role-conflict`，含 repro）。另：运行时标量作 v-prefix 操作数的唯一可用形态是 let-bound `T.alloc_var`（dtype 必须与 tensor 操作数一致；裸 `PrimExpr` 前端报 `has no attribute buffer`；该标量不得用于 `T.Parallel` body 内依赖外层循环变量的表达式——运行时 core dump）。
+- **量化/门禁形态（可复用教学点）**：① **「源忠实 golden」作 tier-3 绑定判据**——对 `(1,300,8,2,128)` bf16 causal，与 fp32 golden 的最大差 1.244e-2（dv 139/614400 元素超 atol，**0.023%**）而 kernel 落在容差内；改为与「P/dS 同样回落输入 dtype」的源忠实参考比对后最大差 **7.5e-4、0 超差**。元素占比与包络都是**量级相关**的启发式（非归一化输入 q,k~N(0,4) 使占比从 0.025% 涨到 **3.10%**）⇒ 绑定判据是「与源忠实参考 tier-1 全过」，占比只作 sanity 上限。② ±100 倍输入量级档下 `exp` 参数 ~1e4 的 fp32 灾难性抵消使两条舍入路径差 ~1%（与实现正确性无关）——该档只应记录不断言。③ `_gqa_bwd_kernel` 冻结态：L0 16/16、L1 10/10、L2 6 PASS/1 WARN（`S=32` 后端段错误）、Boundary 1 PASS/1 WARN，manifest 四档 `max_diff ≤ 1.13e-3`。
+- **原子形态实证（设计期探针，均为逐位对照）**：fp32 二维区域 `T.atomic_add` 单价 ≈ **1.09×** 普通 `T.copy` store（135.73 vs 124.25 µs / 8.4 MB）——「原子很贵、值得为避原子做结构重设计」的纸面直觉不成立；`T.atomic_add` 是**真 fetch-add**（非零初值 `5.0 + 1.0 ⇒ 6.0`；零初始化 dst 的探针无法区分累加与覆盖），本工具链 20 并发同址写精确无丢更新；**区域语义依赖目标切片形态**——rank-2 张量 + 双侧显式切片（`len(size) == rank`）正确且步幅敏感，而「scalar 索引 + 切片」的 rank-reduced 4-D 目标（BSHD `[B,S,H,D]`、S 轴 stride `H·D ≠ dim`）被当作**连续平铺块**处理（目标区大部分未写 + 区外污染），动态 extent 形态则首编失败（`int() argument ... not 'Var'`）。正确形态 = **逐行 1-D 行原子** `dst[bz, row, h, 0:dim]` + `[1, dim]`。另：本测试床 ~120 µs/launch 的固定地板会吞掉小 op 单价（32 条行原子 ≈ 1 次区域 store），小 op 单价只能从真实 kernel 的 pipe-time 分解反解；同一设备上**并行**跑计时类探针会互相污染（同一对探针并行 1.68× vs 串行 0.99×）。
+- **能力缺口 / 门禁结构（终态失败的真实根因链）**：① **fwd Expert 核在当前工具链不可编译**——既有 fwd `GQAPrefillFwdKernel`（CANN 8.5.0 时代产物）的显式 `T.sync_block_set` 使 codegen 产出 `hivm.hir.sync_block_set[… syn_instr_mode = <INTRA_BLOCK_SYNCHRONIZATION>]`，CANN 9.0.0 的 `bishengir-compile 1.1.0` 报 `Dialect '' not found for custom op 'syn_instr_mode'`；仓内自建 `AscendNPU-IR/build/install/bin/bishengir-compile` 能解析该 IR，但其向 CANN 9.0.0 `hivmc` 发出的 flag（`--enable-cpu-trace-intrinsic=false` / `--enable-lir-compile=true`）被拒（`Unknown command line argument`）⇒ **两侧编译器组合均不可用**（见 capability-gaps CG-2026-0003，已升 recurring）。② **gate 5 `S5-ASCEND-MODE` 与「多算子共 wrapper」结构性冲突**——该规则要求 wrapper 内**恰好一个**直接继承 `Kernel` 的类且其 `ascend_mode` == 集成 kernel 模式；同文件追加型迁移必然让 wrapper 同时含 fwd(Expert) + N 个 bwd(Developer) 的多个 Kernel 类 ⇒ `len(classes) != 1` 与 `set(class_modes) != source_modes` 两条件同时不满足，**无论 kernel 正确性如何 `complete_stage(5)` 都不可能通过**（防再犯提案入 queue）。③ 集成侧三处**同文件追加陷阱**（均在本任务 in-scope 内修复，全部属既有提案家族）：聚合 `__init__.py` 重建丢掉 fwd export + `make_dq_layout` 契约名（VP-2026-0055 家族）、`rewrite_wrapper_import` 的 "already integrated" 探测被**被注释的 baseline 行**触发致 wrapper 不重写（VP-2026-0064 家族）、三个 bwd Kernel 子类的 `ascend_mode` 须手工补齐（VP-2026-0150 家族）。④ `S5-REPORT-STALE` 口径为 `run.json` mtime vs wrapper/pkg/kernel（VP-2026-0151）：integrator 在 report **之后**修 import 陷阱 ⇒ report 被判 stale，而 §7.1 协议又禁止重跑 correctness/benchmark ⇒ 追加型集成落入「stale 但不得重跑」死角。⑤ report 的 `--op` 作用域选整个 `tests/ops/test_<slug>.py`，fwd/bwd 用例同报 ⇒ 8 失败中 4 例是 fwd 编译失败、另 4 例是其下游（`MhaBwdWorkload.gen_inputs` 先跑 fwd 造 `o`）；判定须读 per-operator rollup。
+- **适用触发条件**：attention-backward / 三件套式（preprocess–main–postprocess）迁移；「同文件追加进既有算子包」的迁移形态；含行原子写回 fp32 梯度的算子；需要 tier-3 量化噪声分类的迁移门禁设计；CANN 8.5.0 时代既有 Expert 产物在新 CANN 上的可用性预判（迁移前先跑一次基线冒烟）。
+- **诊断顺序（本任务实证有效）**：先跑 bwd kernel 自带 golden harness（`python {func}.py --level L0`，16/16 PASS，844.7 s）确认 bwd 与 fwd 解耦；再 `git` 回溯对照（还原 wrapper → 同款 `syn_instr_mode` 失败 ⇒ 先存产物/工具链问题而非本次编辑引入）；再双编译器对照（系统 `bishengir-compile` vs 自建）定位为工具链版本错配。
+- 溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/{._task_timeline.jsonl, SESSION_TIMING_ANALYSIS.md, _gqa_bwd_kernel/{RETROSPECTIVE.md, DESIGN.md, repro/}, _flashattn_bwd_preprocess_kernel/{RETROSPECTIVE.md, repro/}, _flashattn_bwd_postprocess_kernel/{RETROSPECTIVE.md, repro/}}`；集成侧 `examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md` + `examples/TileOPs/reports/tileops/20261016_065819_471539_MultiHeadAttentionBwdOp/{run.json,report.md}`。

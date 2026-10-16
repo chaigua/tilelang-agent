@@ -362,6 +362,7 @@ repro: repro/TRAP-reduce-ub-per-element.py
   | `vcmp(eq) → vcast(i1→f32) → reduce_min(dim=1)`（bf16；**第四数据点**） | **12.00** | 16384 |
 
   - **第四数据点（谓词 OR / `any` 类迁移，独立重标定、未借用姊妹数值）**：2-D 行归约 `vcmp(eq) → vcast(i1→f32, rint) → reduce_min(dim=1)` 链（`any` 的补式形态）单价与 `reduce_sum` / `reduce_max` 链**同价**——fp16/fp32 = 8.00、bf16 = 12.00 B/元素，即 `reduce_min` 不额外定价（`vreduce <min>` 与 `<max>` / `<sum>` 同记账）。本单元由 compile-only 探针**独立标定**（`E_cap = 196608 // 2 // 12 = 8192`，按最坏 dtype 12 B 记账），与姊妹 `all` / `count_nonzero` 数字一致但依据自本单元链形态——非数字平移。溯源：`examples/any/_logical_reduce_kernel/{DESIGN.md#§4.5, history_version/design_probe_ub.py 第二节}`（任务工作区，未上库，允许失效）；工具链 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16。
+  - **正交维度：归约轴对齐带（2026-10-16，`multi_head_attention` bwd preprocess）**：本条的单价分带自变量是**链形态/dtype**；与 dtype 正交的第二个自变量——**归约轴长度是否为向量宽整数倍**——实测再分两带（对齐 `D % 8 == 0` ≈ 10–12 B/元素 vs 非对齐 **96 B/元素**）。该细分因独立 repro 与独立测量维度单列为 `CONST-reduce-ub-price-axis-alignment`（非重复立项），设计期 UB 预算须同时按 dtype 与对齐性两维取值。
   - **单价口径 = 通过点反解上界（非严格线性常数）**：同一 dtype 在**通过点**（`196608 / 通过元素数`）与**溢出点**（`requires bits / 元素数`）反解可给出不同值——实测 fp16 `bm=1/tn=32768` 溢出仅超 UB 96 B（`requires 1573632 bits` = 196704 B）⇒ 溢出点反解 6.00，而同 32768 元素在 `bm≥2` 档通过点反解 8.00（bf16 两档一致 12.00）。引用该常数做**线外推**前先做两类反解的一致性核对；容量判据以**通过点**（每个配置有直接编译通过点）为准——探针 ladder 的逐 `(dtype,bm,tn)` 通过比「单价 × 元素数」纸面推算可靠。
 
   - **dtype 分档的机制**：bf16 上 `vcmp` 的操作数被 lowering 上抛 f32（IR 可见 `vcast bf16→f32` 作用于两操作数，多 2 个 f32 平面 ⇒ 单价 ×1.5）；「含 `vcmp` 的归约链」的容量估算依赖对目标 dtype 的逐档实测（compile-only 探针约 3 s/配置）——按「单价与 dtype 无关」外推（沿 8 B/元素对 bf16 记账）在负载上直接 UB 溢出。
@@ -401,3 +402,54 @@ repro: repro-missing
   若 `ch` 被压到 ≤8 且 `num_cblk` 很大（`num_cblk >> 物理核数`），该特化在**时延**上不划算——须按 `num_local = ceil(N*num_cblk/vector_cores)` 一并核算。
 - 数据来源（任务工作区，允许失效）：`perf_opt/probe_global_reduce.py`（ch=8 精确、ch=16 UB overflow）、
   `perf_opt/probe_global_2d.py`（二维行归约标量化）、`perf_opt/logs/g2d_ch64.log` / `pr_ch8.log`。
+
+---
+
+id: CONST-reduce-ub-price-axis-alignment
+kind: constant
+family: [attention, reduction, migration]
+apis: [T.vcast, T.vmul, T.reduce_sum, T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z（Stage 3, first_impl attempt 1 + retry_impl attempt 2）
+toolchain: tilelang 0.1.2+1bc8dbc3（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/CONST-reduce-ub-price-axis-alignment.py
+---
+
+### 归约链 UB 单价按**归约轴长度是否为向量宽整数倍**分两带：对齐 ≈ 10–12 B/元素 vs 非对齐 **96 B/元素**（Ascend910B3 / CANN 9.0.0）
+
+- **口径**：链形态 = `vcast ×2`（fp16→f32）+ 原位 `vmul`（`o ∘ do`）+ `reduce_sum(dim=2)` + 1-D store staging，三维扁平声明 `(blk_s, 1, D)` + `reduce(dim=2)`，含声明缓冲与 auto-multi-buffer 膨胀；单价由编译期 `ub overflow, requires N bits while 1572864 bits available` 报文反解（不需要 profiler）。
+- **分带数据（同一 kernel 只变 `D`）**：
+  - **对齐带**（`D % 8 == 0`）：`D = 56/64/72/96/120/192` 全部 COMPILE OK；`D=64, blk_s=384 → E=24576` 溢出报文 = **11.3 B/元素**（`D=64, blk_s=256 → E=16384` 通过）⇒ **≈10–12 B/元素**。
+  - **非对齐带**（`D % 8 != 0`）：`D = 2/3/4/…/60/62/63/65/…/127` 全部 **96.0 B/元素**（`D=63, blk_s=64 → E=4032` 即溢出）。
+  - **例外**：`reduce_axis_len == 1` 退化为 copy，走便宜带。
+- **设计期后果（量级）**：manifest 域（`D ∈ {64,128}`，均 8 的倍数）的真实元素预算比「单一保守上界 42 B/元素」（`E ≤ 4681`）**宽 2–4 倍**——实测 `blk_elems = 8192` 编译通过且 `max_diff = 3.815e-06`，`D=64` 上 `E=16384` 仍可编译。反之域外防御档（如 `D=63` 的尾 lane 用例）在默认元素预算下**直接编译失败**，须由实现层按对齐带自动收敛有效元素预算（本任务收敛到 `blk_s=24`，`E=1512`）。
+- **用法**：UB 预算不得用「声明量 × 固定膨胀」的单一口径推全形态；廉价带的存在使「提高元素预算以摊薄发射项」的杠杆在 manifest 域比纸面估算可达区间大一个档位（设计原估 `E ≤ 4681`，实测 ≥16384）。
+- **族内位置**：本条是 `CONST-reduce-ub-per-element` 的**对齐带细分**（该条按归约**链形态/dtype** 分带：原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素；同库 2-D 行归约按 dtype 分档 fp16/fp32 8.00 / bf16 12.00）。本条给出与 dtype 正交的第二个自变量——**归约轴长度对向量宽的整除性**（非对齐档恰好落在该族「fp16 掩码 ≈96」同一档位上，说明非对齐形态退化为掩码级重型链）。两条目互为形态维度，不重复。
+- 溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_flashattn_bwd_preprocess_kernel/{_flashattn_bwd_preprocess_kernel.py 的 _UB_REDUCE_B_PER_ELEM_{ALIGNED,UNALIGNED} / _UB_BUDGET_SAFETY 常量与注释, repro/CONST-reduce-ub-price-axis-alignment.py}`；sweep 原始记录 = 该任务 Stage 3 Skill Flow Issues 第 2 行（probe3.py sweep + L0-10 阶梯）。
+- **证明**：`python repro/CONST-reduce-ub-price-axis-alignment.py`（断言：① 对齐 `D=64` 大 tile 在 <20 B/元素下溢出；② 非对齐 `D=63` 在 >60 B/元素下溢出；③ 非对齐/对齐单价比 >3；④ 阳性对照——非对齐 shape 在小 tile 下仍编译且数值正确；`--check-only` 只做编译）。
+
+---
+
+id: CONST-vcast-rint-downcast-bitexact
+kind: constant
+family: [elementwise, quantization, migration]
+apis: [T.vcast, T.copy]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z（Stage 3, first_impl attempt 1）
+toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+repro: repro/CONST-vcast-rint-downcast-bitexact.py
+---
+
+### `T.vcast(..., round_mode="rint")` 的 f32→f16/bf16 **下转换与 `torch.Tensor.to` 逐位相等**（含全部角点）⇒ 纯下转换算子的门禁可以合法采用逐位判据
+
+- **口径与实测**：`T.vcast(src, dst, round_mode="rint")` 的下转换方向在纯 dtype 下转换算子上对 CPU oracle（`torch.Tensor.to(storage_dtype)`）**0 bit 差异**——逐元素承载算子 115 个用例（L0/L1/L2/Boundary，含次正规、`±0`、`±inf`、`NaN`、fp16 溢出阈值 65520、`1+2^-11` / `1+2^-8` tie、fp32 极值）全部 `bit_mismatch = 0` 且 `max_diff = 0.000e+00`；独立 repro 在 2048 元素（29 个角点铺满 + 混合随机域）上 `f32→f16` / `f32→bf16` 各 **0/2048** 差异，`f16→f32`（控制组）同样 **0/2048**。
+- **对照（必须区分）**：同 dtype `f32→f32` 形态**不是**恒等搬运——实测 **2047/2048** 元素 ≠ 源（静默退化为 round-to-integer，见 `TRAP-vcast-same-dtype-rounds`）。因此同 dtype 搬运的载体是 `T.copy`（按 dtype 在 trace 期分派），`vcast` 只用于**真 dtype 变化**；下转换的源/目标 dtype **必须不同**。
+- **用法**：纯下转换（cast-only）算子的门禁可采用**逐位相等**（`torch.equal` + NaN 等价）而非容差——前提是显式 `round_mode="rint"`。该条件同时给出「舍入语义可机器验证」的正向结论：`torch.Tensor.to` 与「精确有理数 RNE」在 12471 点 × 2 dtype 上逐位相等，而被否决的 `round`（half-away）/`trunc` 分别差 91/6091（fp16）、82/6278（bf16）——即该等价性检查有判别力，非恒真陈述。
+- **边界/量纲**：判据为逐位相等（0 差异），无时延量纲；本任务四档 manifest 与 `blk_elems ∈ {4096, 8192, 16384}` 三档全部一次编译通过。
+- **族内位置**：与 `TRAP-vcast-same-dtype-rounds`（同 dtype 退化）互为正反面；`PL-1.17-subfp32-fp32-transit` 是**上抛** fp32 中转模式，本条是**下压**到存储 dtype 的逐位等价结论（repro 头部以其为「最近邻条目」并登记于本条）。
+- 溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_flashattn_bwd_postprocess_kernel/{_flashattn_bwd_postprocess_kernel.py L0-12/L0-13 角点用例, verify_equiv.py 的 D-1 结果表, repro/CONST-vcast-rint-downcast-bitexact.py}`。
+- **证明**：`python repro/CONST-vcast-rint-downcast-bitexact.py`（断言：① `f32→f16` == `torch.to(float16)` 逐位；② `f32→bf16` == `torch.to(bfloat16)` 逐位（各在角点 + 混合域）；③ `f32→f32` 在 >半数非整数输入上 ≠ 源；④ `f16→f32`（控制组）逐位）。头部另记一条附属陷阱：独立探针/repro 在 `import tilelang` 前未设 `TILELANG_ASCEND_MODE` 时 `jit_npu` 走 Expert 选项，合法 Developer 形态 kernel 会在 bishengir-compile 报**误导性**的 `'hivm.hir.store' op only support store ub to gm currently!`（该附属陷阱无独立 repro，另立 Tier 1 条目跟进）。

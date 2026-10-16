@@ -684,3 +684,137 @@ repro: repro/TRAP-npuir-ir-gate-loop-scope.py
 - **边界/量纲**：纯编译期检查（断言只证明 IR 形态，不证明数值语义）；两路径的数值正确性须运行期闭合（`torch.equal`，见 layout.md PL-1.25）。变体枚举：驻留路径 = `num_full == 1`，列分块路径 = `num_full > 1`。
 - **族内位置**：本条是 `TRAP-parallel2d-bm-ge2-scalarize`（标量化判据）的**适用域限定**，两者构成同一 IR 门禁的两面——判据面（什么形态说明退化）+ 作用域面（该判据对哪些变体有效）。
 - **证明**：`python repro/TRAP-npuir-ir-gate-loop-scope.py`（exit 0，compile-only、无设备依赖：两变体均断言 `hivm.hir.vcmp/vcast/vsub/vreduce <min>` + `reduce_dims=[1]` + 无 `arith.cmpf`，并断言 `scf.for` 仅驻留路径缺席）。溯源（任务工作区，未上库，允许失效）：`examples/any/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3 Value Point Proposals 第 4 行, repro/TRAP-npuir-ir-gate-loop-scope.py, _logical_reduce_kernel.py#_run_vectorised_ir_check}`。
+
+---
+
+id: TRAP-parallel-affine-cast-plane
+kind: trap
+family: [attention, general, migration]
+apis: [T.Parallel, T.Cast, T.serial]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3, first_impl attempt 1）
+toolchain: tilelang 0.1.2 dev root build（/workspace/tilelang-mlir-ascend/build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-parallel-affine-cast-plane.py
+---
+
+### `T.Parallel` 二维 body 内的 affine 索引 cast 静默丢行项——唯一可靠形态是嵌套 `T.serial` 标量构造
+
+- **现象（NPU 运行期实测，Developer 模式）**：2-D `T.Parallel(bn, bm)` 的 body 写逐操作数 cast 的 affine 平面
+  ```python
+  for i0, j0 in T.Parallel(bn, bm):
+      plane[i0, j0] = T.Cast("float32", j0) - T.Cast("float32", i0)
+  ```
+  在 `(16, 32)` fp32 平面上**静默丢行项**：最后一行末 6 lane 读回 `j`（`(i=15, j=26) → 26`，正确值 `15 − 26 = −11` 对应项丢失）。既非编译失败也非 NaN，值-only 抽查极易漏过。
+- **形态相关（关键澄清）**：把 cast 移到**差**上（`T.Cast("float32", j0 - i0)`）在**隔离探针里精确**，却在同一 repro 的另一上下文里同样出错 ⇒ `T.Parallel` 平面构造的精度是**上下文相关**的，「隔离探针通过」不蕴含「在本 kernel 通过」。本次实测**唯一**在四档几何 × 4 迭代下全 0 错的形态是**嵌套 `T.serial` 标量构造**：
+  ```python
+  for i0 in T.serial(bn):
+      for j0 in T.serial(bm):
+          plane[i0, j0] = T.Cast("float32", j0) - T.Cast("float32", i0)
+  ```
+- **边界/量纲**：`(16,32)` fp32 实测 mismatch **6 行内 lane**（Parallel 形态）；serial 嵌套形态在 4 档几何（含 `(bn,bm)=(64,64)`/`(32,32)`）全 0。代价 = 每任务一次 `bn×bm` 标量 store（causal mask 平面的构造量级；相对后续 5 个 GEMM + 9 个整 tile 向量 op 可忽略）。
+- **族内位置**：与 `TRAP-parallel2d-bm-ge2-scalarize`（同 `T.Parallel` 2-D body，但表现为**标量化**而非错值）同族、失效模式不同；与 `TRAP-scf-for-row-offset-silent-miscompile`（循环变量作共享缓冲行偏移 ⇒ 静默错值）并列为「循环变量/affine 索引 → 静默错值」两形态。causal attention 族的 `(j−i)` 距离平面构造是本条的高发落点。
+- **证明**：`python repro/TRAP-parallel-affine-cast-plane.py`（exit 0 = 陷阱复现 + 绕法成立：断言 A 逐操作数 cast 形态 mismatch > 0、断言 C 嵌套 serial 形态 mismatch == 0；差式 cast 形态仅打印记录，因其上下文相关）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{_gqa_bwd_kernel.py 平面构造段注释, repro/TRAP-parallel-affine-cast-plane.py}`；同族任务侧证据 = `probe_plane_path` / `probe_mask_final`（(16,32) Parallel 6/24 错 vs serial-nest 四几何 0 错）。
+
+---
+
+id: TRAP-gemm-dynamic-size-cbuf
+kind: trap
+family: [attention, general, migration]
+apis: [T.gemm, T.Pipelined, T.copy, T.clear]
+dtype: [fp16, bf16]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3, first_impl attempt 1；尾块 S % 64 != 0）
+toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+repro: repro/TRAP-gemm-dynamic-size-cbuf.py
+---
+
+### `T.Pipelined` 内的 `T.gemm(size=<runtime extent>)` ⇒ **伪 `cbuf overflow`**（数字无意义），两条件缺一不可
+
+- **现象**：Developer 模式下，`T.gemm` 的 `size=[m, k, n]` 显式覆盖携带**运行时 extent**（如尾块界 `rn = T.min(bn, S − c0)` 且 `S % bn != 0`）**且该 gemm 位于 `T.Pipelined` 循环体内**时，BishengIR pipeline 报
+  `cbuf overflow, requires 12009693044328448 bits while 4194304 bits available`
+  ——声明 tile 仅 ~100 KB（L1/cbuf = 512 KB）而报文里的需求位数是个无意义的巨大数（≈1.2e16 bit），报文不可作为容量反解依据。
+- **触发条件（bisect 实测，两条件缺一不可）**：① `size=` 携带运行时 extent；② 位于 `T.Pipelined` 循环体内。**静态** `size` 位于 Pipelined 内编译通过；**运行时** `size` 位于 Pipelined 外编译通过；`T.copy` 的运行时 extent 不受影响（各形态均可编译）。首轮 smoke 实测 `(1,8,8,100,64)` / `(1,8,8,300,64)` 全失败，`T.Pipelined(0, n_q)`（静态 start）后 tier-1 通过。
+- **可用形态（尾块 `S % tile != 0`）**：动态性只留在 **GM↔UB `T.copy` 的 slice** 与 **行原子循环界**（`T.serial(real_n)`）上；**GEMM 全部用全 tile extent**（不传 `size=`），并以**操作数预清零**（任务级 `T.clear(k_s/v_s)` + 每迭代级 `T.clear(q_s/do_s)`）保证 `[real_*, block)` 的 lane 精确为 0 ⇒ 全 tile GEMM 的额外 lane 贡献为 0（须同时保证消费侧对「0 lane」的其它操作数也是有限值：`0×finite = 0`，`0×NaN` 会污染）。实测 tail / causal+tail / GQA+tail 全部 tier-1（`max_diff ≤ 1.4e-3`）；未修正时同 shape 全 `cbuf overflow`。
+- **边界/量纲**：报文字节数不可用（伪值）；可用判据是「编译通过/失败」二元 + 尾块精度。Pipelined start 位置也是同类症状源（运行时 start 直接编译失败，症状同样是伪 `cbuf overflow`）。
+- **族内位置**：与 `TRAP-primfunc-compile-time-if-buffer-def`（形状相关的潜伏缺陷）同属「尾块/动态 extent 形态」族；L1 容量的正常记账口径见 `constants.md` 的 L1/cbuf 512 KB 行（`cbuf overflow, requires N bits while 4194304 bits available` 曾用于反解 L1 尺寸——本条说明该报文**只在静态 extent 形态**下可作反解依据）。
+- **证明**：`python repro/TRAP-gemm-dynamic-size-cbuf.py`（exit 0 = 三态对照成立：A pipelined+runtime size 报 `cbuf overflow`、B pipelined+static size 编译通过、C pipeline 外 runtime size 编译通过）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{_gqa_bwd_kernel.py 尾块段, repro/TRAP-gemm-dynamic-size-cbuf.py}`；同族设计期证据 = DESIGN §3.3 骨架形态 + `fix_tail.py` 六 case。
+
+---
+
+id: TRAP-vec-cube-ub-scratch-role-conflict
+kind: trap
+family: [attention, mixcv, migration]
+apis: [T.gemm, T.vbrc, T.vsub, T.alloc_shared]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3, first_impl attempt 1；causal 档 dsum 兼作 mask 暂存与 g2 输出）
+toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+repro: repro/TRAP-vec-cube-ub-scratch-role-conflict.py
+---
+
+### 同一 UB buffer 兼作 vector 暂存与 GEMM 输出 ⇒ 消费端**静默读到损坏值**（一个 buffer 只能有一个引擎写者角色）
+
+- **现象（NPU 运行期实测，Developer 模式，块内）**：
+  ```python
+  T.vbrc(7.0, buf)                 # vector 写
+  T.gemm(A, B, buf, initC=True)    # Cube 写同一 buffer
+  T.vsub(buf, row, out)            # vector 读
+  ```
+  消费端读到的 `buf` **既非 GEMM 真值也非 GEMM 前的 vector 值**：2048 cell **全错**（`max_diff 1.33e2`），无编译错误、无告警、无 NaN。给 vector 暂存独立的 scratch buffer，或让该 buffer 只由 GEMM 写，即精确。
+- **kernel 级后果（同源形态）**：causal 档的掩码惩罚平面与 `dsum`（g2 输出）复用同一 buffer ⇒ `ds = P·(惩罚 − δ)` 读到惩罚值而非 `dO·Vᵀ`，实测 `dk` 最大 **1.96e4**（换独立 `dsd` 缓冲后 **6.7e-4**）。即一个 buffer 角色冲突可把整个 kernel 的某个梯度输出毁掉，而精度门禁若只看总体元素占比会把它记成「量化噪声」。
+- **纪律（可复用形态）**：一个 UB buffer 只允许一个**引擎写者角色**（vector 写 xor Cube/GEMM 写）；读侧可跨引擎。causal/掩码类算子最容易踩（掩码惩罚暂存 + GEMM 输出常被写成同一个 tile buffer）。
+- **边界/量纲**：`(64,64)` fp32 平面 2048 cell 全错；三态对照 2048 / 0 / 2048 命中（A gemm-only 精确、B vector-then-gemm 全错、C 独立 scratch 精确）。
+- **族内位置**：与 `TRAP-vselect-inplace-carried-state`（别名/原位导致静默状态丢失）同属「别名与角色」族；MixCV 的 buffer 角色纪律在 mixcv skill 侧另有纪律条目。
+- **证明**：`python repro/TRAP-vec-cube-ub-scratch-role-conflict.py`（exit 0 = 三态对照成立）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{_gqa_bwd_kernel.py 的 dsd 独立缓冲修正, repro/TRAP-vec-cube-ub-scratch-role-conflict.py}`。
+
+---
+
+id: TRAP-reduce-rowsum-store-shape
+kind: trap
+family: [attention, reduction, migration]
+apis: [T.copy, T.reduce_sum, T.transpose]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z（Stage 3, first_impl attempt 1）
+toolchain: tilelang 0.1.2+1bc8dbc3（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
+repro: repro/TRAP-reduce-rowsum-store-shape.py
+---
+
+### 行归约结果写 S 连续段须经 1-D UB 中转——region 单位维**只能从左侧折叠**，payload 轴须在两侧尾部对齐
+
+- **现象**：三维行归约输出 `dlta` 形状 `(blk_s, 1, 1)`，直接区域拷贝到 GM 最内轴连续段
+  `T.copy(dlta[0:real_s, 0, 0], delta[bz, bx, s0:s0+real_s])`（两侧 region 分别是 `(real_s,1,1)` 与 `(1,1,real_s)`）
+  被 npuir codegen 拒绝：`error: 'bufferization.materialize_in_destination' op source/destination shapes are incompatible`。文档 `docs/Tilelang.language/内存操作/T.copy.md` §2.2.2 只说明「静态大小为 1 的维度会被自动折叠（rank 可不同）」，未说明**折叠只从左侧进行**、payload 轴必须落在两侧相同的尾部位置。
+- **可用形态**：1-D UB 中转 `T.copy(dlta[0:real_s, 0, 0], mid1[0:real_s])` + `T.copy(mid1[0:real_s], delta[bz, bx, s0:s0+real_s])`（代价 ≤ `real_s × 4 B`/task；实测 `max_diff = 3.3e-06`，精确）；单轴 `T.transpose(dlta, mid, permutation=[2,1,0])`（得 `(1,1,blk_s)`）同样正确，但引入 `vtranspose` op。
+- **边界/量纲**：本形态是「最内轴连续段写出」的通用约束——同一 kernel 内 `real_s` 须同时约束 GM→UB 装载、UB→GM 写出两侧 slice（三方同源），否则尾块越界/漏写（对照 `TRAP-T-copy-region-semantics` / `TRAP-UB-dst-align`）。
+- **族内位置**：行归约/逐行点积族的写出形态；下游同类落点 = `_flashattn_bwd_postprocess_kernel` 的 dq 回写、`_gqa_bwd_kernel` 的行原子写出（后者用逐行 1-D 行原子规避）。
+- **证明**：`python repro/TRAP-reduce-rowsum-store-shape.py`（exit 0 = 断言 1 原形态被拒且报错文本含 `materialize_in_destination` + `shapes are incompatible`、断言 2 绕法编译运行且与 torch reference 在 1e-4 内一致；`--check-only` 只做编译）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_flashattn_bwd_preprocess_kernel/{_flashattn_bwd_preprocess_kernel.py 模块 docstring「Implementation note」, repro/TRAP-reduce-rowsum-store-shape.py}`；设计侧原形态见该任务 DESIGN §3.3（已由实现替换）。
+
+---
+
+id: TRAP-bishengir-crash-s32
+kind: trap
+family: [attention, general, migration]
+apis: [bishengir-compile, T.Kernel, T.Pipelined, T.gemm, T.atomic_add]
+dtype: [fp16, bf16]
+device: 910B3
+status: verified
+origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3，L2 warn-only 记录）
+toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0（/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile）+ Ascend910B3 / 2026-10-16
+repro: repro/TRAP-bishengir-crash-s32.py
+---
+
+### `bishengir-compile` 对 `S == 32` **段错误**（CANN 9.0.0）——与 kernel 逻辑无关的后端崩溃，须与精度告警分离
+
+- **现象**：同一 Developer 骨架（persistent `T.Kernel` + 核内 `T.serial` 任务循环 + `T.Pipelined` query 循环 + 运行时 extent `T.copy` 到预清零操作数缓冲 + `T.gemm` + 逐行 `T.atomic_add`）在 `S = 32` 上 `bishengir-compile` **段错误**：
+  `NPU IR opt failed: PLEASE submit a bug report ... Stack dump:`；而 `S ∈ {16, 24, 40, 48, 56, 64, 96}` **全部编译通过**。崩溃与 tile 形状（`(bm,bn) = (64,64)` 或 `(32,32)`）、`heads`、`dim ∈ {64,128}`、`is_causal` 均无关（各变体实测）。
+- **影响面**：manifest 档（S 为 64 倍数）不受影响；仅 `S == 32` 这一档不可编译，故在分层测试里表现为 L2/Boundary 的一条 WARN，**与数值精度无关**。
+- **记录纪律**：后端编译器崩溃（`bishengir-compile` 段错误 / `PLEASE submit a bug report`）与精度告警属两类事件，混在同一 WARN 通道会让读者把「工具链对某 shape 崩溃」误读成「本 kernel 数值可疑」。本条的工具链缺陷身份与升级路径见 `.agents/evolution/capability-gaps.md` 的对应条目。
+- **重验触发**：若本 repro 报 `S=32: COMPILED`，说明该后端缺陷已被工具链升级修复——按证伪协议刷新版本戳并关闭对应 capability-gap 条目。
+- **边界/量纲**：判据为二元（编译通过 / 段错误），无性能量纲。
+- **证明**：`python repro/TRAP-bishengir-crash-s32.py`（三态对照：A `S=32` 抛崩溃、B `S=40` 通过、C `S=24` 通过）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{repro/TRAP-bishengir-crash-s32.py, history_version 的 d10.py S 扫描 16/24/32/40/48/56/64/96 与 d9.py tile/heads 变体}`。

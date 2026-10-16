@@ -104,6 +104,11 @@
 | TRAP-primfunc-compile-time-if-buffer-def | `@T.prim_func` 内**解析期（Python 层）`if` 定义 buffer** → 分支内名字不逃逸：条件真报 `ParserError: Undefined variable`、条件假同源可编译/运行（**缺陷随 shape 潜伏**，落尾块宽度即炸）；绕法 = 工厂层按变体返回独立 prim_func（含 repro；本文件 §C11 parser var-table 作用域的具体形态）；**2026-10-16 适用域限定**：仅限「分支内定义 buffer」——分支内只含语句/调用（`if mode=="min": T.reduce_min(...) else: T.reduce_max(...)`）编译运行正常，勿泛化为「禁任何解析期 if」 | verified |
 | TRAP-npuir-lowered-mlir-access | 取**降级后 kernel body 的文本通道 = `kernel.mlir_content`**（str，TileLangIR/HIVM MLIR）；`JITKernel.get_kernel_source()` 在 `JitKernel_NPU` 上**不是**文本通道（返回链接 ELF 的 `bytes` 或抛 `TypeError`）——向量化/IR 形态门禁（判决链有无退化为 `arith.cmpf`/`scf.for`/`if_then_else`）的文本通道即 `mlir_content`（含 repro）；**2026-10-16 第二数据点**：`hivm.hir.vreduce` 的 op 名与 `<mode>` 之间**有空格**（`vreduce <min>`）——写 `vreduce<min>` 的子串断言必然落空，匹配时 op 与 `<mode>` 分开断言 | verified |
 | TRAP-any-predicate-reduction-pair | 谓词类归约（`any`/逻辑 OR）的「比较模式 + 归约算子」是**一对**：合法形态 = `vcmp("eq")→vcast(i1→f32)→reduce_min→(bm,) vsub(1−min)`；两向错配暴露集相反——`ne+max`（最短写法）差异**恰为 NaN 行**（`[4,5]`，仅「NaN 与零共存且无其他非零」/`all-NaN` 暴露，其余行被非零救回）、`eq+max`（照抄 `all`）差异 `[2,4,6,7]`；`any`↔`all` 四项全反转（max↔min / `1−max`↔`1−min` / vmax↔vmin / 0.0↔1.0）（含 repro；与 TRAP-vcmp-ne-ordered-nan 同源） | verified |
+| TRAP-parallel-affine-cast-plane | `T.Parallel` 二维 body 内的 affine 索引 cast **静默丢行项**（`(16,32)` fp32 平面末行末 6 lane 读回 `j`；差式 cast 形态上下文相关——隔离探针精确而本 repro 同错）——唯一可靠形态 = 嵌套 `T.serial` 标量构造（四档几何全 0 错，代价每任务一次 `bn×bm` 标量 store）；**2026-10-16 新增，含 repro** | verified |
+| TRAP-gemm-dynamic-size-cbuf | `T.Pipelined` 内的 `T.gemm(size=<runtime extent>)` ⇒ **伪 `cbuf overflow`**（报文 `requires 12009693044328448 bits` 无意义，声明 tile 仅 ~100KB）；**两条件缺一不可**（运行时 extent ∧ Pipelined 内；静态 size 或 Pipelined 外均通过，`T.copy` 动态 extent 不受影响）；尾块可用形态 = 动态性只留 GM↔UB copy 与行原子、GEMM 全 tile + 操作数预清零；**2026-10-16 新增，含 repro** | verified |
+| TRAP-vec-cube-ub-scratch-role-conflict | 同一 UB buffer 兼作 vector 暂存与 GEMM 输出 ⇒ 消费端**静默读到损坏值**（2048 cell 全错、`max_diff 1.33e2`、无报错无 NaN）——一个 buffer 只能有一个引擎写者角色；kernel 级后果 = causal 档 mask 惩罚与 g2 抢 `dsum` 致 `dk` 最大 1.96e4（独立 `dsd` 缓冲后 6.7e-4）；**2026-10-16 新增，含 repro** | verified |
+| TRAP-reduce-rowsum-store-shape | 行归约输出 `(blk_s,1,1)` 直写 S 连续段被 codegen 拒（`bufferization.materialize_in_destination` shapes incompatible）——region 单位维**只能从左侧折叠**、payload 轴须两侧尾部对齐；绕法 = 1-D UB 中转（`max_diff 3.3e-06`）或单轴 `T.transpose`（引入 `vtranspose`）；**2026-10-16 新增，含 repro** | verified |
+| TRAP-bishengir-crash-s32 | `bishengir-compile` 对 `S == 32` **段错误**（CANN 9.0.0；persistent+Pipelined+动态 extent copy+gemm+行原子骨架），`S ∈ {16,24,40,48,56,64,96}` 全编译、与 tile/heads/dim/is_causal 无关 ⇒ 后端缺陷、须与精度告警分通道记录；**2026-10-16 新增，含 repro**（重验触发词：`S=32: COMPILED`） | verified |
 | TRAP-npuir-ir-gate-loop-scope | IR 形态门禁的 `scf.for` / `if_then_else` **禁令按路径/变体限定**——驻留（单 tile）路径 lowering 无 `scf.for`，列分块路径的静态 `T.serial` tile 循环**合法地**含 `scf.for`；把 `TRAP-parallel2d-bm-ge2-scalarize` 的禁令逐字套到 tiled 变体会对**完全向量化**的 kernel 报假失败；正确门禁 = 对所有变体断言 `vreduce <mode>` + `reduce_dims=[1]` + 无 `arith.cmpf`，禁令只对驻留变体（含 repro，compile-only） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
@@ -150,6 +155,9 @@
 | CONST-msprof-task-floor-910B3 | msprof op Task 固定地板（空 kernel 3.37µs / 固定开销 ≈2.4µs）+ 必需流量地板 4.25µs + 逐元素 pass 单价 0.23–0.3µs + 拟合式 `Task ≈ aiv_time + 2.4–2.6µs` | verified |
 | CONST-reduce-ub-per-element | BishengHIR 归约 lowering 的 UB 单价：按 `ch×H*W` 线性记账、单价由归约链形态决定（原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素），**绑定 3-D 整平面 `(CH,1,H*W)`+dim=2**；CH 上限 = 196608/(单价·H*W)；探针须 DCE 免疫；**2026-10-16 形态适用域追加**：2-D 行归约（`(bm,tn)`+dim=1）单价按 dtype 分档——fp16/fp32 精确 8.00 / **bf16 12.00**（`vcmp` 上抛 f32）B/元素，硬上限 24576（fp16/fp32 口径），竞态安全档 `E_cap=8192`；**第四数据点**（`any`，独立重标定）：`reduce_min` 链与 `sum`/`max` 链**同价**（归约算子不额外定价） | verified |
 
+| CONST-vcast-rint-downcast-bitexact | `T.vcast(..., round_mode="rint")` 的 f32→f16/bf16 **下转换与 `torch.Tensor.to` 逐位相等**（承载算子 115 用例 0 bit 差异、`max_diff 0.000e+00`；独立 repro 角点 + 混合域各 0/2048，`f16→f32` 控制组 0/2048）⇒ 纯下转换算子可合法采用**逐位门禁**；对照 = 同 dtype `f32→f32` 2047/2048 ≠ 源（须走 `T.copy`）；**2026-10-16 新增，含 repro** | verified |
+| CONST-reduce-ub-price-axis-alignment | 归约链 UB 单价按**归约轴长度是否向量宽整数倍**分带（与 dtype 正交）：对齐 `D % 8 == 0` **≈10–12 B/元素**（`D=64` 时 `E=16384` 通过、`E=24576` 溢出@11.3）vs 非对齐 **96.0 B/元素**（`E=4032` 即溢出）；`reduce_axis_len == 1` 走便宜带；manifest 域元素预算比「单一保守上界 42 B/元素」宽 2–4 倍，域外防御档须实现层按带收敛；**2026-10-16 新增，含 repro**（与 `CONST-reduce-ub-per-element` 正交维度） | verified |
+
 ### cases.md — 案例索引与参考实现集
 
 | ID | 一句话 | 状态 |
@@ -184,6 +192,8 @@
 | CASE-reduction-countnonzero-migration | reduction 族**首个 logical_reduce / 计数类**迁移（count_nonzero kind → int64 契约 + 元素预算双路径 [8 B/元素探针 / E_cap=8192 / 硬上限 24576] + `@T.prim_func` 解析期 if 陷阱 + wrapper `default_config` 重接线；集成 37/37 + bench 4 例 msprof 有效） | verified |
 | CASE-reduction-all-migration | reduction 族**第二个 logical_reduce / 谓词 AND 类**迁移（all kind → **bool 输出/int8 载体**（与计数类 int64 契约相反）+ keepdim 额外参数 + 补式 `1 − max[x==0]` 与 `vcmp("ne")` 方向陷阱 + `T.vmax` no-alias 跨 tile 合并 + kernel 侧 `block_m` 元素预算回落（无需改 wrapper）；集成 42/42 + bench 6/6 + msprof 3 例有效；含 `S2-MIG-DIM0`/`S3-GOLDEN-TORCH` 两类门禁交互） | verified |
 | CASE-reduction-any-migration | reduction 族**第三个 logical_reduce / 谓词 OR 类**迁移（any kind → bool 输出/int8 载体 + 补式 `1 − min[x==0]` 与 `T.vmin` no-alias 三件套 + 单位元 1.0；与姊妹 `all` 四项全反转（max↔min/补式方向/vmax↔vmin/0.0↔1.0）+ 判别性输入方向相反（高置零 ~70%）+ 空 OR 单位元 False 与 all 相反；两新 trap（`TRAP-any-predicate-reduction-pair` / `TRAP-npuir-ir-gate-loop-scope`）+ `S2-MIG-DIM0` 第四次误报 + `integrate_kernel.py` 预置选择块非幂等（重复表头）；集成 42/42 + bench 6/6 + msprof 3 例有效） | verified |
+
+| CASE-attention-mha-bwd-migration | attention 族**首个 attention-backward 迁移**（同文件追加进既有 fwd 包：3 个 bwd kernel 全部 `[PRECISION_PASS]` 且 conductor 二次校验，**Stage 5 因 fwd Expert 核 `syn_instr_mode` 工具链错配 + `S5-ASCEND-MODE` 多 Kernel 共 wrapper 结构性冲突 ⇒ `BLOCKED_ENVIRONMENT`**）——高密度反例档案：3 新 trap（affine cast 平面 / gemm 动态 size / UB buffer 角色冲突）+ `S==32` 后端段错误 + 逐行 1-D 行原子形态 + 源忠实 golden tier-3 判据 + gate 5 同文件追加悖论；**2026-10-16 新增** | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

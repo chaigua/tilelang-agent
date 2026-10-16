@@ -1300,6 +1300,7 @@ decided_by: evolver / human / -   # 裁决者
   - 正则行为机械复现（2026-09-07 蒸馏会话）：`TEMPLATE_BRACE_RE.finditer("槽位尾行状态恒 ∈ {零, 有限真实数据}")` 命中 `{零, 有限真实数据}` → fail；误判文本出现在被门禁拒绝的中间版本上（归档 design_v0/v1/DESIGN.md 已无中文花括号——修订后通过）；发生账户来自 conductor 终态钩子输入（复盘工件未覆盖该两次 fail 的 gate 侧原因，同时构成复盘缺口）
   - 〔2026-09-15 复发，task multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z〕新形态两处误报（Stage 1 gate 修复重试的 2×S1-PLACEHOLDER）：`e^{块内分数 − m_cur}`（CJK 数学上标，无列表分隔符）与 `_{\text{Cube 部和，f16 物化回传}}`（LaTeX \text{中文} 下标）——**前者不受本提案正则排除**（负向前瞻仅排除 [,、;；∈≤≥]，无分隔符的 `^{中文 − var}` 形态仍命中），审批时建议扩大排除集（brace 组前缀为 `^`/`_` 或含 `\text{` 时跳过）；writer 侧排版规则另立 VP-2026-0066 互补（改写消除模式命中：括号形式 / 注解移出公式，语义零变化）；纯 ASCII 花括号（`e^{m_prev − m_cur}`）不触发
   - 〔2026-10-14 第八现（不同任务，quantization 族首个 fp8 迁移），task fp8_quant-_fp8_quant_kernel-20261014T153942Z〕Stage 1 gate 修复重试 1 次（`stage_retry_count[1]=1`，67s；S1-PLACEHOLDER）：DESIGN.md 的**字面数学集合记号**（含中文的 ASCII 花括号 `{...}`）被 `TEMPLATE_BRACE_RE` 判「疑似模板变量未替换」，本任务因此消耗一次完整 designer 重调度（`SESSION_TIMING_ANALYSIS.md` §3 建议 4；`examples/fp8_quant/_fp8_quant_kernel/RETROSPECTIVE.md` Stage 1；任务工作区，允许失效）。**新形态特征**：该花括号组既无列表分隔符 `[,、;；]`、也无数学关系符 `∈≤≥`——VP-2026-0019 现提案正则的负向前瞻**不覆盖**此形态，与 2026-09-15「无分隔符 `^{中文 − var}` 上标」同族，进一步佐证「负向前瞻穷举排除」不可完备；审批时建议与 VP-2026-0066（writer 侧「CJK 不进 `{}`」排版规则）同批采纳，writer 侧为主防线、正则修复为副防线。
+  - 〔2026-10-16 **第九现**（不同任务，attention 族迁移），task multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z Stage 1〕LaTeX 数学环境内的 `\text{<CJK>}` 形态**第三次**复现：设计文档含中文注释的数学公式（`\text{乘积缓冲与左操作数载体复用（O1）}` 类）被 `TEMPLATE_BRACE_RE` 判「疑似模板变量未替换」，本任务首次 `design_lint` 即 fail 一条 `S1-PLACEHOLDER`。**新形态维度**：本次命中的花括号组**位于 LaTeX 数学环境内**（`$$...$$` / `$...$`）——与 2026-09-15 的 `_{\text{Cube 部和，f16 物化回传}}` 下标形态同族，且进一步佐证「负向前瞻穷举排除不可完备」；据此可行修法有二：① 在 `TEMPLATE_BRACE_RE` 前加「数学环境豁免」（`$$...$$` / `$...$` 内的花括号不参与模板变量检测），或② 在失败消息里给出可操作提示（「若为 LaTeX `\text{}` 请改为 ASCII」）。**证据链追加（不计独立提案）**——现为九现，建议与 VP-2026-0066（writer 侧「CJK 不进 `{}`」排版规则）同批采纳（writer 侧为主防线、正则/豁免为副防线）。
 - repro: python3 -c "import re; print([m.group(0) for m in re.finditer(r'\{[^{}\n]*[\u4e00-\u9fff][^{}\n]*\}', '恒 ∈ {零, 有限真实数据}')])"
 - toolchain_stamp: gate_lint.py 现行版本（statectl gate 1 机械核对层）；误判发生于 2026-09-07 expert 迁移任务
 - target_doc: .agents/tools/gate_lint.py
@@ -1326,6 +1327,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - examples/multi_head_attention/_gqa_prefill_fwd_kernel/RETROSPECTIVE.md#Stage-1-rev1（VP 行 4：v0 §3.3 伪代码 α 行 vsub(ub_m, ub_mcur) 与实现注①「快照式 m_prev」矛盾——修复 = 伪代码改写为注的形态而非加「以注为准」标记）
   - examples/multi_head_attention/_gqa_prefill_fwd_kernel/RETROSPECTIVE.md#Stage-3（Skill Flow Issues Design-internal 行：§3.3 伪代码 mask→softcap 与 E3/§3.1 softcap→mask 矛盾——照抄伪代码会破坏 P(OOB)=0 不变式，实现被迫自行消歧）
+  - 〔2026-10-16 **第二任务独立复现（新亚型：缩放因子多乘）**（不同任务，attention 族 attention-backward 迁移），task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 3〕同类、**不同子形态**再现：`DESIGN.md` §3.3 伪代码的 `ds` 链与 §0.1 语义定义**数值不一致**——伪代码把 `delta` 先乘 `sm_scale` 再减、最后整体再乘 `sm_scale`（`P·(dO·Vᵀ − δ·sm)·sm`），而 §0.1/§1.3/§8.1 的定义是 `P·(dO·Vᵀ − δ)·sm`。实测证据：kernel 的 `dk` 与「§3.3 公式」吻合到 **4.5e-4**、与正确公式差 **2.11e-1**（`P·dsum·sm` 3.0e-2）；把 `dl_s` 行改为 §0.1 定义后 dq/dk/dv 全部 0 超差。⇒ 与首证的「伪代码 vs 实现注/设计步骤矛盾」同源（伪代码不具单一权威性），但本次的冲突方是**语义定义章节（§0.1）**、失配量是**缩放因子个数**（多乘一次 `sm_scale`），且**静默造成 ~0.2 绝对偏差**（不报错、不进精度门禁的容差判据，只在 tier 级数值对账时显形）。建议 apply 时把 delta 扩展为：**伪代码阶段加「逐因子一致性自检」**——§ 语义定义 / § 拆解表 / § 伪代码三处的每个缩放因子（`scale` / `sm_scale` / `LN2` 类）逐字对齐，`tilelang-design-review` 增对应检视项。**证据链追加（不计独立提案）**——两任务独立实证（子形态不同），可支撑 apply。
 - repro: 复现条件——含伪代码 + 实现注双源且顺序/操作数不一致的设计文档（本任务 v0 两处实证）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2 + 910B2C（2026-09-07）
 - target_doc: .agents/skills/tilelang-op-design/SKILL.md
@@ -2037,6 +2039,7 @@ decided_by: evolver / human / -   # 裁决者
   - examples/TileOPs/tileops/kernels/norm/ada_layer_norm/ada_layer_norm_kernel/integration_log.md（Debug history attempt-1：首跑 `[warn] ALIGNMENT: not found in integrated modules` ×2 → `[error] import smoke test FAILED`；Issues 第 1/2 条）+ ada_layer_norm.py L61/L63（`# from .ada_layer_norm_kernel.perf_opt.ALIGNMENT import ALIGNMENT` 类占位行）
   - examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py#L158-162（defining_module==None → [warn] 注释行）+ #L211（`stem = defining_module(name, integrated_files) or name`）
   - 交叉引用：queue VP-2026-0032（同文件 stale lineage 告警——缺陷集群）、VP-2026-0012（幂等重跑覆盖集成侧修复——本任务 Stage 5 同款再现，证据链互链）
+  - 〔2026-10-16 **第二任务独立复现**（不同任务，「同文件追加进既有算子包」的迁移形态），task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5〕① 的同一形态再现并延伸：`integrate_kernel.py` 重建聚合 `__init__.py` 时**丢掉了既有 fwd 的 export**，且脚本自身的 import smoke 报 `[error] import smoke test FAILED` + `missing exports: ['make_dq_layout']`（该名是脚手架持久化的 `wrapper_import_names` 契约名；NPU 侧三个 bwd kernel 均已舍弃 layout 注解，但脚本的 smoke 从包里读该名）；integrator 按 `[warn]`→`[error]` 的提示手工重建为「fwd + bwd 并集 + `make_dq_layout` re-export」后 smoke 通过（`integration_log.md` Trap A，备份 `history_version/__init___pre_s5.bak` / `__init___s5_attempt1.pre_fix.bak`）。**本任务为 ① 的第二起实证，并首次覆盖「既有包已有 content 的 append 场景」**（首证是新建包的 helper 缺失）⇒ 缺口本体同源（`gen_init_py` 不保留既有 export/契约名），触发条件扩展为「同文件追加型集成」——对追加型集成**必然命中**。**证据链追加（不计独立提案）**——两条独立任务实证，可支撑 apply（与 VP-2026-0064 / 0056 同批）。
 - repro: 重跑 python .agents/skills/add-npu-op/scripts/integrate_kernel.py --meta tileops/kernels/norm/ada_layer_norm/.migration_meta.json（覆盖集成副本后 smoke 必现 ImportError——provenance，允许失效）
 - toolchain_stamp: tilelang 0.1.2+a83118285a + Ascend910B2C + CANN 8.5.0 + torch 2.9.0+cpu / 2026-09-10
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
@@ -2100,6 +2103,7 @@ decided_by: evolver / human / -   # 裁决者
   - task multi_head_attention-_gqa_prefill_fwd_kernel-20260915T025507Z：examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md Round 2 Integration steps Step 1（`[wrapper] ... already integrated`〔wrapper_rewritten: false〕时 wrapper L65 baseline 被注释、L67 perf_opt import 生效；`[smoke]` 仅 import 冒烟不区分激活源）+ Step 2 人工胶水修复（`w._gqa_prefill_fwd_kernel.__module__` 修复前解析到 perf_opt 旧谱系）
   - examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py#L224-226（text 全文 re.search，不剥离注释行）
   - 交叉引用：queue VP-2026-0032（stale perf_opt lineage 告警——预警场景本轮实际发生的另一形态，修「重写后不告警」侧）、VP-2026-0055/0056（同文件幂等与校验缺口集群，建议同批审批）
+  - 〔2026-10-16 **第二任务独立复现**（不同任务，「同文件追加进既有算子包」的迁移形态），task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5〕同一形态再现且**触发源不同**：既有 fwd 包的 wrapper 里留有一行**被注释的** fwd baseline import（`# from .multi_head_attention_kernel._gqa_prefill_fwd_kernel import ...`），`rewrite_wrapper_import` 的 `re.search(rf"from \.{op_slug}_kernel(?:\.\w+)?\s+import", text)` 命中该注释行 ⇒ 输出 `[wrapper] ... already integrated`（`wrapper_rewritten: false`），Stage-0 抽取的 bwd import 块（`from ._multi_head_attention_bwd_kernels import ...`）**未被重写**，须 integrator 手工替换为 baseline/perf_opt 源选择块后才可导入（`examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md` §Integration steps Step 1 Trap B，备份 `history_version/multi_head_attention_s5_attempt1.pre_fix.bak`）。**新形态维度**：注释行不是「调优轮 perf_opt 激活态遗留」，而是**同文件追加型集成的固有形态**（既有包基线行以注释保留）——即该缺口对追加型集成**必然命中**，与首证的「偶发遗留」不同。**证据链追加（不计独立提案）**——两任务独立复现，可支撑 apply（与 VP-2026-0055 / 0056 同批）。
 - repro: 复现条件——wrapper 处于 perf_opt 激活态（调优轮遗留：baseline import 被注释）时重跑 integrate_kernel.py → 输出 already integrated 且 wrapper_rewritten=false，旧谱系 perf_opt import 保持激活
 - toolchain_stamp: tilelang 0.1.2+28783f45 + CANN 8.5.0 + Ascend910B2C / 2026-09-15；脚本现行版本
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
@@ -2897,6 +2901,7 @@ decided_by: evolver / human / -   # 裁决者
   - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z Stage 3：① gate 3 报 S3-GOLDEN-TORCH（薄包装 `return ssd_chunk_scan_fwd_ref(...)` 函数体无 torch.* 调用——attempt 1 白耗 742s）；内联仓内参考的 torch 计算（纯 fp32 einsum 双路径 + tril 掩码 materialize 照抄）后 pass: true；② L0 各用例 shape 不同触发多次编译、逐一可见 "AscendNPU IR compile success"（本任务 L0 首跑全绿省去分层二分）
   - 〔2026-09-28 新亚型（不同任务，reduction 族），task argmax-_argreduce_kernel-20260924T031005Z Stage 3〕**张量方法形态**：golden 用张量方法 `x.argmax(dim=...)` 而非模块函数 `torch.argmax(x, dim=...)`——函数体同样无 `torch.*` 前缀调用，S3-GOLDEN-TORCH AST 检查判 fail（attempt 1 runtime fail 2731s → 修复 attempt 2 complete 70s，修法 = torch.* 命名空间直调）。建议 apply 时在 new 文本 1 的第 3 条补一句：「张量方法调用（`x.argmax`/`x.max` 等）同样不含 torch.* 前缀，须改写为 `torch.argmax(x, ...)` 模块函数直调（2026-09-28 argmax 实证：2731s 白耗）」；出处：examples/argmax/SESSION_TIMING_ANALYSIS.md §3 第 3 条 + .task_timeline.jsonl Stage 3 fail 事件
   - 〔2026-10-16 **第三任务独立复现（第三次换亚型：Tensor 方法形态）**（不同任务，reduction 族谓词/逻辑 AND 类迁移），task all-_logical_reduce_kernel-20261016T024920Z〕Stage 3 golden 首版写成 `x.bool().all(dim, keepdim)`（Tensor 方法调用，语义正确且与 `torch.all` 逐位等价），`statectl complete 3` 机械门禁 `S3-GOLDEN-TORCH` 报「golden 函数体未直接调用 torch API」⇒ 改为内联命名空间调用 `torch.all(x.cpu(), dim=dim, keepdim=keepdim)` 后 `"pass": true`（算法零改动；修复 111 s，`examples/all/SESSION_TIMING_ANALYSIS.md` §3 方案 2）。**本任务同时给出该条目的正向价值证据**：`kb_search` 在 03:05:21（设计/实现期）与 03:29:53（门禁失败后）两次命中本条 pending 条目（score 首位），修复方向**一次命中即确定**，未误改为「手写归约循环」这一正对该规则本意禁止的形态。⇒ 本条现覆盖三种亚型：薄包装委托（ssd 2026-09-20）/ Tensor 方法 `x.argmax`（argmax 2026-09-28）/ Tensor 方法 `x.bool().all`（本任务）；建议 apply 时在 new 文本 1 的条款里把亚型列表写全（`x.argmax` / `x.max` / `x.bool().all` / `x.count_nonzero` 等一律改写为 `torch.<op>(x, ...)`）。**证据链追加（不计独立提案）**——三条不同任务实证已可支撑 apply。
+  - 〔2026-10-16 **第四任务独立复现**（不同任务，attention 族 attention-backward 迁移），task multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z Stage 3〕同一亚型再现：`_flashattn_bwd_preprocess_kernel.py` 的 golden 函数体首版写成张量方法链 `(o32*do32).sum(dim=-1).transpose(1,2).contiguous()` ⇒ `complete 3` 机械门禁 `S3-GOLDEN-TORCH` 报「golden 函数体未直接调用 torch API（禁止手写归约/激活循环替代 torch 参考）」；修法 = 换名不改义（`torch.mul` / `torch.sum` / `torch.transpose` 命名空间直调），数学语义/容差/用例/kernel 零改动，且已机器验证新旧写法输出 **逐位相等**（fp16/bf16 各一例 `torch.equal(...) == True`）。**本任务同时给出该条目的第二个正向价值证据**：task 内 `kb_search`（03:05:21 与 03:29:53 两次查询）返回本条 pending 条目，修复方向一次命中（未误改为正对该规则本意禁止的「手写归约循环」形态）——与 all 迁移（2026-10-16）的同类正向证据并列。同类原子方法亚型（`x.sum` / `x.transpose` / `x.contiguous`）与既有三证合计覆盖四种写法。**证据链追加（不计独立提案）**——本条现已覆盖四任务、四种亚型，可支撑 apply。注：该两次 kb_search 时间戳与 all 迁移任务窗口重叠，两任务各自登记一次（不重复计数为独立提案）。
 - repro: 复现条件——① 迁移任务复用仓内参考函数作 golden（`import ... as` 别名与薄包装委托两种形态均被拒）；② 任一多 shape L0 套件首跑
 - toolchain_stamp: tilelang 0.1.2+4515de8 / CANN 8.5.0 / Ascend910B2C / 2026-09-20；gate_lint S3-GOLDEN-TORCH 现行版本
 - target_doc: .agents/skills/tilelang-op-develop/SKILL.md
@@ -3143,6 +3148,7 @@ decided_by: evolver / human / -   # 裁决者
 - title: op-design SKILL D-3 探针纪律三条——① 预算口径补「同一探针文件的失败-修复迭代计入同一探针，总墙钟超限须在 DESIGN 附录如实记录」② 探针须覆盖冻结目标配置的规模挡位（多迭代 serial 循环 ≥3 次更新；小规模替代形状显式声明未覆盖维度）③ 探针执行 stdout tee 落盘 probe_logs + DESIGN 附录 A 增「日志路径」列
 - evidence:
   - task argmax-_argreduce_kernel-20260924T031005Z Stage 1/2/3：① D-3 预算「≤2 个、每探针 ≤10min」按文件数合规但 8 轮 case 迭代总墙钟 ~25min（design_probe_argmax.py --case 逐轮演进，DESIGN 附录 A）；② tiled 在线递推探针只验了 num_full==2（P2 (3,700) tn=256 / P2b (96,8192) tn=4096），冻结配置 tn=5120→num_full=20 首跑才首次执行——原位 vselect 状态丢失 bug 恰在多迭代暴露（Stage 3 首跑 (4,102400) 输出全落 tile-0 局部索引）；③ Stage 1 探针无 stdout 落盘，Stage 2 交叉验证 C-1~C-4/C-8 只能重新在设备上跑（P1/P2/P2b/p3a×3/dbg 五轮 ~12min 墙钟）；无设备 reviewer 只能纸面接受声明（本轮探针窗口 2026-09-24 03:50–04:15 零 log 文件）
+  - 〔2026-10-16 **第二任务独立复现**（不同任务，attention 族 attention-backward 迁移），task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 1→2→3〕① 的同一冲突以更极端形态再现并**被独立验证**：v0 用尽两枚探针（原子单价 + persistent 结构）后，**修正形态（逐行 1-D 行原子）无预算做正面验证**，只能靠 Stage 2 检视自建探针 V1/V9/V2/V6/V7（共 11 个形态变体）反证——而 v0 那两枚探针的 `exact` 判据本身**都写错**（probe1 跨步 case `expect=0.0` 而实际应 += `NBLK_N`；probe2 `n_write = NBM` 而实际每 cell 写 1 次），于是「实测结果」无法自动判定对错、只能靠人读原始量二次解释 —— 既漏掉必失败形态（rank-reduced 4-D 区域原子静默写错区），又产生含混风险项（§9 R1「1/4 异常未定性」）。Stage 1 revision 1 被迫新增**第三枚**探针（`design_probe_row_atomic_bshd.py`）。⇒ 建议本提案 delta 再补两条：**② 探针判据自证**——每个 case 的期望值须由构造式独立推出并各自成断言，探针脚本打印「期望 vs 实测」两列，`main()` 退出码只反映该探针真正依赖的断言集合（辅助打印项不得污染退出码）；**③ 探针形态空间**——当设计使用「scalar 索引 + 切片」构造 region 类 API 目标时，探针覆盖的最小形态集 = {张量 rank、索引方式（标量/切片/runtime Var）、目标行 stride 关系} 的三要素组合，任一不同即视为不同形态须独立实测（本任务 11 个变体）。**证据链追加（不计独立提案）**——两任务独立实证，且第二证附带「判据写错致含混结论」的过程证据。
 - repro: 复现条件——任一设计期探针产出被 Stage 2 检视消费的场景（探针清单含多迭代循环结构 / 探针结论被交叉验证）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2 dev root build 2026-09-24 + CANN 8.5.0 + Ascend910B2C / 2026-09-24
 - target_doc: .agents/skills/tilelang-op-design/SKILL.md
@@ -3442,6 +3448,7 @@ decided_by: evolver / human / -   # 裁决者
   - 〔2026-10-16 第二任务独立复现（不同任务，reduction 族计数类迁移），task count_nonzero-count_nonzero-20261016T004109Z Stage 5〕同一前置缺口逐字节再现：`integrate_kernel.py` 的 in-script import smoke（`cwd=tileops_root`、继承调用方 env）在仓库根未 pip 安装时报 `ModuleNotFoundError: No module named 'tilelang'`，而全部集成工件已正确写盘；重跑 `PYTHONPATH=/workspace/tilelang-mlir-ascend` 后打印 `[smoke] smoke-ok ['_logical_reduce_kernel']`、report `status=passed`（correctness 37/37、benchmark 7/7）。本次由 integrator 在 `integration_log.md` §Integration script run 显式记为「environment/PYTHONPATH issue, not an integration defect」，且用户侧任务书亦把该前提写进运行约定——**证据链追加（不计独立提案）**；本条为「Stage 5 前置运行约定」形态的第二任务实证，建议审批简报置顶。
   - 〔2026-10-16 **第三任务独立复现**（不同任务，reduction 族谓词/逻辑 AND 类迁移），task all-_logical_reduce_kernel-20261016T024920Z（op 级 all-all-20261016T023951Z）Stage 5〕同一前置缺口逐字节再现：`examples/TileOPs/` 下首跑 `integrate_kernel.py` 时其 in-script import 冒烟（`cwd=tileops_root`、`sys.executable`、继承调用方 env）报 `ModuleNotFoundError: No module named 'tilelang'` 并被标 `[error] import smoke test FAILED`，而集成工件写盘本身正确；补 `PYTHONPATH=/workspace/tilelang-mlir-ascend`（仓库根提供 tilelang dev-root 包）后 `[smoke] smoke-ok ['_logical_reduce_kernel']`、report `status=passed`（correctness 42/42、benchmark 6/6、msprof 3/3 有效）。integrator 在 `integration_log.md` 显式记为「environment path, not a code defect」且未计入 attempt。**证据链追加（不计独立提案）**——现为三条不同任务实证（adaptive_avg_pool2d / count_nonzero / all），建议审批简报置顶。
   - 〔2026-10-16 **第四任务独立复现**（不同任务，reduction 族谓词 OR 类迁移），task any-any-20261016T061701Z Stage 5〕同一前置缺口再现：`integrate_kernel.py` 的 in-script import 冒烟（`cwd=examples/TileOPs`、`sys.executable`、继承调用方 env）在未设 `PYTHONPATH` 时报 `ModuleNotFoundError: No module named 'tilelang'`；以 `/workspace/venv/bin/python`（3.10.12，含 torch/torch_npu）+ `PYTHONPATH=/workspace/tilelang-mlir-ascend` 于 `examples/TileOPs/` 下运行后 `[smoke] smoke-ok ['_logical_reduce_kernel']`、report `status=passed`（correctness **42/42**、benchmark **6/6**、msprof **3/3** 有效、`invalid_profile_count=0`），未计 debug attempt。本任务 Stage 5 prompt 已显式写入该三条前置，integrator 一次通过、0 debug attempt——即该前置成文后可直接消除此分支。**证据链追加（不计独立提案）**——现为四条不同任务实证，建议审批简报置顶。
+  - 〔2026-10-16 **第五任务独立复现**（不同任务，attention 族「同文件追加进既有算子包」的迁移形态），task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5〕`S5-REPORT-STALE` 死角以最尖锐形态再现：integrator 先跑完单算子 report（`run.json` 落盘 06:58:19Z），随后为修 import 陷阱又改了 wrapper `__init__.py` 与 `multi_head_attention.py`（07:23Z）⇒ `run.json` mtime 早于集成文件、门禁判 stale；而 §7.1 协议禁止重跑 correctness/benchmark ⇒ **追加型集成天然落入「stale 但不得重跑」的死角**（首证/第二证的「行为中性 gate 修复」在本形态下不存在——修的是 import 契约，非声明式字面量）。同任务另有 `S5-ASCEND-MODE` 结构性问题（多算子共 wrapper，见 VP-2026-0289）使 gate 5 无论如何不可通过；两条合起来说明「同文件追加型迁移」需要**独立的替代验收路径**（提案见 VP-2026-0289）。**证据链追加（不计独立提案）**——现为五任务实证，建议审批简报置顶。
 - repro: repro-missing（集成流程规则；复现条件 = 不 source env.sh 跑 integrate_kernel.py 观察 smoke ModuleNotFoundError；report 后编辑 wrapper 再 `statectl gate 5` 观察 S5-REPORT-STALE）
 - toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/SKILL.md
@@ -3702,6 +3709,7 @@ decided_by: evolver / human / -   # 裁决者
   - 交叉引用：queue VP-2026-0047（工具侧解析扩展，已 merged）/ VP-2026-0168（设计侧退化路径逐 buffer 复算）/ VP-2026-0136（`--manifest` 真值推导）
   - 〔2026-10-16 **第十现**（不同任务，reduction 族谓词/逻辑 AND 类迁移），task all-_logical_reduce_kernel-20261016T024920Z〕同一三 skip 形态再现，仍是「元素预算型」记账户型（本任务 §4.5 用「每 block 元素数 × B/元素代理 × dtype 分档」表达 UB 预算，含 `bm·W ≤ E_cap` 不等式与阶梯表）：`design_calc_check.py --design ...` → `ub_budget` / `l0c_budget` / `core_split` 三项 `skip`、仅 `r3_metrics` pass；reviewer 人工逐配置复算成为唯一兜底（本任务复算通过）。**证据链追加（不计独立提案）**——本族自 2026-10-13 起已连续两个 reduction 任务以同一「元素预算型」表形态命中，建议 apply 时把该记账户型单列到人工复算口径。
   - 〔2026-10-16 **第十一现**（不同任务，reduction 族谓词 OR 类迁移），task any-_logical_reduce_kernel-20261016T062400Z Stage 2〕同一三 skip 形态再现，仍是「元素预算型」记账户型（本任务 §4.5 用「每 block 元素数 × B/元素 × dtype 分档」表达 UB 预算，含 `bm·N ≤ E_cap` 不等式与阶梯表）：`design_calc_check.py --design examples/any/_logical_reduce_kernel/DESIGN.md` → `ub_budget` / `core_split` 等项 `skip`（本任务 JSON = 1 pass + 3 skip），reviewer 人工逐配置复算成为唯一兜底（本任务复算通过），与计数类 / 谓词 AND 类两任务同形。**证据链追加（不计独立提案）**——「元素预算型」记账户型已**连续三个** reduction 任务命中（count_nonzero / all / any），本条检视侧兜底位与 VP-2026-0047 工具侧修复互补的结论再次成立。
+  - 〔2026-10-16 **第十二 / 第十三现**（同一任务的**两个不同函数**，attention 族迁移），task multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z / _flashattn_bwd_postprocess_kernel-20261016T015430Z Stage 2〕同一三 skip 形态在两个**纯 Vector persistent** 设计上各再现一次：① preprocess——`design_calc_check.py` 输出 `{"check":"l0c_budget","status":"fail","detail":"block 256x256 x fp32 accum = 256.0 KB vs L0C 128 KB"}` 的**假阳性**（正向 token `T.gemm` 命中 §1.6.0 **被否决候选**的文字描述，回退正则又命中基线 CUDA fragment 的 `(256,256) fp32 acc`；检视 skill 规定「`l0c_budget` fail → 维度 2 fail」，照字面执行会把一个**无 Cube 路径**的设计判阻塞）+ `ub_budget`/`core_split` 双 skip；② postprocess——`ub_budget`（「no per-level buffer tables parsed」）/ `l0c_budget`（「no block_M x block_N values parsed」）/ `core_split`（「insufficient parsed dims {}」）三 skip、仅 `r3_metrics` pass，而 §4.3 缓冲表 + §4.5 逐 workload UB 表 + §5.5 分核表信息全部齐备。⇒ 建议扩展本提案人工复算口径两条：**① `l0c_budget` 的 fail 须先排除「被否决候选文字」触发的假阳性**（按行过滤带「否决/弃选/候选/rejected/❌」标记的行，或对来自 §1.6.x 候选表的 `(bm,bn)` 返回 `ambiguous`），排除过程写入 REVIEW.md 机械复核段；**② 纯 Vector 形态的第二种记账户型 =「声明 B/元素 × 元素预算 ÷ 相对精度」**（本任务 postprocess：`6 B/元素 × 16384 × 1.7 = 163 KB ≤ 192 KB`，七种配置一次编译通过；对照 preprocess 的归约链档在等价声明量下被 `ub overflow` 拒绝）——即 UB 预算的人机复算须先判**链形态**（无归约 cast 链 ≤12 B/元素 vs 带归约链 10–12 / 96 B/元素，见 constants.md `CONST-reduce-ub-price-axis-alignment`）。**证据链追加（不计独立提案）**——本族自 2026-10-13 起已连续十余现，纯 Vector 形态的机械兜底位形同虚设，建议审批简报置顶。
 - repro: 复现条件——对纯 Vector（无 `block_M×block_N`、无逐 buffer 解析表）的设计跑 `python3 .agents/tools/design_calc_check.py --design <DESIGN.md>`，观察四项检查的 skip 数
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ddf4255a4ae5214c27f9d731ce65c9107b748388（commit 417dae9）+ Ascend910B3 / 2026-10-14
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -5590,6 +5598,296 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 同一文件两处（维度 0 + 维度 2/8）同主题（检视维度完整性），合并为一个提案；apply 时按两锚分别插入。
 
+## VP-2026-0282
+
+- type: D
+- title: `TILELANG_ASCEND_MODE` 未设置时 `jit_npu` 走 **Expert** 编译选项（追加 `--disable-hivm-tensor-compile=true`）——合法 Developer 形态 kernel 在 bishengir-compile 报**误导性**错误 `'hivm.hir.store' op only support store ub to gm currently!`（与 kernel 写法无关）
+- evidence:
+  - task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z Stage 3：独立 repro/探针脚本（不 import 算子模块，故不继承其 `os.environ.setdefault`）的三个 2-D `T.copy`(GM↔UB) + `T.vcast` 形态**全部**报 `RuntimeError: NPU IR opt failed: ... 'hivm.hir.store' op only support store ub to gm currently!`；在 `import tilelang` **之前**加 `os.environ.setdefault("TILELANG_ASCEND_MODE", "Developer")` 后**同一三形态 3/3 COMPILE OK 且 bit-exact=True**（唯一变量即该 env）
+  - 根因链：`tilelang/jit/jit_npu.py:1907-1913`（env 为 None ⇒ 追加 `--disable-hivm-tensor-compile=true`）；失败分支已在打印 IR
+  - 知识域 repro：`repro/CONST-vcast-rint-downcast-bitexact.py` 头部「Side trap」段（该脚本自身演示正确写法；**陷阱本体无独立 repro** ⇒ 本条降级 Tier 1）
+  - 交叉引用：queue VP-2026-0201（`out_idx` 迁移契约）与各条「独立探针须自行声明环境」类缺口；pattern-library `repro/README.md` 的 repro 头部规范（`os.environ.setdefault` 已成为知识域 repro 的既成约定）
+- repro: repro-missing（最小复现 = 一个不 import 算子模块的脚本，在**不设** `TILELANG_ASCEND_MODE` 的前提下编译 `T.alloc_shared` + `T.copy`(GM↔UB) + `T.vcast` 形态并断言报错文本含 `only support store ub to gm`；再在 `import tilelang` 前设 env 断言编译通过——两断言形态即可自包含，待同族任务回填）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 新条目 `TRAP-npuir-mode-env-unset-store-lowering`：
+    **现象**：`TILELANG_ASCEND_MODE` 未设置时 `jit_npu` 按 Expert 分支追加 `--disable-hivm-tensor-compile=true`（`tilelang/jit/jit_npu.py:1907-1913`），于是 Developer 合法形态（`T.alloc_shared` + `T.copy`(GM↔UB) + `T.vcast`）在 bishengir-compile 被判为非法 store，报 `'hivm.hir.store' op only support store ub to gm currently!`——**报错文本指向 store 形态，与 kernel 写法无关**（同一形态设回 env 后 3/3 通过）。
+    **高发场景**：独立探针 / repro / 任何不 import 算子模块的脚本（算子模块带 `os.environ.setdefault`，脚本不继承）。
+    **可用形态**：standalone 脚本在 `import tilelang` **之前** `os.environ.setdefault("TILELANG_ASCEND_MODE", "Developer")`（知识域 repro 的既成约定）。
+    **边界/量纲**：二元（编译报该错 / 通过），无性能量纲；判据文本 `only support store ub to gm`。
+    动机: 该陷阱在迁移任务里必然命中（每个函数都要写独立 repro/探针），且报错方向完全错误，本次已消耗一轮排查（三形态全红→加一行 env 全绿）。与 develop skill「Phase 2 最小 shape 探针」要求配套：探针若不声明 env，其「不可编译」结论全部无效。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0283
+
+- type: D
+- title: `T.atomic_add` 的三项形态实证——① **区域语义依赖目标切片形态**（rank-2 张量双侧显式切片正确且步幅敏感；「scalar 索引 + 切片」的 rank-reduced 4-D 目标被当作**连续平铺块**静默写错区；size/bound 为 runtime Var 时前端直接报错）；② 它是**真 fetch-add**（非覆盖 store）；③ 本工具链 20 并发同址写**精确无丢更新**；正确形态 = 逐行 1-D 行原子
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 1/2/3（探针在 `history_version/`，任务工作区，允许失效）：
+    - ① `history_version/design_probe_row_atomic_bshd.py`（正确形态：目标区 2048/2048 全中、区外 65536/131072 全 0、含 `h=H−1` 档；`T.serial(T.min(bn, S−row0))` 动态行数 2304/2304 正确）；反证 = Stage 2 检视自建探针 V1/V9/V2（`/tmp/opencode/gqa_bwd_review_probe{2,3,5}.py`，transient）：动态 extent ⇒ 前端 `int() argument ... not 'Var'`；静态 extent ⇒ 设计几何 (1,128,8,64) 目标区仅写 12.5%、区外 1792 cell；(1,64,16,128) 6.2% / 1920 cell；rank-4 size 变体 ⇒ `Check failed: (load->indices.size() == ndim)`
+    - ② 探针 D/E：非零初值 dst `5.0 + 1.0 ⇒ 6.0`（**零初始化 dst 的探针无法区分累加与覆盖**——这是 v0 §9 R1「1/4 异常未定性」的认知盲区来源）
+    - ③ 20 个 block 并发写同一 2-D 区域 ⇒ 精确 20.0（2 写者档 2.0）
+  - 已收窄的首版候选（本任务 Stage 1 的「跨步区域原子逐位正确」）因其探针被测形态实为 rank-2 显式切片而被 Stage 2 推翻 ⇒ 本条按**修正后**形态登记（仅 rank-2 显式切片正确；BSHD `[B,S,H,D]` 的 rank-reduced 区域形态不可用）
+  - 交叉引用：pattern-library `constants.md` 的原子相关常数（见 VP-2026-0284）；`docs/Tilelang.language/原子操作/T.atomic_add.md` §2.4（建议补 rank-reduced/跨步目标的推荐形态，属 docs 写域）
+- repro: repro-missing（最小复现 = 三组断言：① rank-reduced 4-D 区域形态断言「目标区未被写满 + 区外被污染」（静态 extent）与「首编报 `not 'Var'`」（动态 extent）；② 非零初值 + 可区分加数断言 fetch-add 语义；③ N 个 block 并发同址断言总量 = N。探针形态已存在但为任务工作区脚本，待同族任务最小化转正）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    add 新条目 `TRAP-atomic-add-region-slice-form`：
+    **现象**：`T.atomic_add` 的正确性依赖目标切片形态，**三要素（张量 rank / 索引方式〔标量 vs 切片 vs runtime Var〕/ 目标行 stride 关系）任一不同即视为不同形态**。rank-2 张量 + 双侧显式切片（`dst[m0:m0+bm, 0:bn]`、`len(size) == rank`）正确且步幅敏感；而 BSHD `[B,S,H,D]`（S 轴 stride = `H·D ≠ dim`）上的「scalar 索引 + 切片」rank-reduced 目标（`dst[bz, s0:s0+rn, h, 0:dim]` + rank-2 size）被当作**连续平铺块**处理（行 stride = 区域宽）⇒ 目标区大部分未写 + **区外污染**（无报错、无告警）；size/slice bound 为 runtime Var 时前端直接报 `int() argument ... not 'Var'`。
+    **可用形态**：逐行 1-D 行原子 `dst[bz, row, h, 0:dim]` + `[1, dim]`（行 stride 由标量行索引表达）；动态行数用 `T.serial(T.min(bn, S − row0))`。
+    **语义实证**：`T.atomic_add` 是真 fetch-add（非零初值 `5.0 + 1.0 ⇒ 6.0`）；零初始化 dst 的探针无法区分累加与覆盖；本工具链 20 并发同址写精确无丢更新。
+    **边界/量纲**：`H = 1` 或 `dim == H·D` 时连续平铺块与真实区域重合 ⇒ **播缺陷被掩盖**（探针须取 `H > 1` 且 `dim ≠ H·D`，并在 `h ∈ {0, H//2, H−1}` 三档核对）。
+    动机: attention-bwd 三个 fp32 输出（dq/dk/dv）的写回全部依赖行原子；该形态前提若错，kernel 编译通过、无告警、结果错区（本次头号设计阻塞缺陷即由此造成，且 Stage 1 的探针判据写错使其未被发现）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: 用户终态简报把「原子单价 vs store」与「区域语义」分列为两条候选；本条与 VP-2026-0284 按「语义/形态」与「单价/地板」两主题拆分（同主题不新开）。
+
+## VP-2026-0284
+
+- type: D
+- title: fp32 二维区域 `T.atomic_add` 单价比 ≈ **1.09×** 普通 `T.copy` store（不是 RMW 往返；文档明示降级为 `hivm::StoreOp`）+ **孤立微基准 ~120 µs/launch 的固定地板会吞掉小 op 单价**（须用真实 kernel 的 pipe-time 分解反解）
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 1（`history_version/design_probe_atomic_vs_store.py`，任务工作区，允许失效；串行独占设备运行）：连续 2-D 区域、fp32、8.4 MB / 256 block、median of 5×30 —— atomic **135.73 µs** vs store **124.25 µs** ⇒ 比值 **1.09×**（设计 §1.6.0 探针表记 0.97×，Stage 2 串行重跑复现 0.99×）
+  - 同一任务的行原子微基准（`design_probe_row_atomic_bshd.py` timing 段）：`real_n=32`@dim=128 行原子环 125.80 µs ≈ 0.99× 同体积**单次**区域 store（126.95 µs）；`real_n=64`@dim=64 为 0.79×（122.51 vs 154.57 µs）⇒ 该档差异被 ~120 µs/launch 的地板吞掉，**每行原子 op 的单价不可从孤立微基准确立**
+  - 并行污染对照（同任务 Stage 2）：同一对探针并行跑得 **1.68×**（atomic 225.89 vs store 134.21 µs），串行重跑得 **0.99×**（128.50 vs 129.28 µs）——差异 ±70% 足以把方向带反（详见 VP-2026-0285）
+  - 交叉引用：pattern-library `constants.md` 的 `CONST-vector-launch-overhead`（~0.5 µs/op @910B2C/CANN 8.5.0）与 `CONST-msprof-task-floor-910B3`（地板 + pass 单价 @910B3/CANN 9.0.0）——本条给出「原子 vs store」的相对关系而非绝对单价，与两条口径互补
+- repro: repro-missing（最小复现 = 同形同体积的「连续 2-D 区域 `T.atomic_add`」与「`T.copy` store」两 kernel 背靠背**串行**计时，断言比值 < 1.5×（量级与相对关系，不锁绝对值）；另断言「行原子环 N 次 vs 单次区域 store」的耗时比落在噪声带内以暴露地板效应）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    add 新条目 `CONST-atomic-vs-store-910B3`：
+    **数字**：fp32 连续二维区域（8.4 MB / 256 block）`T.atomic_add` ≈ **1.09×** 同体积 `T.copy` store（135.73 vs 124.25 µs，median of 5×30，串行独占设备）。
+    **机制**：文档明示原子降级为 `hivm::StoreOp`（不是读改写内存往返）⇒「原子 = 2× 往返」的纸面模型在 npuir 上不成立；原子放大的代价是**流量**问题（32× 放大来自重复写同一区域），不是单价比问题。
+    **地板限制**：孤立微基准存在 ~120 µs/launch 的固定地板，会吞掉小 op 单价（32 条行原子 ≈ 1 次区域 store 的耗时）⇒ **小 op 单价只能从真实 kernel 的 pipe-time 分解反解**。
+    **用法**：设计期在「为避开区域原子而做结构重设计」前先测本机单价比；本任务据此避免了把 GEMM 数 5→7、向量 op 9→18（发射项 ×2）的错误方向。
+    动机: 「原子很贵」的 GPU 先验在 npuir 上会把设计推向更差的结构；该单价比是 attention-bwd 类算子的关键设计判据。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0285
+
+- type: P
+- title: **计时类探针必须串行、独占设备运行**——同一对探针并行执行读数比值 1.68×、串行重跑 0.99×（±70% 差异足以把结论方向带反）；并行读数只可作定性参考
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 2（design_review，revision-1 重检）：本轮先并行跑 `design_probe_atomic_vs_store.py` 与 `design_probe_persist_and_strided.py`（得 atomic/store = **1.68×**：225.89 vs 134.21 µs），再**单独串行**重跑前者（得 **0.99×**：128.50 vs 129.28 µs，与设计 §1.6.0 的 0.97× 一致）——同脚本、同设备、同工具链，唯一变量是并发
+  - 同任务 Stage 2 的第二类收益：对设计引用的三枚探针**实际重跑**（而非只做引用核对）一次抓出 ① 探针一连续 case 红灯退出（`exact=False`，脚本 `return 1`；引用核对看不出）、② 本次的计时并行污染（引用核对看不出）、③ 探针三与文档「逐条一致」的正面确认
+  - 交叉引用：queue VP-2026-0132（D-3 探针纪律：预算/规模挡位覆盖/日志落盘——本条补「**执行序（串行独占）**」这一独立维度）、VP-2026-0244（标定/探针脚本逐 case 落盘）、VP-2026-0224（探针 harness canonical 形态）
+- repro: repro-missing（最小复现 = 两个各自计时的 kernel 探针，A 组并发执行、B 组串行执行，断言 A 组读数离散度显著大于 B 组且至少一组结论方向相反；须 NPU，计时口径同 msprof op）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-design/references/quality-checklist.md（D-3 探针纪律；亦为 design-review Phase 1 第 7 步「机械复核」的探针重跑口径）
+- delta: |
+    add 探针纪律条目「**计时类探针的执行序**」：
+    - **串行独占**：同一设备上的计时类探针必须串行执行；并行读数只可作定性参考（实测同脚本并行 1.68× vs 串行 0.99×，差异 ±70% 足以把「原子贵/不贵」这类方向性结论带反）。
+    - **重跑优于引用**：设计文档引用的每枚探针，检视侧应**实际执行**并记录输出行（引用核对看不出「脚本以红灯退出却被当作绿灯证据」这类问题）。
+    动机: 设计期的常数类结论直接决定结构选型（本任务的原子/store 单价比决定是否做避原子重设计），而并行污染是**静默**的（无报错、读数看起来正常）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0286
+
+- type: D
+- title: 运行时标量作 v-prefix 操作数的**唯一可用形态** = let-bound `T.alloc_var`（dtype 必须与 tensor 操作数一致）；裸 `PrimExpr` 被前端拒（`has no attribute buffer`）；该标量**不得**用于 `T.Parallel` body 内依赖外层循环变量的表达式（运行时 core dump）
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 3（first_impl attempt 1，任务工作区，允许失效）：`probe_scalar_operand` 实测两失败形态——①裸表达式（如 `kq*bn − cid*bm`）前端报 `<class 'tvm.tir.expr.Sub'> has no attribute buffer`；②dtype 不匹配（int32 var 参与 fp32 运算）报 `hivm.hir.vsub op requires the same element type`。可用形态：`d = T.alloc_var("<dst dtype>")` 后重新赋值（let-bound var）——`probe_mask_final` 在四档 (bn,bm) × 4 迭代上全 0 错；首轮 `T.Parallel` body 引用外层 `kq`/`cid` 的形态**运行时 core dump**
+  - 既有关联条目（本条为其形态收紧）：`traps-compiler.md` 的 Expert v 算子操作数条目（「`vcmp` 标量操作数拒绝 `tir.Cast`」「`T.vbrc` 标量源须 let 绑定局部量（字面量触发 rank 断言）」）、`TRAP-vcast-shape-and-gm-source`（伴随结论「runtime let-bound 标量可作 vmul src2」）、`layout.md` `PL-1.5-quickref`（运行时 let-bound 倒数）
+- repro: repro-missing（最小复现 = 三组断言：① let-bound `T.alloc_var`（同 dtype）作 v-op 标量操作数 → 编译运行正确；② 裸 `PrimExpr` → 前端报 `has no attribute buffer`；③ `T.Parallel` body 内引用外层循环变量 → 运行时报 core dump。四档 (bn,bm) 几何覆盖）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    update `traps-compiler.md` 的「Expert v 算子操作数规则」条目 + `TRAP-vcast-shape-and-gm-source` 的伴随结论段：
+    追加「运行时标量的三条边界」——① 唯一合法载体是 **let-bound `T.alloc_var`**（先 alloc 再赋值；dtype 必须与 tensor 操作数**一致**，否则 `hivm.hir.vsub op requires the same element type`）；② 裸 `tir.PrimExpr`（含由循环变量派生的表达式）不被接受（前端报 `<class 'tvm.tir.expr.Sub'> has no attribute buffer`）；③ 该标量**不得出现在 `T.Parallel` body 内、且其值依赖外层循环变量的表达式里**（运行时 core dump；逐迭代标量须改由 let-bound var 承载或移出并行体）。
+    边界/量纲：形态判据为二元（编译通过/报错文本 + 有/无 core dump）；四档 (bn,bm) × 4 迭代全 0 错。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0287
+
+- type: P
+- title: 分层测试的两条用例设计纪律——① **置换/恒等映射检测用例的输入编码必须在目标存储 dtype 上单射**（`idx/2^k` 类在 `|x|` 跨 binade 后相邻索引坍缩，检出强度**静默**下降）；② `out_idx=[N]` 自动分配输出时**无法预填哨兵**，越界写用例改为「`B ≥ 2` ∧ 尾块不整除 ∧ 元素级唯一值」的批次相邻可观测形态
+- evidence:
+  - task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z Stage 2（检视建议级缺口）+ Stage 3（实现侧修复）：设计 §8.3 的 L0-6 示例编码 `idx*1.0/1024` 在 N=16384、fp16 尾数宽度 p=11 下对大 `idx` 坍缩（`|x| ≥ 4` 后步长 ≥ `2/1024`）⇒ 置换检出强度被削弱，而**这种削弱不表现为测试失败**（静默降级）；实现改为「目标 dtype 相异正规位型」编码 `arange(lo, lo+n).to(int16).view(storage_dtype).to(float32)` + 符号位扩域，并以 `torch.unique(...).numel() == n` 自检单射；两 dtype `bit_mismatch = 0`
+  - 同任务 Stage 3：`out_idx=[1]` 下输出由运行时分配 ⇒ §8.3 的「预填哨兵」形态不可实施（会退化为空测）；改为 `(2,100,4,64)`（`B=2` + `seq_len % blk_s != 0` + 唯一值编码）的批次相邻可观测形态，尾块若超写会污染相邻 batch 起始行
+  - 交叉引用：queue VP-2026-0165/0166（比较-累加次序类用例设计）、VP-2026-0269（判别性输入注入）、VP-2026-0199（判据判别力）；本条的独有维度是「**dtype 可分辨性**」与「自动分配输出下的越界可观测性」
+- repro: repro-missing（最小复现 = 纯 torch CPU 两段：① 断言 `arange(lo, lo+n).to(int16).view(fp16)` 的 `unique().numel() == n` 而 `(arange(n)/1024).to(fp16)` 的 `unique().numel() < n`；② 无需 NPU）
+- toolchain_stamp: 用例设计规则（无运行时依赖）；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md（L0/L1 用例生成指引；同主题亦应写入 `tilelang-design-review` 维度 6 的检查项）
+- delta: |
+    update `tilelang-op-develop` 的用例生成指引（Phase 4）：
+    ① **置换/恒等映射检测用例的编码单射要求**——输入编码须在**目标存储 dtype** 上单射（给出可直接用的形态：`arange(lo, lo+n).to(int16).view(storage_dtype).to(float32)`，fp16 `lo=0x0400` / bf16 `lo=0x0080`，再用符号位把空间扩一倍；配 `torch.unique(...).numel() == n` 自检断言）；`idx/2^k` 一类算术级数编码在跨 binade 后坍缩，**检出强度静默下降且不表现为失败**。
+    ② **`out_idx` 自动分配输出时的越界写用例形态**——输出由运行时分配；可用形态 = `B ≥ 2` ∧ `seq_len % blk_s != 0` ∧ 元素级唯一值，利用批次相邻行可观测（尾块/守卫超写会污染相邻 batch 起始行），无需预填哨兵（哨兵形态在自动分配输出下不可实施）。
+    动机: 两形态均属「门禁看起来全绿而实际检出强度不足」的静默降级；迁移任务（含恒等映射类 cast-only 算子）高发。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0288
+
+- type: D
+- title: Developer 模式 **3D `T.alloc_shared`** 在 910B3 + CANN 9.0.0 实测可用（28 个 shape/dtype 组合全过，含 `blk_s=4096,D=1` 与 `blk_s=1,D=4096` 两端）——文档标注「3D~5D 有待充分验证」，实测至少 3D 已可依赖
+- evidence:
+  - task multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z Stage 3：4 个三维 UB buffer（`(blk_s,1,D)` dtype / fp32 ×2、`(blk_s,1,1)` fp32）在 L0-1..L0-14 / L1 12 例 / L2 7 例 / Boundary 4 例共 28 个 shape/dtype 组合上全部编译通过
+  - 同批第二实例：`examples/adaptive_avg_pool2d` 迁移亦为三维 `T.alloc_shared`（PL-1.21 形态）——构成「Developer 3D 可用」的第二独立数据点
+  - 对照文档：`docs/Tilelang.language/内存操作/T.alloc_shared.md` §2.2.2 的「3D~5D 有待充分验证」措辞（docs 属非 evolver 写域，故本条落 references 侧）
+- repro: repro-missing（最小复现 = 三维 `T.alloc_shared` 声明 + `T.copy`(GM↔UB) 的最小 kernel，断言编译通过并在 NPU 上数值正确；两端 shape 覆盖）
+- toolchain_stamp: tilelang 0.1.2+1bc8dbc3（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-design/references/ascend-constraints.md
+- delta: |
+    add 一行（或小节）「**Developer 模式 `T.alloc_shared` 的秩上限（实测）**」：
+    3D `T.alloc_shared` 在 Developer 模式实测可用（910B3 + CANN 9.0.0；28 个 shape/dtype 组合含两端 shape；两独立任务佐证：`adaptive_avg_pool2d` 迁移与 `multi_head_attention` bwd preprocess）；4D~5D 仍待验证。⇒ 行归约/逐行点积类算子可用 `(R,1,D)` 三维声明命中向量化 lowering（`PL-1.23`/`TRAP-inner-axis-reduce-scalarize` 的等价手段），无需回退到 Expert 语义的 `T.alloc_ub`。
+    动机: 设计/检视侧此前按文档措辞把三维声明列为「待验证风险」，检视建议要求给出回退路径排序（本次实测三维直接可用，回退路径无必要）；写清秩上限可省一次回退路径设计。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_flashattn_bwd_preprocess_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0289
+
+- type: R
+- title: `gate 5` 的 `S5-ASCEND-MODE` 对「多算子共 wrapper」（同文件追加型迁移）**结构性不可通过**——须支持 per-class 模式校验，或为追加场景定义显式豁免/替代验收路径
+- evidence:
+  - task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（`scenario=migration` / `migration_mode=harness`，用户明确要求「同文件追加进既有 multi_head_attention fwd 包、不拆 fwd/bwd」）Stage 5：wrapper `examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention.py` 同时含 **4 个直接继承 `Kernel` 的类**（`GQAPrefillFwdKernel(Expert)` + `FlashAttnBwdPreprocessKernel` / `FlashAttnBwdPostprocessKernel` / `GQABwdKernel(Developer)`）
+  - 门禁源码 `.agents/tools/gate_lint.py:1451-1512`：`source_modes` = 集成 kernel 的字面量模式集合（本任务 = `{Developer}`），wrapper 侧 `classes` = 直接以 `Kernel` 为基类的类（本任务 = 4 个），判据 `len(classes) != 1 or len(class_modes) != 1 or set(class_modes) != source_modes` ⇒ **本任务 `len(classes) = 4` 且 `set(class_modes) = {Developer, Expert} ≠ {Developer}`，两条件同时不满足**。即：**无论三个 bwd kernel 的正确性如何、无论 wrapper 怎么改（把字面量写到哪个类都无解），`complete_stage(5)` 都不可能通过**——该门禁对「多算子共 wrapper」这一迁移形态缺少表达力
+  - 同族既有条目（互补，不重复）：VP-2026-0150 ② 处理「两层类继承（`Base(Kernel)` + `Subclass(Base)`）」——其 delta 修的是 **integrate_kernel.py 写值位置**（写到直接继承 `Kernel` 的基类）；本任务的多类形态**不受该修法覆盖**（4 个类里没有「唯一目标类」），故须在 gate/场景侧解
+  - 旁证（同任务）：bwd 三核逐函数 `[PRECISION_PASS]` 且 conductor 二次校验通过 + 独立确认 `python _gqa_bwd_kernel.py --level L0` 16/16 PASS（844.7 s）⇒ 门禁不通过不反映交付件质量；该 op 的终态 `BLOCKED_ENVIRONMENT` 由 fwd 工具链错配（CG-2026-0003 recurring）与本条共同构成
+  - 交叉引用：queue VP-2026-0150（已 merged）/ VP-2026-0151（`S5-REPORT-STALE` 死角——追加型集成同时命中该条，两问题合起来说明追加型迁移需要独立验收路径）；`.agents/skills/add-npu-op/SKILL.md`（Stage 5 检查清单）
+- repro: 复现条件——对一个「同文件追加进既有算子包」的迁移任务（wrapper 内 ≥2 个 `Kernel` 子类、模式不同）跑 `python .agents/tools/statectl.py gate 5 --dir examples/{op_slug}`，观察 `S5-ASCEND-MODE` 报「wrapper 的 Kernel.ascend_mode 与集成 kernel 模式不一致」（`len(classes) != 1` 与 `set(class_modes) != source_modes` 同时成立即必然失败）
+- toolchain_stamp: gate_lint.py 现行版本（`S5-ASCEND-MODE` 判据见 `:1501-1512`）；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/tools/gate_lint.py
+- delta: |
+    动作: update（`S5-ASCEND-MODE` 判据；二选一或组合，apply 时按当时文件锁定精确锚）
+    定位锚: |
+      (于 check_s5 的 wrapper 段，`class_modes` 计算之后)
+              if (
+                  len(classes) != 1
+                  or len(class_modes) != 1
+                  or set(class_modes) != source_modes
+              ):
+    old 文本: 即上述定位锚原文（现行判据：要求 wrapper 内恰好一个 `Kernel` 子类、恰好一个字面量模式、且等于集成 kernel 模式集合）
+    new 文本: |
+      **方案 A（推荐，per-class 模式校验）**：判据改为「**每个**直接继承 `Kernel` 的类都有字面量 `ascend_mode`，且**集成 kernel 对应的类**（由 `meta.kernel_class_name` 或迁移态 `functions` 派生）的模式集合 == `source_modes`」——即：
+      - 逐类校验完备性：凡直接以 `Kernel` 为基类的 wrapper 类，若无 `ascend_mode` 字面量则 fail（保留「模式必须显式声明」的原意）；
+      - 目标类校验一致性：集成 kernel 对应类的模式集合须等于 `source_modes`（保留「集成 kernel 模式与 wrapper 声明一致」的原意）；
+      - 允许 wrapper 内存在**其它算子**的 `Kernel` 类（fwd 等），其模式只参与逐类完备性校验、不参与目标类一致性判定。
+      **方案 B（追加场景显式豁免 + 替代验收）**：`migration_state`/`.migration_meta.json` 增加显式标记（如 `same_file_append: true` 与 `wrapper_peer_kernel_classes: [...]`），命中时 `S5-ASCEND-MODE` 只对集成 kernel 对应类做一致性校验，并在 gate 输出里**明确标注豁免依据**（不得静默跳过）；替代验收路径 = 三核各自的 `--level all` 门禁 + conductor 二次校验（本任务已具备）。
+    动机: 同文件追加型迁移是用户明确要求的迁移形态（本次任务书即如此），而现行判据使其**结构性地不可能通过 gate 5**——正确性证据（三核全 PASS + 二次校验）无法转化为终态 DONE，只能落 `BLOCKED_ENVIRONMENT`。该规则的表达力缺口会把「交付件质量」与「wrapper 拓扑形态」混为一谈。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0290
+
+- type: R
+- title: `tilelang-op-develop` Phase 4 增纪律：**运行中不得编辑 `{op}.py`**——tilelang 在 trace 期按**文件路径**重读 `inspect.getsource`，中途编辑会产出与代码无关的 `DiagnosticError: Function must be decorated` 类错误（隔离重跑同 case 通过）
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 3：首轮 `--level L0` 出现 2 例 `DiagnosticError: Function must be decorated ... def _gqa_bwd_builder`，而冻结态重跑同 case 全 PASS；两次失败 case 与两次中途编辑（docstring 加段、`default_config` 改名）时间吻合 ⇒ 根因是运行期间编辑源文件（回溯 = 文件被改动后行号/装饰器上下文错位）
+  - 交叉引用：queue VP-2026-0246 类「标定/探针脚本落盘纪律」（VP-2026-0244）不同层——本条约束的是**算子主文件在测试运行期的可变性**；与 develop Phase 2「最小 shape 探针」配套（探针本身是独立文件时不受影响）
+- repro: 复现条件——启动 `python {op}.py --level L0` 期间编辑该文件的 docstring，观察后续 case 报 `DiagnosticError: Function must be decorated`；冻结文件重跑同 case 通过
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 4 步骤首部追加一条纪律）
+    定位锚: Phase 4 的测试执行步骤段（apply 时按当时文件锁定精确锚，宜置于「跑 L0/L1/L2/Boundary」之前）
+    new 文本: |
+      > **运行中不得编辑 `{op}.py`**：tilelang 在 trace 期按文件路径重读源码（`inspect.getsource`），测试运行期间编辑该文件会让后续 trace 报出**与代码无关**的 `DiagnosticError: Function must be decorated` / 解析错误（行号、装饰器上下文错位）。需要改代码时先终止测试、改完再整体重跑；排查此类怪错时先用「冻结文件隔离重跑同一 case」排除该干扰。
+    动机: 迁移/开发任务里「边跑边改 docstring/常量名」是常态操作，该干扰静默且会把排查引向错误的解析器方向（本次白跑一轮 L0）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0291
+
+- type: R
+- title: 迁移类算子的 **tier-3（量化噪声分类）绑定判据** = 「与**源忠实参考** tier-1 全过」——元素占比与包络是**量级相关**的启发式（非归一化输入下占比 0.025%→3.10%），不得作硬门禁
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 3：同一 kernel 与同一 fp32 golden，归一化输入下超差占比 0.0252%、非归一化 q,k~N(0,4)（L0-12/large-scores）下 **3.0965%**；包络 `2·flip_rel·|dO|absmax` 在后者为 1.3e-1 < 实测 2.4e-2 之外的档位失灵；而「源忠实参考」（把 P/dS 按输入 dtype 同样回落）**两次均 0 超差**（1.4e-4 / 7.5e-4）。设计 §8.2 的 0.01% 阈值在本例（0.023% / 3.10%）会**误杀正确 kernel**
+  - 同任务 Boundary 档：±100 倍输入量级（`exp` 参数 ~1e4 的 fp32 灾难性抵消）使 kernel 与两条参考均偏离 ~1%（7.9 / 7.1）⇒ 该 regime **只应记录不断言**
+  - 交叉引用：queue VP-2026-0017（bf16 输出门禁的 golden 噪声放大位形——同族方向，本条是其「源忠实参考」解法的迁移场景实例）、VP-2026-0153（门禁用例全过 ≠ 语义机制生效）、VP-2026-0258（oracle conditioning 审计）
+- repro: repro-missing（最小复现 = 同一 kernel 在两组输入量级（归一化 / ×4 量级）下逐一计算「占 fp32 参考的超差比」与「占源忠实参考的超差比」，断言后者恒 0 而前者随量级上涨 >10×；须 NPU）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md（tier-3 判据段；同主题亦应写入 `tilelang-op-design` 验证方案 §8.2 的口径要求）
+- delta: |
+    动作: update（tier-3 判据口径）
+    new 文本: |
+      **迁移类算子的 tier-3 绑定判据 = 「与源忠实参考（按源自身的 dtype 回落路径实现）tier-1 全过」**；元素占比阈值（0.01% 类）与 `2·flip_rel·|v|max` 包络都只是**量级相关**的 sanity 项，只可作 sanity 上限（建议 5%）与观察记录，不得作硬门禁（实测：非归一化输入使占比 0.025%→3.10%，硬门禁会误杀与源算法逐位同构的 kernel）。**源忠实 golden 须与 fp32 数学 golden 并列内嵌**（前者用于绑定判据、后者用于解释偏差来源）；±100 倍输入量级档的 fp32 灾难性抵消（exp 参数 ~1e4）只记录不断言。
+    动机: 迁移场景的偏差天然包含「源算法自身的 dtype 回落量化」，把 fp32 数学 golden 的占比当门禁会把算法固有噪声判为实现缺陷（本次 dv 139/614400 元素超容差即此形态）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0292
+
+- type: R
+- title: `migration-analysis.md` 补「**跨工件物理契约**」核验项——源的「优化手段」若与上下游 kernel 共享物理布局（layout 注解 / workspace 形态 / 原子目标布局），判定取舍前必须先读**对端 kernel 的 NPU 实现**确认其产物布局，并把该依赖登记为风险点
+- evidence:
+  - task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z Stage 1/2/3：源的 `make_dq_layout`（源 `gqa_bwd.py` 第 100 行注释明示为 Ampere 8×8 mma fragment 重排）是**生产/消费两侧同时出现**的跨 kernel 布局契约；NPU 主 kernel 以自然 BSHD + 逐行 1-D 行原子写 dq（`_gqa_bwd_kernel.py` 全文无 `annotate_layout`），故保留注解会让读侧按 `π ≠ id` 置换解释地址 ⇒ `dq_out[i] = cast(dq[π(i)])`，**静默错值、无报错、无 NaN**；三步静态核对闭环（源侧双侧契约 → 对端 kernel 实现 → op 层共用 `torch.zeros_like` 缓冲）全部只读、无需 NPU
+  - 该依赖被任务自述列为最高优先级风险（DESIGN §9.1 风险 1），且「后续任何对主 kernel dq 写侧的改动都必须同步复核本 kernel」——迁移方法论当前无「跨工件契约」检验项
+  - 交叉引用：queue VP-2026-0261（CUDA 专属对齐常量处置）/ VP-2026-0262（前作工作区缺失时的降级来源）/ VP-2026-0272（被排除变体的动机承接）/ VP-2026-0226（引用 `.age...` 类工件）——均为 `migration-analysis.md` 的不同主题，本条补「跨工件物理契约」维度；`pattern-library/traps-runtime.md`（跨 kernel 布局注解的静默错值可另立 D 类条目，见报告披露）
+- repro: repro-missing（结构性主张，无需 NPU：复现条件 = 任一源的优化手段含 `T.annotate_layout` / workspace 复用 / 原子目标布局的迁移任务，核对其对端 kernel 的 NPU 实现是否改写该契约）
+- toolchain_stamp: 迁移方法论（无运行时依赖）；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-design/references/migration-analysis.md
+- delta: |
+    动作: update（§5.4 判定规则 / §6 补一行）
+    new 文本: |
+      **跨工件物理契约**：凡源侧出现 `T.annotate_layout`（fragment 重排）/ workspace 复用 / 原子目标布局一类「优化手段」时，须先判定它是**本 kernel 的优化**还是**与上下游 kernel 共享的物理契约**——三步静态核对：① 源侧生产/消费两处是否同时出现该契约；② 读**对端 kernel 的 NPU 实现**确认其产物布局（是否已改为自然布局）；③ 读 op 层确认两侧是否共用同一缓冲。判定为「必须舍弃」的论证应以「**保留它会导致 `out[i] = cast(src[π(i)])` 的静默置换错值**」为形式（强于「无收益」），并把该依赖登记为风险点：后续任何对任一端的写侧改动都须同步复核另一端。
+    动机: 迁移任务的正确性可能依赖另一个 kernel 的产物布局，而该依赖是**静默**的（无报错、无 NaN，只有元素级唯一值用例能暴露）；方法论的检查项此前只覆盖单算子。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0293
+
+- type: R
+- title: `tilelang-design-review` 补两类检查项——① **region 类 API 的形态三要素**（张量 rank / 索引方式〔标量 vs 切片 vs runtime Var〕/ 目标行 stride 关系）与「该 API 的文档示例形态 ≠ 本设计的形态」的佐证区分；② **探针自证与重跑**（探针期望值须由构造式独立推出并逐 case 成断言、退出码只反映被依赖断言；检视侧须**实际重跑**设计引用的每枚探针而非只做引用核对）
+- evidence:
+  - task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z Stage 2（首轮「不通过」，2 阻塞）：阻塞 1 = `T.atomic_add` 的 rank-reduced 4-D 切片形态**静默写错区域**，而设计文档在 §3.2/§3.4/§1.6.0 三处都把它写成「已核对 + 已实测」——现有维度表能判「API 是否存在/是否有 docs 佐证」，判不出「同一 API 在不同切片形态下的语义差异」；阻塞 2 = 设计号称「探针已实测」但两枚探针的 `exact` 判据本身写错（期望值错），结论只能靠人读原始量二次解释；revision-1 重检时又发现**只修了被点名的那个 case**（连续 case 仍 `exact=False`、脚本以退出码 1 结束却被记为「已修正判据后重跑」）
+  - 同任务 Stage 2 的正向方法证据：对三枚探针**实际执行**（而非引用核对）一次抓出三类问题（红灯退出、计时并行污染、与文档逐条一致的正面确认）——上一轮的漏检根因恰是「只读文档不读/不跑探针」
+  - 交叉引用：queue VP-2026-0132（D-3 探针纪律〔预算/规模挡位/日志落盘〕——本条补「判据自证 + 检视侧重跑」）、VP-2026-0224（探针 harness canonical 形态）、VP-2026-0105（编译探针为可选手段）、VP-2026-0199（判别力自证）；VP-2026-0283（本条阻塞 1 对应的 D 类条目）
+- repro: repro-missing（流程规则；复现条件 = 对含 region 类 API 目标或「探针已实测」类断言的设计文档跑检视：① 核对三要素形态是否与实测形态一致；② 逐 case 检查探针期望值是否有构造式依据、脚本退出码是否只反映被依赖断言）
+- toolchain_stamp: 检视 skill 现行版本；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 1 检查项表 + Phase 1 第 7 步机械复核段，各追加）
+    定位锚 1: 维度 1「API 存在性」检查项表（apply 时按当时文件锁定精确锚）
+    new 文本 1: |
+      追加检查行「**API 形态的秩/步幅一致性**」：凡设计用「scalar 索引 + 切片」构造 region 类 API（`T.atomic_add` / `T.copy` / `T.reduce*` 类）的目标时，须核对三要素——**张量 rank**、**索引方式（标量 / 切片 / runtime Var）**、**目标行 stride 与张量实际 stride 的关系**（含 `len(size) == rank`）；三要素任一不同即视为**不同形态**，文档示例成立不蕴含本设计成立。设计 §3.4 的佐证列须区分「该 API 的文档示例形态」与「本设计的形态」。
+    定位锚 2: Phase 1 第 7 步「机械复核」段（apply 时按当时文件锁定精确锚）
+    new 文本 2: |
+      追加机械步骤「**探针自证与重跑**」：① 对设计引用的每一枚探针**实际执行**并记录输出行（与 `verify_equiv.py` 重跑同级）；② 核对探针的期望值是否由构造式独立推出并**逐 case 成断言**、脚本退出码是否只反映该探针真正依赖的断言集合（辅助打印项不得污染退出码）；③ 引用核对不得替代重跑（实测：红灯退出 / 计时并行污染两类问题只能靠重跑发现）。
+    动机: 本次首轮的 2 个阻塞都属「文档自述与工件实测不符」——一类来自 API 形态维度缺失，一类来自探针判据无自证且检视只做引用核对；两类缺口均可由上述机械步骤拦下。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0263
@@ -6416,6 +6714,7 @@ decided_by: evolver / human / -   # 裁决者
   - 交叉引用：queue VP-2026-0055（同文件 gen_init_py 静默降级）/ VP-2026-0064（幂等剥离注释行）/ VP-2026-0012（幂等重跑覆盖集成侧补丁）——同缺陷集群
   - 〔2026-10-13 第二现（不同任务，pool 族同族追加），task adaptive_max_pool2d-adaptive_max_pool2d-20261013T103402Z〕同缺陷在本任务 Stage 5 再现：`examples/adaptive_max_pool2d/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 已重写后 `parse_wrapper_imports` 返回空 → 重跑丢失 helper re-export），本任务以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 `__init__.py` re-export 全 3 名：`_adaptive_max_pool2d_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`；`smoke-ok`）。两任务独立再现 ⟹ ① 的修复（持久化 wrapper 契约名 / already integrated 时跳过 `__init__.py` 重生成）证据链增强——建议审批简报置顶（跨任务第二现）。
   - 〔2026-10-14 第三现（连续第三个 pool 族算子，不同任务），task adaptive_max_pool2d_with_indices-AdaptiveMaxPool2dIndicesFwdOp-20261014T005659Z〕同缺陷第三度出现：`examples/adaptive_max_pool2d_with_indices/RETROSPECTIVE.md` Stage 5 Skill Flow Issues 首行 + `examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/integration_log.md` Issues 第 1 条——`integrate_kernel.py` 对生成聚合 `__init__.py` 仍非幂等（wrapper 重写后 `parse_wrapper_imports()` 返回空 → `gen_init_py()` 只按 integrated-file keys 重建 → 丢 helper re-export）；本任务同样以「恰好运行一次 + 先 `source /workspace/env.sh`」规避（单次运行产出 3 名 re-export：`_adaptive_max_pool2d_with_indices_kernel` / `adaptive_bin` / `max_adaptive_bin_extent`，`smoke-ok`）。**连续三任务（avg → max → max-with-indices）独立再现，无一次被修复，两次靠同一句人工纪律规避**——① 的修复已积压三起实证，强烈建议审批简报置顶（与 VP-2026-0064「幂等检查剥离注释行」/ VP-2026-0055「产物侧校验」同批）。
+  - 〔2026-10-16 **第四任务独立复现**（不同任务，attention 族「同文件追加进既有 fwd 包」的迁移形态），task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5〕② 的同一形态再现 + **③ 新形态（同一 gate 规则的另一触发路径）**：② —— 本任务 wrapper 同时含 4 个直接继承 `Kernel` 的类（fwd `GQAPrefillFwdKernel(Expert)` + 三个 bwd `FlashAttnBwdPreprocessKernel` / `FlashAttnBwdPostprocessKernel` / `GQABwdKernel(Developer)`）；脚本的 `sync_wrapper_ascend_mode` 只处理了 `GQABwdKernel`（`meta.kernel_class_name`），另两个 bwd 子类须 integrator **手工补 `ascend_mode = "Developer"`**（`integration_log.md` Trap C）。③ —— **`S5-ASCEND-MODE` 在「多算子共 wrapper」形态下结构性地不可通过**（不止两层继承）：该规则要求 `len(classes) != 1` 或 `len(class_modes) != 1` 或 `set(class_modes) != source_modes` 即失败（`.agents/tools/gate_lint.py:1501-1512`），本任务 `classes = 4` 且 `set(class_modes) = {Developer, Expert} ≠ source_modes = {Developer}` ⇒ **两条件同时不满足，与 kernel 正确性无关，`complete_stage(5)` 不可能通过**（本任务终态 `BLOCKED_ENVIRONMENT` 的直接组成部分之一）。**该形态的修复不在本脚本侧**（把字面量写到哪个基类都无解），已另立 Tier 2 提案 **VP-2026-0289**（gate 支持 per-class 模式校验 / 同文件追加场景的显式豁免或替代验收路径），两条目互补。**证据链追加（不计独立提案）**——② 为四任务实证（可支撑 apply），③ 为其边界形态。
 - repro: repro-missing（集成脚本规则；复现条件 = 已重写 wrapper 后重跑 integrate_kernel.py 观察 __init__.py 丢失 helper re-export；或对两层 Kernel 继承 wrapper 跑 `statectl gate 5` 观察 S5-ASCEND-MODE）
 - toolchain_stamp: tilelang 0.1.2+417dae99 + CANN 9.0.0 + Ascend910B3 / 2026-10-13
 - target_doc: examples/TileOPs/.agents/skills/add-npu-op/scripts/integrate_kernel.py
@@ -6491,6 +6790,7 @@ decided_by: evolver / human / -   # 裁决者
   - 正则行为机械复现（2026-09-07 蒸馏会话）：`examples/.../DESIGN.md::修订记录` 与 `examples/deepseek_v4/example_sparse_attn_kernel_highperf.py#L345` 两个 token 均含锚后缀导致 exists 判 false；发生账户同 VP-2026-0019（conductor 终态钩子输入 + 复盘缺口）
   - 〔2026-10-13 第五现（不同任务，pool 族）+ 两个提案原文未覆盖的形态，task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z〕Stage 1 gate-1 `S1-REF-PATHS` 失败 1 次（3 处 token 误判），新增形态：① `examples/TileOPs/tests/ops/test_pool.py:130`——ASCII `:行号` 紧贴路径（本提案 `rstrip(".,;:!?、。】")` 只剥**尾部**冒号，`:` 处于 token 中段，未被覆盖）；② `.../bench_pool.py:test_adaptive_max_pool2d_bench`——`...` 缩写与 `:函数名` 并存（本提案 `"/..." in token` 可覆盖 `...`，但 `:函数名` 后缀仍在）；③ `docs/…/T.transpose.md`——**全角省略号 `…`（U+2026）**，本提案只匹配 ASCII `...` 故不覆盖。仅修 5 处引用格式即通过（设计逐字保留，SESSION_TIMING_ANALYSIS §3 估 ≈105s）。**本条修复须扩为**：token 内嵌 ASCII `:` 后接数字/标识符的锚后缀剥离（或改用「路径须以已知扩展名/目录结尾」的正向识别）+ `…` 与 `...` 双省略号形态；设计侧写作自检另立 **VP-2026-0154**（两案互补）。
   - 〔2026-09-15 任务登记的同主题复发（S1-PLACEHOLDER/S1-REF-PATHS 误报系列，见 stats.md §3）与本条合并计数：本条提案 pending 期间已积累 ≥5 起实证，建议审批简报置顶〕
+  - 〔2026-10-16 **apply 后残余形态（第六现）**（不同任务，attention 族迁移），task multi_head_attention-_flashattn_bwd_postprocess_kernel-20261016T015430Z Stage 1〕已 apply 的修法（剥离 `#`/`::`）**未覆盖 `§`**：`REF_PATH_RE` 的排除字符类为 `\s` + 反引号/引号/括号/全角标点（`：，。；、！？（）【】`，见 `.agents/tools/gate_lint.py:43-45`），**不含 `§`** ⇒ 非反引号包裹的 `docs/Tilelang.language/数学操作/T.min.md§2.2.1` 类引用被整体吞成一个 token、报「路径不存在」（本任务设计期 `_ref_path_failures` 复算实测 `MISSING PATHS: ['docs/Tilelang.language/数学操作/T.min.md']`；该路径同时是内容错误——`T.min` 实属 `比较操作/`）。修法建议（写回本条的 Decided 记录供后续同主题提案吸收）：把 `§` 与 `#` 同列入排除字符类，或在失败消息里提示「路径请用反引号包裹」。设计侧配套纪律 = 所有 `docs/` / `examples/` / `.agents/` 路径一律用反引号包裹（反引号在排除字符集内，可终止 token）。**证据链追加（不计独立提案）**——本条已 merged，记入 Decided 供后续吸收。
 - repro: python3 -c "import re; print([m.group(0) for m in re.finditer(r'(?:docs|examples|testing|\.agents)/[^\s\`\x27\"<>()\[\]（）【】：，。；、！？]+', '见 examples/multi_head_attention/_gqa_prefill_fwd_kernel/DESIGN.md::修订记录')])"
 - toolchain_stamp: gate_lint.py 现行版本；误判发生于 2026-09-07 expert 迁移任务
 - target_doc: .agents/tools/gate_lint.py

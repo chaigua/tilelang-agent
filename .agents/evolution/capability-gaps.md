@@ -83,13 +83,15 @@ created_by: multi_head_attention/_gqa_prefill_fwd_kernel Stage 3 attempt 3, 2026
 last_seen: 2026-09-07
 ```
 
-### CG-2026-0003
+### CG-2026-0003 → 已升级 recurring（2026-10-16 occurrences 2：Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性为**第二形态**独立识别；条目正文在原位更新，status: recurring）
 
 ```yaml
 gap_id: CG-2026-0003
-layer: TileLangIR pass (Expert 模式 fixpipe lowering) 与 BishengIR 版本配对
+layer: TileLangIR pass / codegen（Expert 模式 lowering 产出的新 HIVM 属性）与 BishengIR 版本配对
 capability: >-
-  新版 tilelang 前端（机器默认激活构建 /home/tilelang/j00919838/tilelang-mlir-ascend，
+  **前端产物的新 HIVM 方言特性与已装 bishengir-compile 的版本配对缺失**（docs/ 无配对说明），
+  两个独立形态：
+  〔形态①（2026-09-07）〕新版 tilelang 前端（机器默认激活构建 /home/tilelang/j00919838/tilelang-mlir-ascend，
   2026-09-02 期）在 Expert 模式下把 L0C→GM 的 T.copy lowering 为 hivm.hir.fixpipe 并
   携带 dma_mode = #hivm.dma_mode<nz2nd> 属性；本机全部 3 个可用 bishengir-compile 均
   无法编译该 IR：CANN 8.5.0 版（0.1.0，e4e2ba9841d1，2026-01-16，PATH 默认）与 upload
@@ -97,36 +99,103 @@ capability: >-
   `dma_mode` in dialect `hivm`"；j00919838 配套 3rdparty 版（1.1.0，139bb6c7aef6，
   2026-09-02）解析通过但在 ConvertHFusionToHIVMPass 段错误
   （mlir::utils::getAnnotateOpWithAttr，HFusionToHIVM.cpp）。
+  〔形态②（2026-10-16，第二任务独立识别）〕Expert 核内**显式 `T.sync_block_set`** 的 codegen
+  产出携带 syn_instr_mode 属性
+  （hivm.hir.sync_block_set[... flag = %N syn_instr_mode = <INTRA_BLOCK_SYNCHRONIZATION>]），
+  系统 CANN 9.0.0 的 `bishengir-compile 1.1.0`（/usr1/BiSheng/AscendNPU-IR/bishengir
+  428ab8fdab46 2026-04-30）**解析期**报
+  loc(kernel.npuir:50:72): error: Dialect `' not found for custom op 'syn_instr_mode'
+  (tried '.syn_instr_mode' as well) → [ERROR] Failed to parse input file；
+  而仓内**自建** 3rdparty/AscendNPU-IR/build/install/bin/bishengir-compile 能解析同一
+  .npuir（越过 parse 阶段），但其后续向 /usr/local/Ascend/cann-9.0.0/bin/hivmc 发出的
+  flag（--enable-cpu-trace-intrinsic=false / --enable-lir-compile=true）被 CANN 9.0
+  hivmc 拒绝（Unknown command line argument）⇒ **两侧编译器组合均不可用**（前端产物新特性
+  ↔ 已装后端解析能力之间无可用配对）。两形态的共同缺口本体（配对缺失、跨工具链可用编译器
+  组合均不可用）在两次识别中一致，属性名/前端构建/编译器版本不同，故计为同一缺口的第二形态。
 blocked_algo: >-
-  Expert 模式示例（examples/flash_attention/flash_attn_npuir.py，T.rs("PIPE_*") +
+  〔形态①〕Expert 模式示例（examples/flash_attention/flash_attn_npuir.py，T.rs("PIPE_*") +
   T.sync_block_set/wait 跨核同步结构）在机器默认激活的 tilelang 构建下无法编译，
   迫使三实现性能对比任务整体切换到 upload 仓库的旧版前端构建完成。
+  〔形态②〕**同包既有 Expert 产物在新工具链上不可编译**：CANN 8.5.0 时代交付的 fwd
+  Expert 核 `GQAPrefillFwdKernel`（`examples/TileOPs/tileops/kernels/attention/
+  multi_head_attention/multi_head_attention_kernel/_gqa_prefill_fwd_kernel.py`，含显式
+  `T.sync_block_set`）在 CANN 9.0.0 / Ascend910B3 上无法编译 ⇒ MultiHeadAttentionBwdOp
+  的「同文件追加」集成任务整体阻塞（op 级 BLOCKED_ENVIRONMENT，8/12 report 失败）；且
+  MhaBwdWorkload.gen_inputs 依赖 fwd 运行产 `o` ⇒ bwd 用例连带不可达。受影响面 = 一切
+  依赖该 fwd 核的算子（含本 op 的 fwd/bwd）与一切 Expert 显式同步原语产物。
 evidence:
-  - 复现（默认工具链）：PYTHONPATH 默认（tilelang 解析到 j00919838 checkout）下
+  - 复现（形态①，默认工具链）：PYTHONPATH 默认（tilelang 解析到 j00919838 checkout）下
     python flash_attn_npuir.py --seq_len 512 → bishengir-compile 报
     loc(kernel.npuir:41:42): error: unknown attribute `dma_mode` in dialect `hivm`；
-  - 三编译器交叉实测（同一份 .npuir）：CANN 8.5.0 与 upload 3rdparty（2026-07-24）
+  - 三编译器交叉实测（形态①，同一份 .npuir）：CANN 8.5.0 与 upload 3rdparty（2026-07-24）
     报同一 parse 错误；j00919838 3rdparty 1.1.0 在 ConvertHFusionToHIVMPass 崩溃
     （LLVM stack dump，栈顶 getAnnotateOpWithAttr）；
-  - 绕法实测：PYTHONPATH 前置 upload 仓库构建后（其前端不产出 dma_mode），同一源码
+  - 绕法实测（形态①）：PYTHONPATH 前置 upload 仓库构建后（其前端不产出 dma_mode），同一源码
     用 CANN 8.5.0 bishengir-compile 编译运行通过（含精度自检 All check passed，
     seq_len=512/4096）。
+  - 〔形态② 复现（2026-10-16）〕task multi_head_attention-MultiHeadAttentionBwdOp-
+    20261016T015430Z Stage 5：report run.json 的 fwd 用例报
+    `RuntimeError: NPU IR opt failed: loc("/tmp/.../kernel.npuir":50:72): error: Dialect `'
+    not found for custom op 'syn_instr_mode'`（4 例 test_mha_fwd[*] + 4 例 test_mha_bwd[*]
+    下游同源）；出处
+    examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/
+    integration_log.md §Root cause；report 侧 provenance（任务工作区，未上库，允许失效）= examples/TileOPs/reports/tileops/20261016_065819_471539_MultiHeadAttentionBwdOp/run.json。
+  - 〔形态② 独立性证据〕① 回退本次 Stage-5 编辑（wrapper `__init__.py` + wrapper 还原到
+    集成前状态）后重跑 `test_mha_fwd[smoke-*]` 复现同一失败 ⇒ 非本次编辑引入；② 该 fwd 的
+    DESIGN/opt_log 工具链戳为 CANN 8.5.0 / Ascend910B2C，`reports/tileops/` 下无其历史
+    report ⇒ 从未在当前工具链验证过；③ 自建编译器对照：3rdparty/AscendNPU-IR@31f690369
+    自建 bishengir-compile 能越过 parse（.td 已带 syn_instr_mode），失败点下移到 CANN 9.0
+    hivmc 的 flag 拒绝（env.sh 已记录该版本错配）；④ 同任务 bwd 三核独立确认可用
+    （`_gqa_bwd_kernel.py --level L0` 16/16 PASS，844.7 s）⇒ 阻塞面确在 fwd Expert 核与
+    工具链配对，非 kernel 逻辑。
   - 未文档化假设：docs/ 未找到 bishengir-compile 与前端产物的版本配对说明；估计依据
-    为本任务三编译器交叉实测。
+    为两任务的编译器交叉实测。
 workaround: >-
-  PYTHONPATH 前置 upload 仓库 tilelang 构建（旧版前端，fixpipe 不带 dma_mode），
+  〔形态①〕PYTHONPATH 前置 upload 仓库 tilelang 构建（旧版前端，fixpipe 不带 dma_mode），
   三种实现（Expert npuir / Developer baseline / Developer gqa）统一在其下编译对比；
   代价：任务级工具链钉版本，机器默认 tilelang 构建的 Expert 路径完全不可用。
-occurrences: 1
-tasks: [FA 三实现性能对比 baseline/npuir/gqa 2026-09-07]
+  〔形态②〕none（本次任务无可作用面）：fwd 核属「add-only 保留的既有交付件」、fwd 依赖
+  属禁止编辑的 workload 接线（tileops/workloads/attention.py），工具链配对属环境层 ⇒
+  该任务按失败分类表记 BLOCKED_ENVIRONMENT 并终止（未消耗 debug attempt）。可选的
+  正向路径 = 在 CANN 8.5.0 或与前端匹配的 bishengir-compile 上集成（与形态①同一类
+  工具链钉版本），或待上游把 syn_instr_mode 支持回灌进 CANN 9.0 的 bishengir-compile。
+occurrences: 2
+tasks: [FA 三实现性能对比 baseline/npuir/gqa 2026-09-07, multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z]
 toolchain_stamp: >-
-  tilelang 默认激活构建 j00919838 checkout（jit_npu.py dacebc3d 2026-08-05，3rdparty
+  形态①：tilelang 默认激活构建 j00919838 checkout（jit_npu.py dacebc3d 2026-08-05，3rdparty
   bishengir 1.1.0 2026-09-02）+ CANN 8.5.0 bishengir-compile 0.1.0（2026-01-16）+
-  910B2C(IT21HMDB01-B2) + torch_npu 2.7.1
-status: open
+  910B2C(IT21HMDB01-B2) + torch_npu 2.7.1。
+  形态②：tilelang 0.1.2 dev root build /workspace/tilelang-mlir-ascend（3rdparty/AscendNPU-IR
+  @31f690369）+ 系统 bishengir-compile 1.1.0（428ab8fdab46 2026-04-30）+ CANN 9.0.0
+  （/usr/local/Ascend/cann-9.0.0，hivmc）+ Ascend910B3 / 2026-10-16。
+status: recurring
+proposal: >-
+  目标层 BishengIR（bishengir-compile / hivmc 解析与 flag 兼容）+ 版本配对文档化。
+  建议改动（三选一或组合）：① **把前端新产出的 HIVM 属性回灌进 CANN 发行版 bishengir-compile**
+  （`syn_instr_mode` / `dma_mode` 及后续同名族），使「系统 PATH 编译器」与当前 tilelang 前端
+  能配对；② 至少把**配对关系文档化**——在 `docs/developer/EnvironmentVariables.md` 或
+  `env.sh` 的 TILELANG_NPU_COMPILER_PATH 段给出「tilelang commit ↔ 3rdparty AscendNPU-IR
+  commit ↔ CANN bishengir-compile 版本 ↔ hivmc flag 集」的对应表与不匹配时的**可诊断报错**
+  （现状是 parse 阶段 `Dialect '' not found` 或 hivmc `Unknown command line argument`，
+  两处都不指出「版本错配」这一根因）；③ 修 hivmc 侧的 flag 兼容（自建 bishengir-compile
+  发出的 `--enable-cpu-trace-intrinsic=false` / `--enable-lir-compile=true` 在 CANN 9.0
+  hivmc 上被拒 ⇒ 目前「自建前端 + 系统后端」组合亦不可用）。
+  收益量化（两任务实测）：形态①使整个三实现性能对比任务的 Expert 路径不可用、被迫全局切换
+  前端构建；形态②使一个已交付 Expert 核在新工具链上不可编译，导致 bwd 迁移任务 op 级
+  BLOCKED_ENVIRONMENT（report 12 例中 8 例失败，其中 4 例为其下游），**纯工具链侧成本、
+  无 kernel 缺陷**；且「既有 CANN 8.5.0 时代 Expert 产物在新 CANN 上是否可用」此前无任何
+  机械预检手段（本次靠 20 min 的 git 回溯 + 双编译器对照才定征）。
+  受影响算子清单：attention 族 Expert 产物（`_gqa_prefill_fwd_kernel` 及其全部下游，含本
+  op 的 fwd/bwd）、及一切使用显式 `T.sync_block_set/wait` 或 fixpipe `dma_mode` 的 Expert
+  kernel（即跨 CANN 大版本搬迁时的存量 Expert 全集）。
+  issue 草稿（[npuir] 前缀，**须用户批准后建**）：[npuir] Expert 前端产物与 bishengir-compile
+  存在未文档化的版本配对约束（`dma_mode` / `syn_instr_mode` 两属性在 CANN 8.5/9.0 各自的
+  已装编译器上均解析失败；自建编译器与 CANN 9.0 hivmc 亦 flag 不兼容）
 created_by: FA 3-impl perf comparison 2026-09-07
-last_seen: FA 3-impl perf comparison 2026-09-07
+last_seen: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5 集成期（2026-10-16，第二形态独立识别 → 升级 recurring）
 ```
+
+> **升级依据（2026-10-16）**：task `FA 三实现性能对比 baseline/npuir/gqa`（2026-09-07，形态① `dma_mode`/fixpipe）+ task `multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z`（2026-10-16，形态② `syn_instr_mode`/`sync_block_set`）——两个**不同任务、不同属性、不同前端构建与编译器版本**独立识别同一缺口本体（前端新 HIVM 特性 ↔ 已装 bishengir-compile 无可用配对，且两任务下「本机全部可用编译器组合」均不可用），达 ≥2 任务阈值。proposal 字段已产出，待向用户显式列出并推动（外部 issue 须用户批准后建）。
 
 ---
 
@@ -1013,6 +1082,8 @@ last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T1
 
 ## Recurring（达升级阈值，待推动补齐）
 
+> **条目位置说明（2026-10-16）**：`CG-2026-0003` 本次由 `open` 升级为 `recurring`（第二形态 = Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性与 CANN 9.0.0 bishengir-compile 的版本错配），为便于回溯两形态的完整证据链，其**正文保留在下方 `## Open` 区原位更新**（标题已标注 recurring），proposal 字段已产出，与本节其余 recurring 条目同等待推动状态。
+
 ### CG-2026-0023
 
 ```yaml
@@ -1216,4 +1287,55 @@ status: open
 proposal: none（未达 recurring；建议方向 = ① 公布 reduce 链 UB 预算模型（按归约链形态分档），或在 `ub overflow` 诊断中列出逐 buffer 明细；② 对 `(C,plane)` + `reduce(dim=1)` 给出标量化诊断；③ 放宽 `hivm.hir.vsel` 的 cond 操作数形态（支持 UB 子区域）；issue 须用户批准）
 created_by: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4（optimizer 自登记，2026-10-15）
 last_seen: 2026-10-15 adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4
+```
+
+### CG-2026-0030
+
+```yaml
+gap_id: CG-2026-0030
+layer: BishengIR（bishengir-compile 后端崩溃 — ConvertHFusionToHIVMPass 后继阶段 / IR opt）
+capability: >-
+  `bishengir-compile`（CANN 9.0.0）对特定 `S` 值**段错误**：同一 Developer 骨架
+  （persistent `T.Kernel(min(num_logical, cores))` + 核内 `T.serial` 任务循环 +
+  `T.Pipelined` query 循环 + 运行时 extent 的 GM↔UB `T.copy`（目标操作数预清零）+
+  `T.gemm`（全 tile extent）+ 逐行 1-D `T.atomic_add`）在 attention 形状
+  `(B,S,H,H_kv,D) = (1, 32, 4, 4, 64)` 上编译时报
+  `NPU IR opt failed: PLEASE submit a bug report ... Stack dump:`（段错误，无 MLIR 诊断），
+  而 `S ∈ {16, 24, 40, 48, 56, 64, 96}` 全部编译通过。崩溃与 `(bm,bn) = (64,64) / (32,32)`、
+  `heads`、`dim ∈ {64,128}`、`is_causal` 均无关（逐变体实测）；S 为 64 倍数的 manifest 档
+  不受影响。即某一 shape 参数取值单独触发后端崩溃，属**形状相关的编译器缺陷**，非前端能力
+  缺失或 kernel 逻辑问题。
+blocked_algo: >-
+  受影响的是「小 S（含 32 的非 8 倍数域）」的 attention-backward 形态：该 shape 档在本
+  工具链**无法产出可运行产物**（编译即崩），分层测试只能把它记为 warn-only（不构成数值
+  证据）。对 manifest 交付域（S 为 64 倍数）无影响；对 `S = 32` 的边界/小 shape 用例是
+  硬阻塞（被迫从断言档降级为记录档）。潜在波及：任何对齐位数恰好落在该崩溃域的小 shape
+  attention 类 kernel（本次扫描的 S 族外未见其它崩溃点，故适用域按 S 参数限定）。
+evidence:
+  - 复现（任务工作区，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/repro/
+    TRAP-bishengir-crash-s32.py`（知识域 repro，三态对照：A `S=32` 抛崩溃 / B `S=40` 通过 /
+    C `S=24` 通过；`ALL ASSERTIONS PASS`）
+  - 变体扫描：同任务 `history_version` 的 S 扫描（16/24/32/40/48/56/64/96）与 tile/heads
+    变体（`(bm,bn)`、heads、dim、is_causal 四维），仅 `S=32` 崩溃
+  - 运行日志：`python _gqa_bwd_kernel.py --level all` 的 L2 段
+    `[L2] WARN (record only): (B,S,H,Hkv,D)=(1,32,4,4,64)`
+  - 知识域条目：`pattern-library/traps-compiler.md` `TRAP-bishengir-crash-s32`（含 repro，
+    重验触发词 `S=32: COMPILED`）
+  - 未文档化假设：docs/ 无 bishengir-compile 形状相关缺陷清单；估计依据为本任务 S 扫描实测
+workaround: >-
+  该 shape 档按「工具链崩溃（非精度问题）」单独记录为 warn-only，不做精度断言；分层测试的
+  WARN 通道须区分 `[toolchain-crash]` 与 `[precision-record]` 两类（同一通道混记会让读者把
+  后端崩溃误读为数值可疑）。设计侧无可用替代形态（崩溃在编译期，与 kernel 写法无关）。
+occurrences: 1
+tasks: [multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（函数级 _gqa_bwd_kernel Stage 3）]
+toolchain_stamp: >-
+  tilelang 0.1.2 dev root build（/workspace/tilelang-mlir-ascend/build）+ CANN 9.0.0
+  （/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile）+ Ascend910B3（AIC=20 / AIV=40 /
+  UB 196608 B）/ 2026-10-16
+status: open
+proposal: none（未达 recurring；建议方向 = ① 上游定位 `S == 32` 触发点（提供最小 .npuir 与
+  crash stack）；② 在 `bishengir-compile` 崩溃时输出「已进入 pass 阶段 + 触发 shape」的最小
+  上下文，避免 `PLEASE submit a bug report` 无信息量；issue 须用户批准）
+created_by: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（_gqa_bwd_kernel Stage 3 自登记，2026-10-16）
+last_seen: 2026-10-16 multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 3（L2 warn-only）
 ```
