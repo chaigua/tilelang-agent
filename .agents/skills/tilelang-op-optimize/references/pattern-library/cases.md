@@ -657,3 +657,29 @@ reduction 家族**第二个 logical_reduce / 谓词 AND 类** TileOPs 迁移（`
 - **实测**：函数级 L0 27 / L1 25 / L2 / Boundary 全过（`--level all` exit 0，bool 输出 `max_diff=0.00e+00`）；集成 report `status=passed`——正确性 **42/42**（bool/int32/int64/complex64/complex128/非整除 N/尾 M/1D-4D/多 dim/keepdim）、benchmark **6/6**、3 例 msprof 有效（`invalid_profile_count=0`）：`mask-validation-4k [32,4096]` bool dim=-1 2.8601 µs（roofline 10.48%）/ `mask-validation-32k [32,32768]` 6.7201 µs（35.67%）/ `3d-multidim-reduce [4,128,4096]` dim=[0,2] 10.9002 µs（43.98%）；带宽 1.75 TB/s。集成 attempt 1 首跑仅因 `PYTHONPATH` 缺仓库根在 import 冒烟报 `ModuleNotFoundError: No module named 'tilelang'`（环境路径，非代码缺陷，未计 attempt）。
 - **门禁交互（非设计缺陷的两类返工，供后续同族任务预判）**：① `S2-MIG-DIM0` 裸子串 `"n/a"` 被源路径 `reduction/all` 命中（词边界修复见 queue VP-2026-0197）；② `S3-GOLDEN-TORCH` 要求 golden **函数体内联 `torch.*` 命名空间调用**——`x.bool().all(dim, keepdim)` 语义等价但被 AST 判失败，改 `torch.all(x, dim=dim, keepdim=keepdim)` 即过（VP-2026-0107 第三数据点；本例未产生精度语义变化，复数真值判据 `real != 0 or imag != 0` 与 Op 层契约一致）。
 - **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束）；其「大 N 可处理」的能力动机由 NPU 侧元素预算驱动的列分块路径承接。同工厂兄弟档案见 `CASE-reduction-countnonzero-migration`（契约相反：int64 vs bool）。
+
+---
+
+id: CASE-reduction-any-migration
+kind: case
+family: [reduction]
+mode: [developer]
+dtype: [bool, int8, fp16, bf16, fp32, int32, int64, complex64, complex128]
+status: verified
+origin_task: any-_logical_reduce_kernel-20261016T062400Z（函数级）/ any-any-20261016T061701Z（op 级，Stage 5 集成）
+toolchain: tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16
+repro: none
+---
+
+### `examples/any/_logical_reduce_kernel/`（任务工作区，未上库；集成副本 `examples/TileOPs/tileops/kernels/reduction/any/`，同任务工作区）
+
+reduction 家族**第三个 logical_reduce / 谓词 OR 类** TileOPs 迁移（`AnyFwdOp`，`op_kind=any` ⇒ 逐行 **bool** 输出、kernel 载体 int8，与姊妹 `all` 同契约；`dim` special-case 语义与 `all` 一致）。Stage 0/5 各 1 attempt 首过（集成无 debug attempt）；函数级 `retry_count=1`（Stage 2 `S2-MIG-DIM0` 机械误报——源路径 `ops/reduction/any.py` 的 `reductio`**`n/a`**`ny.py` 子串）——非设计缺陷。
+
+- **语义/契约（设计师第一件事）**：输出契约取自 **manifest**（`bool`，kernel 载体 int8）；源共享工厂按 `op_kind` 分派不同归约原语与输出 dtype，`ops/reduction/any.py` 里的 `"any"` 只是 **roofline 记账 kind、不是实现入口**。边界语义以 **torch 实测**（33/33）为锚：`N=0`（空 OR）→ **False**（`all` 为 True，方向相反）、`dim=[]/()` → no-op、`dim=None` → 0-dim 标量、NaN 行 → True、`±0` → False、complex → `(re!=0)|(im!=0)`、keepdim 两态。
+- **设计主选（补式 + 元素预算双路径）**：`vcmp("eq") → vcast(i1→f32, rint) → reduce_min(dim=1) → (bm,) micro-buffer vsub(1 − min)`——`vcmp("ne")` 不适用（ordered NE，NaN 恒假 ⇒ 见下「陷阱」）；取反不可行（`T.vnot` dtype 表无 bool/int1）⇒ 补式落 `(bm,)` 微缓冲。容量判据按元素预算（`bm·W ≤ E_cap`，链单价 fp16/fp32 = 8.00 / bf16 = 12.00 B/元素 ⇒ `E_cap = 196608 // 2 // 12 = 8192`，硬上限 24576）。**路径 R**（`N ≤ E_cap` 单 tile 驻留）/**路径 C**（`N > E_cap` 列分块 + 补列置 **OR 中性 0.0** + 静态宽度尾块），跨 tile 合并 = **`T.vmin(acc, mn, new_acc)` + `T.copy(new_acc, acc)`（no-alias 三件套；单位元 1.0）**——照抄姊妹 `all` 的 `T.vmax` 会语义翻错。
+- **姊妹语义反转（本单元最高价值教学点）**：`any` 与 `all` 共用同一谓词 `[x==0]`，但四项全反转——归约算子 `reduce_max↔reduce_min`、补式方向 `1−max↔1−min`、跨 tile 合并算子 `vmax↔vmin`、累加器单位元 `0.0↔1.0`；照抄任一即语义翻错。**判别性输入方向亦相反**：`any` 须高置零比例（约 70%）+ 全零行（False）+ 「NaN+零」行（True）；`all` 相反。
+- **陷阱（本任务关联知识条目）**：`TRAP-any-predicate-reduction-pair`（本任务新增，含 repro——两向错配的暴露集 `ne+max=[4,5]` / `eq+max=[2,4,6,7]`）/ `TRAP-npuir-ir-gate-loop-scope`（本任务新增，含 repro——`scf.for` 禁令按变体限定）/ `TRAP-vcmp-ne-ordered-nan` 第四数据点 / `TRAP-primfunc-compile-time-if-buffer-def` 适用域限定（纯语句分支合法）/ `TRAP-npuir-lowered-mlir-access` IR 文本匹配格式（`vreduce <min>` 带空格）；constants.md `CONST-reduce-ub-per-element` 第四数据点；layout.md `PL-1.25-row-reduce-indicator-complement` 第三形态。
+- **实现纪律（可复用）**：`bm` 尾块守卫（`real_m = T.min(block_m, M − start)` + src/dst 双显式 slice）；**调用方 `block_m` 越预算时 kernel 侧按元素预算回落**（迁移期 wrapper `default_config` 仍是 GPU 期 SMEM 启发式，`(32,4096)` fp32 给 `bm=8` ⇒ 32768 元素 > 24576；kernel `_resolve_block_m` 回落即不溢出且结果不变，无需改 wrapper）；结构性条件（路径分派、`tail > 0`）提到 `@tilelang.jit` 工厂层按变体返回独立 `prim_func`（`@tilelang.jit` 工厂签名无参时调用式为 `build(...)()(x)`——少一层空调用会 `TypeError: ... takes 0 positional arguments`）；IR 形态门禁走 `kernel.mlir_content`。
+- **实测**：函数级 L0 26 / L1 26 / L2 14 行 / Boundary 27 行全过；`--level all` exit 0，**101 次精确比对 0 差异**（bool 输出逐位）；路径 R ↔ 路径 C 在「同一有效数据 + 补 0.0」下 `torch.equal`。集成 report `status=passed`——正确性 **42/42**（`avg max abs error = 0.00e+00`）、benchmark **6/6**、3 例 msprof 有效（`invalid_profile_count=0`）：`mask-validation-4k [32,4096]` bool dim=-1 2.7401 µs（roofline 10.94%）/ `mask-validation-32k [32,32768]` 6.6801 µs（35.88%）/ `3d-multidim-reduce [4,128,4096]` dim=[0,2] 11.1002 µs（43.18%）；带宽 1.75 TB/s。
+- **门禁/集成交互（非设计缺陷的返工与外观清理，供后续同族任务预判）**：① `S2-MIG-DIM0` 裸子串 `"n/a"` 被源路径 `reduction/any` 命中（词边界修复见 queue VP-2026-0197，本次为**第四次**独立复现；代价 = `design_revision` 回退 130 s + 消耗 1 单位 `retry_count`）；② `integrate_kernel.py::rewrite_wrapper_import` 对 scaffolder **已预置** baseline/perf_opt 选择块的 wrapper 非幂等（产生重复表头；integrator 手工去重并备份 `any_kernel/history_version/any_wrapper_s5_preseed_dup.py`，功能无害）——见 queue 新增 R 类提案；③ 集成/report 运行前置 = `/workspace/venv/bin/python` + `PYTHONPATH=<repo root>` 于 `examples/TileOPs/` 下（本仓 `tilelang` 非 pip 安装）。
+- **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束）；其「大 N 可处理」的能力动机由 NPU 侧元素预算驱动的列分块路径承接。同工厂兄弟档案见 `CASE-reduction-countnonzero-migration`（契约 int64）与 `CASE-reduction-all-migration`（谓词 AND，四项反转的另一侧）。

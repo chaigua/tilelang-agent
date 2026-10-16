@@ -41,7 +41,7 @@
 | PL-1.21-vector-persistent-split | 纯 Vector persistent 分核模板（num_kernels=min(num_logical, aicore×2) + T.serial 静态界 + 尾任务守卫；lerp+adaptive-pool 两证） | verified |
 | PL-1.22-maxreduce-nan-tracking | max 池化/归约向量实现形态：C 轴向量轴 + fp32 比较域 + eq 掩码乘性 NaN 追踪（`reduce_min+==0` 才是任一 NaN）+ `-inf` 单位元 + 无代数化简（adaptive_max + 窗口 max 2D/1D 四数据点；守卫外提需 ≥2 空间轴）；**C4/整平面域**等代价形态 `isnan(reduce_sum(x*x))`（原位平方，32 vs 掩码链 96-128 B/元素，2026-10-15） | verified |
 | PL-1.23-flat-spatial-axis-reduce | 扁平空间轴归约（整平面/全局池化免转置）：UB tile `(CH,H,W)`→`(CH,1,H*W)` + GM 同步声明，归约轴换成宽最内轴——resnet-global 166.26→16.68µs（9.96x，逐位精确） | verified |
-| PL-1.25-row-reduce-indicator-complement | 行归约「布尔指示平面 → 归约 → 补式」+ 元素预算双路径（resident / 列分块 + `tn` 整除优先 + 静态尾块免 pad）；补式方向由语义决定（计数 `N−Σ[x==0]` / 谓词 AND `1−max[x==0]`，跨 tile 合并算子随之 = sum / **vmax no-alias 三件套**）；两证（count_nonzero + all，含运行期逐位精确） | verified |
+| PL-1.25-row-reduce-indicator-complement | 行归约「布尔指示平面 → 归约 → 补式」+ 元素预算双路径（resident / 列分块 + `tn` 整除优先 + 静态尾块免 pad）；补式方向由语义决定（计数 `N−Σ[x==0]` / 谓词 AND `1−max[x==0]` → **vmax no-alias 三件套** / 谓词 OR `1−min[x==0]` → **vmin no-alias 三件套 + 单位元 1.0**，四项随 OR/AND 对偶全反转）；三证（count_nonzero + all + **any**，含运行期逐位精确） | verified |
 
 ### elementwise.md — 多输入搬运效率
 
@@ -89,7 +89,7 @@
 | TRAP-tir-range-loop-not-unrolled | `@T.prim_func` 内 `for i in range(n)` 是串行 TIR 循环（loop var = tir.Var）非 Python 展开；静态 T.serial 界 + 运行时守卫为可行形态 | verified |
 | TRAP-vcast-shape-and-gm-source | `T.vcast` 形状须一致（无 broadcast/reshape）+ 源须为 UB（GM 源 BiShengHIR pipeline 失败）；伴随：runtime let-bound 标量可作 vmul src2 | verified |
 | TRAP-hivm-vsel-cond-slice | `hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**（同 slice 作 `vcmp` 操作数合法）→ 双输出池化「行级掩码直送 vselect」的削 op 不可达；**否定 v 算子 API 前须穷举 whole-buffer/切片/bool-cond/rank 形态** | verified |
-| TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro）；**2026-10-16 计数类延伸**：`[x≠0]` 的合法形态 = 有序 EQ 补式 `N − Σ[x==0]`（NaN 计入非零，±0 不计入，亚正规不 FTZ，NPU 运行期三 dtype 实证；`T.vnot` dtype 表无 bool ⇒ 取反路线不可行）；**2026-10-16 谓词 AND 类延伸**：`all` = `1 − max[x==0]`（合并算子由语义决定，误用 ordered-NE 整行翻 False；运行期 11 行角点 + NaN 列 × 3 dtype 逐位实证） | verified |
+| TRAP-vcmp-ne-ordered-nan | `T.vcmp("ne")` 是 ordered 不等（NaN 恒假），不可作 NaN 探测；`eq`/`le`/`ge` 为 IEEE 正确（合法绕法 = eq 掩码乘性累积，含 repro）；**2026-10-16 计数类延伸**：`[x≠0]` 的合法形态 = 有序 EQ 补式 `N − Σ[x==0]`（NaN 计入非零，±0 不计入，亚正规不 FTZ，NPU 运行期三 dtype 实证；`T.vnot` dtype 表无 bool ⇒ 取反路线不可行）；**2026-10-16 谓词 AND 类延伸**：`all` = `1 − max[x==0]`（合并算子由语义决定，误用 ordered-NE 整行翻 False；运行期 11 行角点 + NaN 列 × 3 dtype 逐位实证）；**2026-10-16 谓词 OR 类延伸**：`any` = `1 − min[x==0]`（单位元 1.0，四项随 OR/AND 对偶全反转；误用 ordered-NE 的暴露集更窄 = 恰「NaN 与零共存且无其他非零」/`all-NaN` 两行；运行期三 dtype 逐位 + 空 OR 单位元 False） | verified |
 | TRAP-npuir-ref-backend-golden-capability | NPU 参考后端（torch_npu）两形态能力缺口：`dilation!=1` 抛 `AclNN_Parameter_Error`（op 未执行）+ `return_indices=True` 的 indices **静默损坏**（int8 mask buffer，全 dilation）；纯选择类算子回退 CPU golden 逐位一致 | verified |
 | TRAP-npuir-vbrc-region-dropped | 标量 `T.vbrc` 的 destination 为 UB region（运行时偏移 + `T.serial` 内）时写入静默丢弃（int32 形态读未初始化 → 向量核 fault 507034）；等价形态 = staging buffer + `T.copy`；裸 Python 标量触发 rank 断言 | verified |
 | TRAP-npuir-arange-pattern-with-whole-plane-reduce | `arange` 派生平面下标 pattern standalone 精确、在整平面 `vcmp(eq)→vselect→reduce_min` 链内读回损坏（values 仍精确 → 值-only 门禁漏；int64 索引 oracle 才暴露）；**2026-10-15 收窄为「pattern 生产者特有」**——运行期构建的位置表（非 `arange`）可绕过（逐元素精确），但双输出下被归约链 UB 单价 237 B/元素与轮数封顶（见 CONST-dual-output-whole-plane-reduce-ub） | verified |
@@ -101,8 +101,10 @@
 | TRAP-inner-axis-reduce-scalarize | 最内轴（窄、非向量宽整数倍）的 `T.reduce_sum` 逐元素标量化 ≈ 元素数 × ~6ns——单个 op 使 kernel 5.6→155.1µs；绕法 = 合并成宽最内轴（H*W=49）（含 repro） | verified |
 | TRAP-copy-layout-propagation-dma-amplification | `T.copy` 的 UB 目标被推成非常规（转置/归约）布局后 GM→UB DMA 退化为 16B/元素分散读（36.75→336KB/block ≈9x 扇出，指令数不变）；UB→UB 恒等 copy 不能阻断传播（含 repro） | verified |
 | TRAP-scf-for-row-offset-silent-miscompile | 运行时 `scf.for` 循环变量作**共享缓冲行偏移**（`for r in range(bm): … cand[r+i, j] = …`）→ **静默错值**（(2048,4096) fp16 y0=−3 vs ref 3211）；错值档「更快」= 伪收益，须先过 `torch.equal` 精确门（含 repro；与 TRAP-tir-range-loop-not-unrolled / TRAP-parallel2d-bm-ge2-scalarize 同族） | verified |
-| TRAP-primfunc-compile-time-if-buffer-def | `@T.prim_func` 内**解析期（Python 层）`if` 定义 buffer** → 分支内名字不逃逸：条件真报 `ParserError: Undefined variable`、条件假同源可编译/运行（**缺陷随 shape 潜伏**，落尾块宽度即炸）；绕法 = 工厂层按变体返回独立 prim_func（含 repro；本文件 §C11 parser var-table 作用域的具体形态） | verified |
-| TRAP-npuir-lowered-mlir-access | 取**降级后 kernel body 的文本通道 = `kernel.mlir_content`**（str，TileLangIR/HIVM MLIR）；`JITKernel.get_kernel_source()` 在 `JitKernel_NPU` 上**不是**文本通道（返回链接 ELF 的 `bytes` 或抛 `TypeError`）——向量化/IR 形态门禁（判决链有无退化为 `arith.cmpf`/`scf.for`/`if_then_else`）的文本通道即 `mlir_content`（含 repro） | verified |
+| TRAP-primfunc-compile-time-if-buffer-def | `@T.prim_func` 内**解析期（Python 层）`if` 定义 buffer** → 分支内名字不逃逸：条件真报 `ParserError: Undefined variable`、条件假同源可编译/运行（**缺陷随 shape 潜伏**，落尾块宽度即炸）；绕法 = 工厂层按变体返回独立 prim_func（含 repro；本文件 §C11 parser var-table 作用域的具体形态）；**2026-10-16 适用域限定**：仅限「分支内定义 buffer」——分支内只含语句/调用（`if mode=="min": T.reduce_min(...) else: T.reduce_max(...)`）编译运行正常，勿泛化为「禁任何解析期 if」 | verified |
+| TRAP-npuir-lowered-mlir-access | 取**降级后 kernel body 的文本通道 = `kernel.mlir_content`**（str，TileLangIR/HIVM MLIR）；`JITKernel.get_kernel_source()` 在 `JitKernel_NPU` 上**不是**文本通道（返回链接 ELF 的 `bytes` 或抛 `TypeError`）——向量化/IR 形态门禁（判决链有无退化为 `arith.cmpf`/`scf.for`/`if_then_else`）的文本通道即 `mlir_content`（含 repro）；**2026-10-16 第二数据点**：`hivm.hir.vreduce` 的 op 名与 `<mode>` 之间**有空格**（`vreduce <min>`）——写 `vreduce<min>` 的子串断言必然落空，匹配时 op 与 `<mode>` 分开断言 | verified |
+| TRAP-any-predicate-reduction-pair | 谓词类归约（`any`/逻辑 OR）的「比较模式 + 归约算子」是**一对**：合法形态 = `vcmp("eq")→vcast(i1→f32)→reduce_min→(bm,) vsub(1−min)`；两向错配暴露集相反——`ne+max`（最短写法）差异**恰为 NaN 行**（`[4,5]`，仅「NaN 与零共存且无其他非零」/`all-NaN` 暴露，其余行被非零救回）、`eq+max`（照抄 `all`）差异 `[2,4,6,7]`；`any`↔`all` 四项全反转（max↔min / `1−max`↔`1−min` / vmax↔vmin / 0.0↔1.0）（含 repro；与 TRAP-vcmp-ne-ordered-nan 同源） | verified |
+| TRAP-npuir-ir-gate-loop-scope | IR 形态门禁的 `scf.for` / `if_then_else` **禁令按路径/变体限定**——驻留（单 tile）路径 lowering 无 `scf.for`，列分块路径的静态 `T.serial` tile 循环**合法地**含 `scf.for`；把 `TRAP-parallel2d-bm-ge2-scalarize` 的禁令逐字套到 tiled 变体会对**完全向量化**的 kernel 报假失败；正确门禁 = 对所有变体断言 `vreduce <mode>` + `reduce_dims=[1]` + 无 `arith.cmpf`，禁令只对驻留变体（含 repro，compile-only） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -146,7 +148,7 @@
 | CONST-copy-floor-dma-granularity | 同形纯拷贝地板随 **DMA 粒度**变化（(2048,4096) fp16 / 910B3：16 KB 15.82µs=1.06TB/s、64 KB 13.61µs=1.23TB/s；64 KB 档需 4× UB，与算法缓冲不可共存） | verified |
 | CONST-aiv-time-decomposition | `Task Duration ≈ max(mte2, vec) + scalar` 分解口径（三处同档拟合）+ ratio 读法（vec/scalar 是 aiv_time 分量非总时长占比）+ 「UB 字节吞吐」误判更正（链式改 fp16 仅 −1.7%） | verified |
 | CONST-msprof-task-floor-910B3 | msprof op Task 固定地板（空 kernel 3.37µs / 固定开销 ≈2.4µs）+ 必需流量地板 4.25µs + 逐元素 pass 单价 0.23–0.3µs + 拟合式 `Task ≈ aiv_time + 2.4–2.6µs` | verified |
-| CONST-reduce-ub-per-element | BishengHIR 归约 lowering 的 UB 单价：按 `ch×H*W` 线性记账、单价由归约链形态决定（原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素），**绑定 3-D 整平面 `(CH,1,H*W)`+dim=2**；CH 上限 = 196608/(单价·H*W)；探针须 DCE 免疫；**2026-10-16 形态适用域追加**：2-D 行归约（`(bm,tn)`+dim=1）单价按 dtype 分档——fp16/fp32 精确 8.00 / **bf16 12.00**（`vcmp` 上抛 f32）B/元素，硬上限 24576（fp16/fp32 口径），竞态安全档 `E_cap=8192` | verified |
+| CONST-reduce-ub-per-element | BishengHIR 归约 lowering 的 UB 单价：按 `ch×H*W` 线性记账、单价由归约链形态决定（原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素），**绑定 3-D 整平面 `(CH,1,H*W)`+dim=2**；CH 上限 = 196608/(单价·H*W)；探针须 DCE 免疫；**2026-10-16 形态适用域追加**：2-D 行归约（`(bm,tn)`+dim=1）单价按 dtype 分档——fp16/fp32 精确 8.00 / **bf16 12.00**（`vcmp` 上抛 f32）B/元素，硬上限 24576（fp16/fp32 口径），竞态安全档 `E_cap=8192`；**第四数据点**（`any`，独立重标定）：`reduce_min` 链与 `sum`/`max` 链**同价**（归约算子不额外定价） | verified |
 
 ### cases.md — 案例索引与参考实现集
 
@@ -181,6 +183,7 @@
 | CASE-norm-groupnorm-migration | norm 族 GroupNorm 迁移档案（affine 分层 + Stage 5 fp16 二次舍入逐位定位 + UB 平台值第三结构数据点 + 矩式方差第二证；集成 19/0/2、bench 4 例 6.0–11.1µs / 1.75 TB/s） | verified |
 | CASE-reduction-countnonzero-migration | reduction 族**首个 logical_reduce / 计数类**迁移（count_nonzero kind → int64 契约 + 元素预算双路径 [8 B/元素探针 / E_cap=8192 / 硬上限 24576] + `@T.prim_func` 解析期 if 陷阱 + wrapper `default_config` 重接线；集成 37/37 + bench 4 例 msprof 有效） | verified |
 | CASE-reduction-all-migration | reduction 族**第二个 logical_reduce / 谓词 AND 类**迁移（all kind → **bool 输出/int8 载体**（与计数类 int64 契约相反）+ keepdim 额外参数 + 补式 `1 − max[x==0]` 与 `vcmp("ne")` 方向陷阱 + `T.vmax` no-alias 跨 tile 合并 + kernel 侧 `block_m` 元素预算回落（无需改 wrapper）；集成 42/42 + bench 6/6 + msprof 3 例有效；含 `S2-MIG-DIM0`/`S3-GOLDEN-TORCH` 两类门禁交互） | verified |
+| CASE-reduction-any-migration | reduction 族**第三个 logical_reduce / 谓词 OR 类**迁移（any kind → bool 输出/int8 载体 + 补式 `1 − min[x==0]` 与 `T.vmin` no-alias 三件套 + 单位元 1.0；与姊妹 `all` 四项全反转（max↔min/补式方向/vmax↔vmin/0.0↔1.0）+ 判别性输入方向相反（高置零 ~70%）+ 空 OR 单位元 False 与 all 相反；两新 trap（`TRAP-any-predicate-reduction-pair` / `TRAP-npuir-ir-gate-loop-scope`）+ `S2-MIG-DIM0` 第四次误报 + `integrate_kernel.py` 预置选择块非幂等（重复表头）；集成 42/42 + bench 6/6 + msprof 3 例有效） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 

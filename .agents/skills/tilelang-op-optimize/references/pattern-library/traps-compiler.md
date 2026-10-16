@@ -339,8 +339,8 @@ apis: [T.vcmp, T.vcast, T.vmul, T.vselect, T.reduce_min, T.vmax, T.reduce_max]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第二数据点：计数类的合法形态延伸 + NPU 运行期实证）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：谓词 AND 类补式方向 + 运行期三 dtype 实证）
-toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第二数据点：计数类的合法形态延伸 + NPU 运行期实证）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：谓词 AND 类补式方向 + 运行期三 dtype 实证）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：谓词 OR 类补式方向与误配暴露集 + 空 OR 单位元方向 + 运行期三 dtype 实证）
+toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
 repro: repro/TRAP-vcmp-ne-ordered-nan.py
 ---
 
@@ -352,6 +352,7 @@ repro: repro/TRAP-vcmp-ne-ordered-nan.py
 - **证明**：`python repro/TRAP-vcmp-ne-ordered-nan.py`（exit 0：`ne` 自比 NaN 行全 0 复现 + `eq` 为 `isnan` 的 IEEE 补集断言 + eq-mask 乘性累积 `flag==0 ⟺ 列含 NaN` 断言 + NaN-free 操作数对 `ne` 正常）。与 TRAP-expert-v-operands（vcmp 操作数形态与 int16 标量化）互补：前者管操作数形态与执行代价，本条管比较模式的 NaN 语义。溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcmp-ne-ordered-nan.py}`。
 - **〔2026-10-16 第二数据点：计数/谓词类的合法形态〕** 需要「非零 / 非等」判决的**计数类**算子（`count_nonzero` 形态）在本工具链的合法表达式是**有序 EQ 的补式**：`y = N − Σ_j [x_j == 0.0]`——① 数学恒等（行内 `#{x≠0} + #{x=0} = N`）；② `eq` 为 IEEE 正确 ⇒ NaN 不满足 `== 0` ⇒ NaN 计入非零，与 torch `count_nonzero` 及源侧 unordered-NE 判决一致（用 `ne` 判非零会把 NaN 误判为零）；③ 取反路线不可行——`T.vnot` 的 dtype 表不含 `bool/int1`（`docs/Tilelang.language/逻辑操作/T.vnot.md` dtype 表；bool 仅可作片上中间结果、不可 load/store GM，同文档注），故 `[x≠0]` 只能以补式表达；④ **补式的落点在行级微缓冲**（`N − Σ` 在 `(bm,)` 微元上做 1 次 `vsub`），不是在全宽平面做 `1 − ind`（后者 +1 个 4 B/元素平面与 +1 个全宽 pass）。**运行期实证（NPU，非仅文档）**：fp16/bf16/fp32 三路 `vcmp(eq)→vcast(i1→f32, rint)→reduce_sum(dim=1)` 链在 `count_nonzero` L0-12 / L1-4 上逐位精确——`[NaN,0,-0,1,-1]` 行计数 2（NaN 计入非零、±0 不计入）、最小亚正规行（fp16 2^-14 谱系 / fp32 2^-149 谱系）计数与 torch 一致（**亚正规不做 FTZ**）；纯算法侧判别力对照（有序-NE 路线在 NaN 行报出 42 处差异）见 `examples/count_nonzero/_logical_reduce_kernel/verify_equiv.py`（torch CPU，provenance 允许失效）。溯源：`examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§1.6.1-E1, _logical_reduce_kernel.py#run_L0 L0-12 / run_L1 L1-4}`（任务工作区，未上库，允许失效）；工具链同 front-matter 第二数据点。
 - **〔2026-10-16 第三数据点：逻辑 AND / 谓词类的合法形态——补式方向由目标语义决定，且两向后果不对称〕** 同一「有序 EQ 补式」纪律在 `torch.all` 语义（`all` / 谓词 AND 类）上的落地形态是 `y = 1 − max_j [x_j == 0]`：① **合并算子是 max 而非 sum**——补式表示下「行内命中零」= OR，跨 tile 在线合并须用 `T.vmax`（照抄计数类的 `T.vadd`/`T.vsum` 或源 tiled 的 `T.min(acc, tile_acc)` 都会语义翻错）；② **补式落点仍为 `(bm,)` 微缓冲**（在微元上做 1 次 `vsub`，不在全宽平面做 `1 − ind`）；③ **取反不可行**（`T.vnot` dtype 表无 bool/int1，同第二数据点）；④ **误用 ordered-NE 的后果比计数类更重**——`vcmp("ne")` 对含 NaN 的行把 `all` 判决**整行翻 False**（NaN 在 `all` 语义下应计为非零 ⇒ 不破坏 AND），而计数类只少计 1；⑤ **运行期实证（NPU，非仅文档/编译期）**：fp16 / bf16 / fp32 三路上 `vcmp("eq") → vcast(i1→f32, rint) → reduce_max(dim=1) → (bm,) vsub` 链与 `torch.all` **逐位一致**——11 行构造角点（`got=[F,T,F,F,F,T,T,F,T,T,T]`，其中「NaN 无零行 = True」与「NaN 混零行 = False」两条必须同时成立，任一相反即 ordered-NE 误用）、NaN 整列 × 3 dtype = 全 True、次正规/极值行 `FTTTFT`；⇒ 本机 `vcmp("eq")` 为 IEEE ordered EQ、`±0` 计入零、**亚正规不做 FTZ**；⑥ **路径 C（列分块）合并链同时被证实可用**：`T.vmax(acc, mx, new_acc)` + `T.copy(new_acc, acc)`（no-alias 三件套，勿原位累加）在 `(bm,1)` fragment 上编译通过且逐位精确（见 layout.md PL-1.25）。溯源：`examples/all/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, _logical_reduce_kernel.py#run_L0 L0-2a/b/c / run_boundary / run_L1 L1-4, DESIGN.md#1.6.1-A1}`（任务工作区，未上库，允许失效）；工具链同 front-matter 第三数据点。
+- **〔2026-10-16 第四数据点：逻辑 OR / 谓词 `any` 类的合法形态——同一 eq 谓词的下游对偶，四项全反转〕** `torch.any` 语义下的合法形态 = `vcmp("eq") → vcast(i1→f32, rint) → reduce_min(dim=1) → (bm,) vsub(1 − min)`：① 与第三数据点（`all`）共用同一谓词 `[x==0]`，但下游四项在 OR/AND 对偶下**全部反转**——归约算子 `reduce_max→reduce_min`、补式方向 `1−max→1−min`、跨 tile 合并算子 `vmax→vmin`、合并累加器单位元 `0.0→1.0`（用 `ne` 直判「存在非零」的语义失败即第三数据点 ④ 的对偶形态，但**暴露集方向相反**：`any` 侧仅「NaN 与零共存且无其他非零」与「all-NaN」两行暴露，其余行被非零「救回」True——详见本文件 `TRAP-any-predicate-reduction-pair`）；② **运行期实证（NPU，非仅文档/编译期）**：fp16 / bf16 / fp32 三路上该链与 `torch.any` **逐位一致**——13 行角点含 `NaN+零`（True）、`all-NaN`（True）、全零（False）、`±0`、亚正规、`±inf`，本任务 `--level all` 记 101 次精确比对 0 差异；③ **空 OR 单位元方向与 `all` 相反**：`N=0`（空归约维）时 `torch.any` 实测为 `False`（`torch.all` 为 `True`）——边界表的单位元方向以 torch 实测为锚（本任务 33/33 torch 边界实测）；④ **取反不可行**（`T.vnot` dtype 表无 bool/int1，同第二数据点）。溯源：`examples/any/_logical_reduce_kernel/{DESIGN.md#§0.1/§9.2/§11, _logical_reduce_kernel.py#run_L0 L0-2a/b/c / run_boundary, REVIEW.md#机械复核}`（任务工作区，未上库，允许失效）；工具链 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba + CANN 9.0.0 + Ascend910B3 / 2026-10-16。
 
 ---
 id: TRAP-npuir-vbrc-region-dropped
@@ -602,8 +603,8 @@ apis: [T.prim_func, T.alloc_shared, T.alloc_fragment, T.Kernel]
 dtype: [fp16]
 device: 910B3
 status: verified
-origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（Stage 3）
-toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（Stage 3）/ any-_logical_reduce_kernel-20261016T062400Z（Stage 3，第四数据点：适用域限定为「分支内定义 buffer」——纯语句分支合法）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
 repro: repro/TRAP-primfunc-compile-time-if-buffer-def.py
 ---
 
@@ -614,6 +615,7 @@ repro: repro/TRAP-primfunc-compile-time-if-buffer-def.py
 - **绕法（本工具链实测可用）**：把结构性条件提升到 `@tilelang.jit` **工厂层**，按变体返回**独立 prim_func**（一 variant 一 prim_func）——repro 断言 C：两形态均编译通过，且在有 NPU 设备时逐位精确（`torch.equal`，`x[:, ::3] = 1.0` 的行非零计数精确）。本任务三形态 = 路径 R（resident）/ 列分块无尾块 / 列分块带静态尾块。
 - **族内位置**：本文件 §C11「parser var-table 作用域问题」（无细节的裸条目）在此获得可复现的具体形态与最小触发。与 `TRAP-tir-range-loop-not-unrolled`（Python `range` 非编译期展开）同属「Python 层直觉 ≠ 前端语义」族——两者的共同事实：Python 层的条件/循环不构成前端可用的结构分派，结构决策的有效表达位置是 `@tilelang.jit` 工厂层。
 - **证明**：`python repro/TRAP-primfunc-compile-time-if-buffer-def.py`（exit 0，`ALL ASSERTIONS PASS`；A = tail>0 抛 `Undefined variable` / B = tail==0 干净编译（隔离进程）/ C = 工厂层两 prim_func 变体编译且（设备存在时）精确）。溯源（任务工作区，未上库，允许失效）：`examples/count_nonzero/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-primfunc-compile-time-if-buffer-def.py}`；同族决策记录见该任务 `_logical_reduce_kernel.py` docstring（"one dedicated prim_func per variant"）。
+- **〔2026-10-16 适用域限定（第四数据点，谓词 OR 类迁移）〕** 本条的适用域是「**分支内定义 buffer**（名字不逃逸到 sibling 分支）」这一具体形态——分支内**只包含语句/调用**时本陷阱不触发：`if mode == "min": T.reduce_min(ind, red, dim=1, clear=True) else: T.reduce_max(...)`、`if complement: T.vsub(one, flat, dst) else: T.vsub(flat, zero, dst)` 在**同一个** `@T.prim_func` 体内**编译运行均正常**（本任务 repro 的 3 个编译期分支变体全过：`eq+min` 正确形态 / `ne+max` 错配 A / `eq+max` 错配 B，均同源编译并在设备上跑出预期差异集）。把本条读成「`prim_func` 内禁用任何解析期 `if`」会催出重复的整 kernel 拷贝；**结构性条件（含 buffer 定义、路径分派、`tail > 0`）仍归 `@tilelang.jit` 工厂层、按变体返回独立 `prim_func`**（第四数据点观测：本任务列分块路径的静态尾块仍以独立变体表达）。溯源：`examples/any/_logical_reduce_kernel/repro/TRAP-any-predicate-reduction-pair.py`（任务工作区，未上库，允许失效）；工具链 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16。
 
 ---
 
@@ -637,3 +639,48 @@ repro: repro/TRAP-npuir-lowered-mlir-access.py
 - **可用断言形态（本 repro 的三段）**：A = `mlir_content` 为非空 `str` 且含本算子输出链 `hivm.hir.vcmp → vcast(i1→f32) → vreduce<max> → vsub → vcast(f32→f16) → vcast(f16→i8)`（含 `<max>` 归约标记与 `reduce_dims = [1]`）；B = 同一文本**不含** `arith.cmpf` / `scf.for` / `if_then_else`（bm = 8 下无标量退化）；C = `get_kernel_source()` 不返回文本源（抛 `TypeError` 或返回 `bytes`，两条分支都视为 PASS——断言只锁「文本源须来自 `mlir_content`」）。
 - **边界**：断言 A/B 属**编译期**检查（只证明 IR 形态，不证明数值语义）；语义前提仍须 Stage 3 的运行期用例闭合（同族纪律见 develop skill Phase 4）。
 - **证明**：`python repro/TRAP-npuir-lowered-mlir-access.py`（exit 0，`ALL ASSERTIONS HOLD`；需 NPU 环境，纯编译期检查）。溯源（任务工作区，允许失效）：`examples/all/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-lowered-mlir-access.py, _logical_reduce_kernel.py#_run_vectorised_ir_check}`。
+- **〔2026-10-16 第二数据点：IR 文本匹配格式〕** `hivm.hir.vreduce` 的 op 名与 `<mode>` 之间**有空格**——lowering 输出形如 `hivm.hir.vreduce <min> ins(...)`（本任务 `any` 迁移 Stage 3 实测原文）。照字面写 `vreduce<min>` 的子串断言在本工具链**必然落空**（假性失败），故匹配时把 op 名与 `<mode>` 分开断言（`"hivm.hir.vreduce <min>"`）；`reduce_dims` 属性用正则（如 `reduce_dims\s*=\s*\[\s*1\b`）容忍 `= [1 : i32]` 之类的属性变体。溯源：`examples/any/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3 Skill Flow Issues 第二行, repro/TRAP-npuir-ir-gate-loop-scope.py}`（任务工作区，未上库，允许失效）；工具链 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16。
+
+---
+
+id: TRAP-any-predicate-reduction-pair
+kind: trap
+family: [reduction, migration]
+apis: [T.vcmp, T.vcast, T.reduce_min, T.reduce_max, T.vsub]
+dtype: [fp32, fp16, bf16]
+device: 910B3
+status: verified
+origin_task: any-_logical_reduce_kernel-20261016T062400Z（Stage 3）
+toolchain: tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-any-predicate-reduction-pair.py
+---
+
+### 谓词类归约（`any` / 逻辑 OR）的「比较模式 + 归约算子」是一对——两种错配的**暴露集**不同，最短写法最隐蔽
+
+- **现象（NPU 运行期实测，8 行构造角点）**：`torch.any`（逻辑 OR）语义下，`vcmp(eq) → vcast(i1→f32, rint) → reduce_min(dim=1) → (bm,) vsub(1 − min)` 与 `torch.any` **逐位一致**（含 NaN 行）；而两个错配形态的差异集可精确刻画——① **错配 A（最短写法）**：`vcmp("ne") → reduce_max`（无补式，直接读「存在非零」）的差异**恰为**「行内持 NaN 且无其他非零」的行（实测差异集 `[4, 5]`：`NaN + 零` 行与 `all-NaN` 行）；② **错配 B（照抄姊妹 `all` 的方向）**：`vcmp("eq") → reduce_max → 1 − max`（实为「存在零」）的差异集为 `[2, 4, 6, 7]`（判决式非不动点的每行）。
+- **机制**：`any` 与 `all` 共用同一谓词 `[x==0]`，但下游四项在 OR/AND 对偶下**全部反转**——归约算子 `reduce_max↔reduce_min`、补式方向 `1−max↔1−min`、跨 tile 合并算子 `vmax↔vmin`、合并累加器单位元 `0.0↔1.0`；照抄任一即语义翻错。错配 A 之所以隐蔽：`vcmp("ne")` 是 ordered-NE（NaN 恒假 ⇒ NaN lane 计为 0），但任何其他非零会把该行「救回」True——只有在「NaN 与零共存且无其他非零」时才分歧，故 `randn`（零密度 ≈ 0）或纯零/非零混合用例集给出**假阳性**；错配 B 则对多数行显性失败。
+- **边界/量纲**：判别性输入的最小必检集 = 「NaN 且无其他非零」的行（`NaN + 零`、`all-NaN`）+ 全零行（False，反向）+ `±0` 行；对 `any`，测试输入的置零比例须**高**（约 70% 置零）而 `all` 相反——方向反转，见 `examples/TileOPs/tileops/workloads/reduction.py` 的 `_make_logical_input` 与 `verify_equiv.py`。
+- **族内位置**：与 `TRAP-vcmp-ne-ordered-nan` 同源（该条给出 `ne` 的 ordered-NaN 语义与 `eq` 的 IEEE 正确性，本条给出「两向错配的暴露集」与「同一 eq 谓词在 OR/AND 对偶下的四项反转」）；下游落地形态（`any` 的补式 + `T.vmin` no-alias 合并链 + 单位元 1.0）见 layout.md `PL-1.25-row-reduce-indicator-complement`。
+- **证明**：`python repro/TRAP-any-predicate-reduction-pair.py`（exit 0，需 NPU：`eq + min` 与 `torch.any` `torch.equal`；`ne + max misrows: [4, 5]` 与 `eq + max misrows: [2, 4, 6, 7]` 两断言锁定暴露集；同 repro 内 3 个编译期 `if` 变体通过亦构成本文件 `TRAP-primfunc-compile-time-if-buffer-def` 的适用域限定证据）。溯源（任务工作区，未上库，允许失效）：`examples/any/_logical_reduce_kernel/{DESIGN.md#§9.1-C-3/§11, _logical_reduce_kernel.py#run_L0 L0-2a/b/c, verify_equiv.py, repro/TRAP-any-predicate-reduction-pair.py}`。
+
+---
+
+id: TRAP-npuir-ir-gate-loop-scope
+kind: trap
+family: [general, reduction, migration]
+apis: [kernel.mlir_content, T.serial, T.reduce_min, T.vmin, T.copy]
+dtype: [fp32]
+device: 910B3
+status: verified
+origin_task: any-_logical_reduce_kernel-20261016T062400Z（Stage 3）
+toolchain: tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-npuir-ir-gate-loop-scope.py
+---
+
+### IR 形态门禁的 `scf.for` / `if_then_else` 禁令**按路径/变体限定**——驻留路径无循环，列分块 tile 循环合法地含 `scf.for`
+
+- **现象（compile-only，两变体对照实测）**：`TRAP-parallel2d-bm-ge2-scalarize` 要求 IR 门禁对 `scf.for` / `if_then_else` 报失败（`T.Parallel` + `if_then_else` 判决退化为逐元素标量循环的形态）。但同一份 kernel 的**列分块变体**（静态 `T.serial(num_full)` tile 循环 + no-alias `vmin` 在线合并）合法 lower 出 `scf.for`——那个循环**就是 tile 循环**，不是被标量化的逐元素循环。实测：驻留路径（整行块驻留 UB、每 task 一次归约）`scf.for=False / if_then_else=False`；列分块路径（`bm=1` + 静态 tile 循环 + `vmin` 合并）`scf.for=True`。把禁令逐字套到列分块变体会对**完全向量化**的 kernel 报**假失败**。
+- **正确门禁形态（对所有变体断言）**：`hivm.hir.vreduce <mode>`（**带空格**，见 `TRAP-npuir-lowered-mlir-access`）+ `reduce_dims = [1]` + 无 `arith.cmpf`；`scf.for` / `if_then_else` 的**禁令只对驻留（单 tile）变体**断言。
+- **边界/量纲**：纯编译期检查（断言只证明 IR 形态，不证明数值语义）；两路径的数值正确性须运行期闭合（`torch.equal`，见 layout.md PL-1.25）。变体枚举：驻留路径 = `num_full == 1`，列分块路径 = `num_full > 1`。
+- **族内位置**：本条是 `TRAP-parallel2d-bm-ge2-scalarize`（标量化判据）的**适用域限定**，两者构成同一 IR 门禁的两面——判据面（什么形态说明退化）+ 作用域面（该判据对哪些变体有效）。
+- **证明**：`python repro/TRAP-npuir-ir-gate-loop-scope.py`（exit 0，compile-only、无设备依赖：两变体均断言 `hivm.hir.vcmp/vcast/vsub/vreduce <min>` + `reduce_dims=[1]` + 无 `arith.cmpf`，并断言 `scf.for` 仅驻留路径缺席）。溯源（任务工作区，未上库，允许失效）：`examples/any/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3 Value Point Proposals 第 4 行, repro/TRAP-npuir-ir-gate-loop-scope.py, _logical_reduce_kernel.py#_run_vectorised_ir_check}`。

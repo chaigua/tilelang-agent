@@ -329,8 +329,8 @@ apis: [T.reduce_max, T.reduce_sum, T.reduce_min, T.vcmp, T.vmul, T.vcast]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）
-toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：reduce_min 链同价 + 独立重标定 E_cap）
+toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
 repro: repro/TRAP-reduce-ub-per-element.py
 ---
 
@@ -358,6 +358,11 @@ repro: repro/TRAP-reduce-ub-per-element.py
   |---|---:|---:|
   | `vcmp(eq) → vcast(i1→f32) → reduce_sum(dim=1)`（fp16 / fp32） | **精确 8.00** | 24576 |
   | `vcmp(eq) → vcast(i1→f32) → reduce_max(dim=1)`（bf16） | **12.00** | 16384 |
+  | `vcmp(eq) → vcast(i1→f32) → reduce_min(dim=1)`（fp16 / fp32；**第四数据点**） | **精确 8.00** | 24576 |
+  | `vcmp(eq) → vcast(i1→f32) → reduce_min(dim=1)`（bf16；**第四数据点**） | **12.00** | 16384 |
+
+  - **第四数据点（谓词 OR / `any` 类迁移，独立重标定、未借用姊妹数值）**：2-D 行归约 `vcmp(eq) → vcast(i1→f32, rint) → reduce_min(dim=1)` 链（`any` 的补式形态）单价与 `reduce_sum` / `reduce_max` 链**同价**——fp16/fp32 = 8.00、bf16 = 12.00 B/元素，即 `reduce_min` 不额外定价（`vreduce <min>` 与 `<max>` / `<sum>` 同记账）。本单元由 compile-only 探针**独立标定**（`E_cap = 196608 // 2 // 12 = 8192`，按最坏 dtype 12 B 记账），与姊妹 `all` / `count_nonzero` 数字一致但依据自本单元链形态——非数字平移。溯源：`examples/any/_logical_reduce_kernel/{DESIGN.md#§4.5, history_version/design_probe_ub.py 第二节}`（任务工作区，未上库，允许失效）；工具链 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16。
+  - **单价口径 = 通过点反解上界（非严格线性常数）**：同一 dtype 在**通过点**（`196608 / 通过元素数`）与**溢出点**（`requires bits / 元素数`）反解可给出不同值——实测 fp16 `bm=1/tn=32768` 溢出仅超 UB 96 B（`requires 1573632 bits` = 196704 B）⇒ 溢出点反解 6.00，而同 32768 元素在 `bm≥2` 档通过点反解 8.00（bf16 两档一致 12.00）。引用该常数做**线外推**前先做两类反解的一致性核对；容量判据以**通过点**（每个配置有直接编译通过点）为准——探针 ladder 的逐 `(dtype,bm,tn)` 通过比「单价 × 元素数」纸面推算可靠。
 
   - **dtype 分档的机制**：bf16 上 `vcmp` 的操作数被 lowering 上抛 f32（IR 可见 `vcast bf16→f32` 作用于两操作数，多 2 个 f32 平面 ⇒ 单价 ×1.5）；「含 `vcmp` 的归约链」的容量估算依赖对目标 dtype 的逐档实测（compile-only 探针约 3 s/配置）——按「单价与 dtype 无关」外推（沿 8 B/元素对 bf16 记账）在负载上直接 UB 溢出。
   - **实测通过点**（compile-only 探针反解 + 运行期闭合）：fp16 24576 / fp32 16384 / bf16 16384 元素；竞态安全档 `E_cap = 8192`（按最坏 dtype 12 B 记账）。**最紧档位运行期通过**：bf16 `(256,4096)`、`bm=2` ⇒ 8192 元素 × 12 B = 96 KB = UB/2（恰触双缓冲余量上限）在设备上逐位精确、无需降阶或切列分块路径。
