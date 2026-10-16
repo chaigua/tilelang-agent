@@ -5769,7 +5769,8 @@ decided_by: evolver / human / -   # 裁决者
   - 门禁源码 `.agents/tools/gate_lint.py:1451-1512`：`source_modes` = 集成 kernel 的字面量模式集合（本任务 = `{Developer}`），wrapper 侧 `classes` = 直接以 `Kernel` 为基类的类（本任务 = 4 个），判据 `len(classes) != 1 or len(class_modes) != 1 or set(class_modes) != source_modes` ⇒ **本任务 `len(classes) = 4` 且 `set(class_modes) = {Developer, Expert} ≠ {Developer}`，两条件同时不满足**。即：**无论三个 bwd kernel 的正确性如何、无论 wrapper 怎么改（把字面量写到哪个类都无解），`complete_stage(5)` 都不可能通过**——该门禁对「多算子共 wrapper」这一迁移形态缺少表达力
   - 同族既有条目（互补，不重复）：VP-2026-0150 ② 处理「两层类继承（`Base(Kernel)` + `Subclass(Base)`）」——其 delta 修的是 **integrate_kernel.py 写值位置**（写到直接继承 `Kernel` 的基类）；本任务的多类形态**不受该修法覆盖**（4 个类里没有「唯一目标类」），故须在 gate/场景侧解
   - 旁证（同任务）：bwd 三核逐函数 `[PRECISION_PASS]` 且 conductor 二次校验通过 + 独立确认 `python _gqa_bwd_kernel.py --level L0` 16/16 PASS（844.7 s）⇒ 门禁不通过不反映交付件质量；该 op 的终态 `BLOCKED_ENVIRONMENT` 由 fwd 工具链错配（CG-2026-0003 recurring）与本条共同构成
-  - 交叉引用：queue VP-2026-0150（已 merged）/ VP-2026-0151（`S5-REPORT-STALE` 死角——追加型集成同时命中该条，两问题合起来说明追加型迁移需要独立验收路径）；`.agents/skills/add-npu-op/SKILL.md`（Stage 5 检查清单）
+  - 〔2026-10-16 **最强证据：环境阻塞清除后的 Stage 5 重试段**（同 op 谱系 task `multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z`，用户授权重置终态后**仅重跑 Stage 5**，820.2 s）〕环境类阻塞（fwd Expert 核 `syn_instr_mode` 工具链错配，CG-2026-0003）经外部 shim（`tilelang/jit/jit_npu.py` 的 `linalg.replace`）清除后：共享测试 `tests/ops/test_multi_head_attention.py` **12 passed**；单算子 report correctness **12/12**、per-operator rollup **8/8**（`avg_max_abs_err=1.158e-3`）、benchmark 仅 2 条 shape 相关后端段错误（msprof→events 降级 2 条为 non-blocking warning）⇒ **`gate 5` 的 failure 集合只剩 `S5-ASCEND-MODE` 一条**，`complete_stage(5)` 依旧不可通过。该重试**排除了**本提案「结构性冲突是否只是环境阻塞的次生现象」的疑问：门禁不可通过性与**环境、正确性、性能证据全部无关**，纯由 wrapper 拓扑（4 个 `Kernel` 子类 / 2 个模式）决定 ⇒ 证据强度足以支撑「为追加型迁移定义替代验收路径」的结论（本条 pending 期间即已产生该终态，建议审批简报置顶）。
+  - 交叉引用：queue VP-2026-0150（已 merged）/ VP-2026-0151（`S5-REPORT-STALE` 死角——追加型集成同时命中该条，两问题合起来说明追加型迁移需要独立验收路径）；queue **VP-2026-0297**（终态后重试的编排纪律——本条阻塞触发的正是那种重试）；`.agents/skills/add-npu-op/SKILL.md`（Stage 5 检查清单）
 - repro: 复现条件——对一个「同文件追加进既有算子包」的迁移任务（wrapper 内 ≥2 个 `Kernel` 子类、模式不同）跑 `python .agents/tools/statectl.py gate 5 --dir examples/{op_slug}`，观察 `S5-ASCEND-MODE` 报「wrapper 的 Kernel.ascend_mode 与集成 kernel 模式不一致」（`len(classes) != 1` 与 `set(class_modes) != source_modes` 同时成立即必然失败）
 - toolchain_stamp: gate_lint.py 现行版本（`S5-ASCEND-MODE` 判据见 `:1501-1512`）；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
 - target_doc: .agents/tools/gate_lint.py
@@ -5885,6 +5886,112 @@ decided_by: evolver / human / -   # 裁决者
 - status: pending
 - confirmations: -/-
 - created_by: task multi_head_attention-_gqa_bwd_kernel-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0294
+
+- type: D
+- title: 前端产物与已装 `bishengir-compile` 的**拼写级版本错配**（emit `syn_instr_mode` vs 后端只认 `sync_instr_mode`）——诊断信号 = parse 期 `Dialect '' not found for custom op '<attr>'`；绕法 = emit 侧一行字符串重写（成本 ≈0），落地后共享测试 4/12 → 12/12
+- evidence:
+  - task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（首轮 Stage 5）→ task `…082329Z`（Stage 5 重试段）：首轮 fwd Expert 核 `GQAPrefillFwdKernel`（含显式 `T.sync_block_set`）的 codegen 产出 `hivm.hir.sync_block_set[... syn_instr_mode = <INTRA_BLOCK_SYNCHRONIZATION>]`，系统 `bishengir-compile 1.1.0`（`428ab8fdab46` 2026-04-30，CANN 9.0.0）在 **parse 期**报 `Dialect '' not found for custom op 'syn_instr_mode'`（4 例 fwd + 4 例下游 bwd 失败）；外部 shim（`tilelang/jit/jit_npu.py::_npuir_to_bin_enable_npu_compile` 内 `linalg = linalg.replace("syn_instr_mode", "sync_instr_mode")`）落地后共享测试 `tests/ops/test_multi_head_attention.py` **12 passed in 8.12s**（此前 4/12），单算子 report correctness 12/12。
+  - 机制：3rdparty pin `31f690369` 落在上游把该改名修复**回退**的那条线上（改名 commit `3b9f83eec`，2025-12-11；`origin/master` 已含），而已装 CANN 9.0.0 `bishengir-compile` 只认修正拼写 ⇒ 「前端 emit 的名字」与「后端接受的名字」不配对；失败点固定在 parse 阶段（非 pass 阶段、与 kernel 逻辑无关），且错误文本不指向「版本错配」这一根因。
+  - 出处：`examples/multi_head_attention/{RETROSPECTIVE.md, SESSION_TIMING_ANALYSIS.md}` + 集成副本 `multi_head_attention_kernel/integration_log.md` §Stage 5 Retry #1（任务工作区 / 集成副本，未上库，允许失效）；报告证据 `examples/TileOPs/reports/tileops/20261016_082438_849619_MultiHeadAttentionBwdOp/run.json`。
+  - 交叉引用：capability-gaps `CG-2026-0003`（缺口本体 = 版本配对未文档化 + 无机械预检；`workaround` 字段已回填本绕法）；policy-library `TRAP-bishengir-crash-s32`（同工具链的另一类后端缺陷——**勿混淆**：本条是 parse 期可诊断错误，后者是无诊断段错误）。
+- repro: repro-missing（最小复现 = 在 3rdparty pin `31f690369` 构建的前端 + CANN 9.0.0 `bishengir-compile` 上编译任一含显式 `T.sync_block_set` 的 Expert kernel，断言「无重写 ⇒ parse error / 有重写 ⇒ 编译通过」；须 NPU 工具链）
+- toolchain_stamp: tilelang 0.1.2 dev root build（3rdparty/AscendNPU-IR @31f690369）+ bishengir-compile 1.1.0（428ab8fdab46，2026-04-30）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    动作: add（新条目 `TRAP-npuir-emit-parse-version-skew`；front-matter：family [attention, general, migration] / apis [bishengir-compile, T.sync_block_set] / dtype [fp16, bf16] / device 910B3 / status verified / origin_task / toolchain / repro: repro-missing）
+    正文要点: ① 现象 = parse 期 `Dialect '' not found for custom op 'syn_instr_mode'`（错误文本不指向版本错配）；② 机制 = 3rdparty pin 落在改名修复被回退的线 + 已装后端只认修正拼写；③ 绕法 = emit 侧一次字符串重写（成本 ≈0、无运行时开销），移除条件 = 3rdparty pin 更新到含该修复的线；④ 适用域 = **拼写级**错配（新属性类形态〔如 `dma_mode`〕的字符串重写无解）；⑤ 与 `TRAP-bishengir-crash-s32` 的分工 = 可诊断 parse 错误 vs 无诊断段错误；⑥ 量纲: 判据为二元（parse 失败 / 编译通过），无性能量纲。
+- status: pending
+- confirmations: 1/2
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0295
+
+- type: D
+- title: 共享测试文件内「兄弟算子失败」的**连带归因**——TileOPs bwd workload 的 `gen_inputs` 会先运行 fwd 算子（`MhaBwdWorkload.gen_inputs` → `MultiHeadAttentionFwdOp`）⇒ fwd 编译失败会在报告里表现为**一批 bwd 用例失败**（本任务 8 例失败中 4 例是 fwd 本身、另 4 例是其下游），归因须读失败栈而非数 `--op` 计数
+- evidence:
+  - task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5 首轮：report `20261016_065819_471539_MultiHeadAttentionBwdOp/run.json` correctness 4/12——`test_mha_fwd[*]` 4 例因 fwd Expert 核 parse 失败（CG-2026-0003 形态②），`test_mha_bwd[*]` 4 例在 `tileops/workloads/attention.py:144` 的 `MhaBwdWorkload.gen_inputs` 构造 bwd 输入 `o` 时因 fwd 不可编译而**从未到达 bwd kernel**；同一报告日志显示三个 bwd kernel 自身 `AscendNPU IR compile success`。
+  - 反证（同任务）：`python examples/multi_head_attention/_gqa_bwd_kernel/_gqa_bwd_kernel.py --level L0` 独立跑通 **16/16 PASS（844.7 s）** ⇒ bwd 交付件与 fwd 阻塞解耦，正确归因 = fwd 在失败栈里。
+  - 交叉引用：queue VP-2026-0157（已 merged：`--op` 选整文件 + 判定读 per-operator rollup——本条补「失败用例的**连带因果**」维度，与其互补不重复）；`CASE-attention-mha-bwd-migration`（同档案）。
+- repro: repro-missing（复现条件 = 任一「bwd workload 的 `gen_inputs` 依赖 fwd op」的 TileOPs 迁移：制造 fwd 编译失败，观察 bwd 用例以同一栈失败；须 NPU 工具链）
+- toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-runtime.md
+- delta: |
+    动作: add（新条目，正文要点：`--op` 作用域下 fwd/bwd 用例同报时的连带因果链〔`gen_inputs` 先跑 fwd〕+ 「先读失败栈再数通过数」的判定口径 + 与 per-operator rollup 口径的关系 + 独立 harness 交叉验证手法）
+- status: pending
+- confirmations: 1/2
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0296
+
+- type: R
+- title: `statectl.py` 缺**受控终态重置接口**——`start` 有 `E-TERMINAL` 守卫、`repair` 只补 schema，使「终态后重试」只能靠用户授权 + 人工归档状态文件（本次产出 `.stage_state.json.failed_env_20261016` / `.migration_state.json.failed_env_20261016`）；建议增 `statectl reopen --reason <text> [--authorized-by user] [--stage-plan ...]`
+- evidence:
+  - task multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z：首轮终态 `FAILED` / `BLOCKED_ENVIRONMENT`（2026-10-16T07:37Z）。环境阻塞由外部修复后，用户显式授权「只重跑 Stage 5」；因 `statectl start` 对终态 phase 直接 `E-TERMINAL` 拒绝、`repair` 仅补齐 schema 字段，重试只能通过**人工归档状态文件**（`examples/multi_head_attention/.stage_state.json.failed_env_20261016` / `.migration_state.json.failed_env_20261016`）并在新 task_id（`…082329Z`，`stage_plan=[5]`）下重建来完成——该过程无工具侧审计记录，授权来源只写在 `.stage_state.json.user_requirement` 自由文本里。
+  - 现行源码：`.agents/tools/statectl.py`（`cmd_start` 的 `E-TERMINAL` 守卫；`cmd_repair` 仅补 schema；无 reopen/reset 子命令）。
+  - 交叉引用：queue VP-2026-0079（fail 未闭合 start 校验——同 cmd 族的记账纪律）；queue **VP-2026-0297**（本条是**机制**、0297 是**编排纪律**，两条合起来覆盖「终态后重试」闭环）。
+- repro: repro-missing（流程规则；复现条件 = 对任一 `phase ∈ {DONE, FAILED}` 的任务目录执行 `statectl start <n>` 观察 `E-TERMINAL`，再执行 `repair` 观察其不回退终态、也不提供重开通道）
+- toolchain_stamp: statectl.py 现行版本（`E-TERMINAL` 守卫 / 无 reopen 子命令）；发生环境 2026-10-16
+- target_doc: .agents/tools/statectl.py
+- delta: |
+    动作: add（新增子命令 `reopen`）
+    定位锚: 子命令注册表 / `cmd_repair` 邻近处（apply 时按当时文件锁定精确锚）
+    new 文本（要点）: `statectl reopen --dir <op_dir> --reason <text> [--authorized-by user] [--stage-plan <list>]` —— ① 仅 `phase ∈ {DONE, FAILED}` 可用；② `--reason` 必填、授权来源须显式（拒绝静默重置）；③ 执行时将当前终态状态文件归档为 `.stage_state.<phase>_<ts>.json`（不覆盖、不删除），事件流追加一条 `reopen` 事件（含 reason / 授权来源 / 前终态 / 重跑范围）供 `timeline-summary` 审计；④ 重置 `phase` / `failure_reason` 并按显式 `--stage-plan` 限定重跑范围（默认仅最近失败 Stage）；⑤ 未授权调用拒绝。
+    动机: 「终态后重试」在环境类阻塞上是高频高价值路径（本次重试段 820 s vs 全量 ≈6 h），但当前唯一通道是人工归档 + 自由文本授权——既无审计也无机械校验（`stage_plan` 靠手写，`user_requirement` 是自由文本）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0297
+
+- type: R
+- title: conductor「终态后重试」编排纪律——外部/环境类阻塞解除后**只重跑受影响 Stage**（本次 820.2 s = 全量会话的 3.26%，对照全量重跑 ≈6 h），且须显式记录「授权来源 / 旧终态归档 / 重跑范围」
+- evidence:
+  - task `…015430Z` → `…082329Z`：用户授权重置终态后**仅重跑 Stage 5**，820.2 s 完成（`examples/multi_head_attention/SESSION_TIMING_ANALYSIS.md` 第 8 段），复用 Stage 0–3 全部已验证产物；对照首轮全量 6.99 h ⇒ 边际成本 3.26%；该段同时产出 correctness 12/12 与 benchmark 记录（知识增量未因「重跑」而损失）。
+  - conductor 现行文本 `.opencode/agents/tilelang-op-conductor.md` 「恢复」段只写「只回到最近失败或未完成的 Stage，尽量复用已验证的上游工件」——**未区分「终态后重试」这一情形**，也未要求显式记录授权来源与旧终态归档；本次实际由人工在 `user_requirement` 自由文本里写清。
+  - 前置机制缺口见 queue VP-2026-0296（statectl reopen）——本条为同一闭环的编排侧半边。
+- repro: repro-missing（流程规则；复现条件 = 对一个因环境/外部原因终态 FAILED 的任务做受控重试，比较「只重跑受影响 Stage」与「全量重跑」的耗时与上游产物复用率）
+- toolchain_stamp: conductor md 现行版本；发生环境 2026-10-16
+- target_doc: .opencode/agents/tilelang-op-conductor.md
+- delta: |
+    动作: update（恢复段追加「终态后重试」小节）
+    定位锚: 「恢复」章节（apply 时按当时文件锁定精确锚）
+    new 文本（要点）: ① 终态（`DONE` / `FAILED`）后重试仅在有**用户显式授权**时进行，且须经 `statectl reopen`（VP-2026-0296）或等效受控通道；② 重跑范围默认 = **最近失败 Stage**，并在状态与最终报告中显式记录「授权来源 / 旧终态归档路径 / stage_plan」；③ 环境类阻塞解除后**不得**整任务重跑（成本对照：本任务 820 s vs ≈6 h）；④ 重跑段的验证证据须独立完整（不得引用重跑前的工件冒充重跑后的证据）。
+    动机: 该路径在环境类阻塞上高频（本次为实证），而现行文本对「终态后」无差别指引，导致每次临时协商、靠人工纪律维持，且容易误走整任务重跑。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z 2026-10-16
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0298
+
+- type: R
+- title: integrator 已知修复目录补「**同文件追加型集成**」条目——目标 `{op_slug}_kernel/` 已存在时**不重跑**写模式 `integrate_kernel.py`（`gen_init_py` 整体重写 `__init__.py`，丢既有 export 与 `wrapper_import_names` 契约名）；替代手法 = 先 `--dry-run` 检视 `[init]` 行、保持并集 `__init__.py`、手工维护 wrapper 的 baseline/perf_opt 双块、report 置于全部编辑之后
+- evidence:
+  - task `…015430Z` Stage 5（首轮）：三个追加陷阱逐条记录于集成副本 `multi_head_attention_kernel/integration_log.md` §Integration steps 并各有备份（`history_version/__init___pre_s5.bak`、`history_version/multi_head_attention_s5_attempt1.pre_fix.bak` 等）——A 聚合 `__init__.py` 被重建丢掉 fwd export + `make_dq_layout` 契约名；B `rewrite_wrapper_import` 的「already integrated」探测被**被注释的 baseline 行**触发致 wrapper 不重写；C 三个 bwd 子类的 `ascend_mode` 须手工补齐。
+  - task `…082329Z` Stage 5 重试段：只跑 `--dry-run`（输出仍显示会 re-copy 三份 `{func}.py` / `{func}_DESIGN.md` 并**重新生成 `__init__.py`**）+ 核对集成副本与 Stage 1 交付件 `diff -q` 全 IDENTICAL + 保持 wrapper 双块 ⇒ **零陷阱复发**，report 一次跑出 correctness 12/12（且未触发 `S5-REPORT-STALE`，因 report 置于全部编辑之后）。
+  - 交叉引用：queue VP-2026-0055（`gen_init_py` 静默降级 + 幂等重跑覆盖集成侧补丁，pending）/ VP-2026-0064（幂等检查剥离注释行，pending）/ VP-2026-0150（已 merged：wrapper 契约名持久化）/ VP-2026-0151（`S5-REPORT-STALE` 死角）——本条是**agent 侧手法**（目录条目），与上述脚本侧修复互补、不替代它们。
+- repro: repro-missing（流程规则；复现条件 = 对已有 `{op_slug}_kernel/` 包的目录跑写模式 `integrate_kernel.py`，比对 `__init__.py` 是否仍导出既有 fwd 名与 `wrapper_import_names`）
+- toolchain_stamp: add-npu-op / integrator md 现行版本；发生环境 tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+- target_doc: .opencode/agents/tilelang-op-integrator.md
+- delta: |
+    动作: update（已知修复目录追加一节）
+    定位锚: 已知修复目录（apply 时按当时文件锁定精确锚）
+    new 文本（要点）: 「**同文件追加型集成（目标 `{op_slug}_kernel/` 已存在）**：① 写模式 `integrate_kernel.py` 只可对**新建包**运行；目标包已存在时**不重跑写模式**——其 `gen_init_py` 按本批 `integrated_files` 整体重写 `__init__.py`，会丢既有 export 与 `wrapper_import_names` 契约名；② 以 `--dry-run` 输出确认将发生什么，保持 `__init__.py` 为**既有 + 本批的并集**（含契约名 re-export）；③ wrapper 的 baseline / perf_opt 双块手工维护（既有算子块逐字节不动）；④ 完成后核对集成副本与 Stage 1 交付件 `diff -q` 全 IDENTICAL；⑤ 单算子 report 置于**全部编辑之后**（否则 `S5-REPORT-STALE`）」
+    动机: 该形态（用户明确要求的「同文件追加、不拆 fwd/bwd」）在连续任务上必现三类陷阱，且每次都要 integrator 现场重新发现；目录条目化后可被直接消费（本次重试段按 ①–⑤ 执行，零陷阱复发）。
+- status: pending
+- confirmations: -/-
+- created_by: task multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z 2026-10-16
 - decided_by: -
 - decided_note: -
 

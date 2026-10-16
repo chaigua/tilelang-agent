@@ -148,17 +148,39 @@ evidence:
     hivmc 的 flag 拒绝（env.sh 已记录该版本错配）；④ 同任务 bwd 三核独立确认可用
     （`_gqa_bwd_kernel.py --level L0` 16/16 PASS，844.7 s）⇒ 阻塞面确在 fwd Expert 核与
     工具链配对，非 kernel 逻辑。
+  - 〔形态② 缓解路径实证（2026-10-16 Stage 5 重试段，task …082329Z）〕外部 shim
+    落地（`tilelang/jit/jit_npu.py` 的 `linalg.replace("syn_instr_mode","sync_instr_mode")`）
+    之后：共享测试文件 `tests/ops/test_multi_head_attention.py` **4/12 → 12/12 passed
+    （8.12 s）**；单算子 report（任务工作区，未上库，允许失效）`examples/TileOPs/reports/tileops/
+    20261016_082438_849619_MultiHeadAttentionBwdOp/run.json` 的
+    `summary.correctness_passed=true`、per-operator rollup `MultiHeadAttentionBwdOp`
+    **8/8 passed**（`avg_max_abs_err=1.158e-3` / `max_abs_err=1.95e-3`）；benchmark 20 条
+    请求 / 18 条记录 / 2 条失败（2 条失败为 shape 相关后端段错误，见 CG-2026-0030）。
+    出处（任务工作区，未上库，允许失效）：`examples/multi_head_attention/{RETROSPECTIVE.md, SESSION_TIMING_ANALYSIS.md}` +
+    集成副本 `integration_log.md` §Stage 5 Retry #1（任务工作区 / 集成副本，未上库，允许失效）。
+    缓解路径代价量纲：一行字符串重写、无运行时开销；适用域 = 「前端产物拼写与已装后端接受的
+    拼写不一致」方向（不覆盖新属性类形态①）。
   - 未文档化假设：docs/ 未找到 bishengir-compile 与前端产物的版本配对说明；估计依据
     为两任务的编译器交叉实测。
 workaround: >-
   〔形态①〕PYTHONPATH 前置 upload 仓库 tilelang 构建（旧版前端，fixpipe 不带 dma_mode），
   三种实现（Expert npuir / Developer baseline / Developer gqa）统一在其下编译对比；
   代价：任务级工具链钉版本，机器默认 tilelang 构建的 Expert 路径完全不可用。
-  〔形态②〕none（本次任务无可作用面）：fwd 核属「add-only 保留的既有交付件」、fwd 依赖
-  属禁止编辑的 workload 接线（tileops/workloads/attention.py），工具链配对属环境层 ⇒
-  该任务按失败分类表记 BLOCKED_ENVIRONMENT 并终止（未消耗 debug attempt）。可选的
-  正向路径 = 在 CANN 8.5.0 或与前端匹配的 bishengir-compile 上集成（与形态①同一类
-  工具链钉版本），或待上游把 syn_instr_mode 支持回灌进 CANN 9.0 的 bishengir-compile。
+  〔形态②〕**2026-10-16 重试段更新：已找到廉价上游绕法（缓解路径）**——生成 IR 时做一次
+  字符串重写 `syn_instr_mode` → `sync_instr_mode` 再交给 `bishengir-compile`
+  （落点 `tilelang/jit/jit_npu.py::_npuir_to_bin_enable_npu_compile`，本任务由外部落地，
+  不在 agent 编辑域内；成本 ≈0 / 一行 `linalg.replace`）。该 shim 落地后共享测试文件
+  `tests/ops/test_multi_head_attention.py` 由 4/12 → **12/12 passed（8.12 s）**，单算子
+  report correctness 12/12、per-operator rollup 8/8。**缓解路径的适用边界**：只在
+  「前端产物多写一个拼写、已装后端只认修正拼写」这一方向上成立（即修的是**名字配对**），
+  不覆盖形态①（`dma_mode` 属后端不认识的**新属性**，字符串重写无解）；3rdparty pin 更新到
+  含该改名修复的线（`origin/master` 已含）之后应移除该 shim。**缺口本体不变**：版本配对
+  仍未被文档化、无机械预检手段。
+  〔首轮结论（历史）〕形态②曾记 `none`：fwd 核属「add-only 保留的既有交付件」、fwd 依赖
+  属禁止编辑的 workload 接线（`tileops/workloads/attention.py`）、工具链配对属环境层 ⇒
+  首轮按失败分类表记 `BLOCKED_ENVIRONMENT` 并终止（未消耗 debug attempt）；当时的备选正向
+  路径 = 在 CANN 8.5.0 或与前端匹配的 `bishengir-compile` 上集成（与形态①同一类工具链钉
+  版本），或待上游把 `syn_instr_mode` 支持回灌进 CANN 9.0 的 `bishengir-compile`。
 occurrences: 2
 tasks: [FA 三实现性能对比 baseline/npuir/gqa 2026-09-07, multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z]
 toolchain_stamp: >-
@@ -192,10 +214,12 @@ proposal: >-
   存在未文档化的版本配对约束（`dma_mode` / `syn_instr_mode` 两属性在 CANN 8.5/9.0 各自的
   已装编译器上均解析失败；自建编译器与 CANN 9.0 hivmc 亦 flag 不兼容）
 created_by: FA 3-impl perf comparison 2026-09-07
-last_seen: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5 集成期（2026-10-16，第二形态独立识别 → 升级 recurring）
+last_seen: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 5 集成期（2026-10-16，第二形态独立识别 → 升级 recurring）；同上任务 Stage 5 重试段 task multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z（2026-10-16，缓解路径实证 4/12 → 12/12，workaround 字段已回填）
 ```
 
 > **升级依据（2026-10-16）**：task `FA 三实现性能对比 baseline/npuir/gqa`（2026-09-07，形态① `dma_mode`/fixpipe）+ task `multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z`（2026-10-16，形态② `syn_instr_mode`/`sync_block_set`）——两个**不同任务、不同属性、不同前端构建与编译器版本**独立识别同一缺口本体（前端新 HIVM 特性 ↔ 已装 bishengir-compile 无可用配对，且两任务下「本机全部可用编译器组合」均不可用），达 ≥2 任务阈值。proposal 字段已产出，待向用户显式列出并推动（外部 issue 须用户批准后建）。
+>
+> **缓解路径回填（2026-10-16 Stage 5 重试段）**：形态② 获**廉价上游绕法**（emit 侧一行字符串重写，`tilelang/jit/jit_npu.py`，本任务外部落地）——落地后共享测试 4/12 → 12/12。**该进展不撤案**：缺口本体（版本配对未文档化 / 无机械预检）不变，且**形态①（新属性 `dma_mode`）无字符串绕法**，proposal 的 ①②③ 三条建议均仍成立；优先级排序调整 = 「② 配对关系文档化 + 机械预检」上升（对两类形态都有效）、「① 属性回灌」维持、「③ hivmc flag 兼容」维持（自建前端 + 系统后端组合仍不可用）。重验触发词：`syn_instr_mode` 直通编译成功（即系统 `bishengir-compile` 开始接受该拼写）时按证伪协议刷新本条目。
 
 ---
 
@@ -1289,13 +1313,14 @@ created_by: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_k
 last_seen: 2026-10-15 adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4
 ```
 
-### CG-2026-0030
+### CG-2026-0030（2026-10-16 Stage 5 重试段补**形态②**：大 shape × fp16 触发同一后端段错误）
 
 ```yaml
 gap_id: CG-2026-0030
 layer: BishengIR（bishengir-compile 后端崩溃 — ConvertHFusionToHIVMPass 后继阶段 / IR opt）
 capability: >-
-  `bishengir-compile`（CANN 9.0.0）对特定 `S` 值**段错误**：同一 Developer 骨架
+  `bishengir-compile`（CANN 9.0.0）对特定 **shape（×dtype）取值组合**段错误，两个形态：
+  〔形态①（2026-10-16 首轮 Stage 3）〕同一 Developer 骨架
   （persistent `T.Kernel(min(num_logical, cores))` + 核内 `T.serial` 任务循环 +
   `T.Pipelined` query 循环 + 运行时 extent 的 GM↔UB `T.copy`（目标操作数预清零）+
   `T.gemm`（全 tile extent）+ 逐行 1-D `T.atomic_add`）在 attention 形状
@@ -1303,14 +1328,24 @@ capability: >-
   `NPU IR opt failed: PLEASE submit a bug report ... Stack dump:`（段错误，无 MLIR 诊断），
   而 `S ∈ {16, 24, 40, 48, 56, 64, 96}` 全部编译通过。崩溃与 `(bm,bn) = (64,64) / (32,32)`、
   `heads`、`dim ∈ {64,128}`、`is_causal` 均无关（逐变体实测）；S 为 64 倍数的 manifest 档
-  不受影响。即某一 shape 参数取值单独触发后端崩溃，属**形状相关的编译器缺陷**，非前端能力
-  缺失或 kernel 逻辑问题。
+  不受影响。
+  〔形态②（2026-10-16 Stage 5 重试段，task …082329Z）〕同一后端对**大 shape × fp16** 段错误：
+  `bench_multi_head_attention.py` 的 `llama-3.1-70b-long-float16` 档
+  `(batch=1, heads=64, dim=128, seq_len=2048, fp16)` 在 fwd 与 bwd **两条 bench 上同时**
+  报同一 `NPU IR opt failed: PLEASE submit a bug report ... Stack dump without symbol names`
+  （栈顶 `__kernel_rt_sigreturn`），而同 shape 的 **bf16** 档与其余全部 shape 正常 profile+build
+  ⇒ 触发维度是 **shape × dtype 的联合取值**。两形态的**共同本体** = 后端在特定 shape/dtype
+  取值上崩溃且不产出 MLIR 诊断；**是否同一触发点未证**（无诊断可比对、触发骨架不同），本条
+  按「同一后端版本上 ≥2 个形状/dtype 敏感触发点」登记。
 blocked_algo: >-
-  受影响的是「小 S（含 32 的非 8 倍数域）」的 attention-backward 形态：该 shape 档在本
-  工具链**无法产出可运行产物**（编译即崩），分层测试只能把它记为 warn-only（不构成数值
-  证据）。对 manifest 交付域（S 为 64 倍数）无影响；对 `S = 32` 的边界/小 shape 用例是
-  硬阻塞（被迫从断言档降级为记录档）。潜在波及：任何对齐位数恰好落在该崩溃域的小 shape
-  attention 类 kernel（本次扫描的 S 族外未见其它崩溃点，故适用域按 S 参数限定）。
+  〔形态①〕受影响的是「小 S（含 32 的非 8 倍数域）」的 attention-backward 形态：该 shape 档
+  在本工具链**无法产出可运行产物**（编译即崩），分层测试只能把它记为 warn-only（不构成数值
+  证据）。对 manifest 交付域（S 为 64 倍数）无影响；对 `S = 32` 的边界/小 shape 用例是硬阻塞
+  （被迫从断言档降级为记录档）。
+  〔形态②〕受影响的是大 shape × fp16 档的 attention fwd/bwd bench：该档在报告里记为
+  benchmark failed（不进性能统计），使单算子 report 降级 `partial`——正确性（12/12）与其余
+  shape 的性能结论不受影响。潜在波及：小 S（含 32 的非 8 倍数域）+ 大 S fp16 档两侧；两次
+  观察都在 attention 类 kernel 上，故适用域按「shape/dtype 敏感」表述，未泛化为全体算子。
 evidence:
   - 复现（任务工作区，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/repro/
     TRAP-bishengir-crash-s32.py`（知识域 repro，三态对照：A `S=32` 抛崩溃 / B `S=40` 通过 /
@@ -1320,22 +1355,37 @@ evidence:
   - 运行日志：`python _gqa_bwd_kernel.py --level all` 的 L2 段
     `[L2] WARN (record only): (B,S,H,Hkv,D)=(1,32,4,4,64)`
   - 知识域条目：`pattern-library/traps-compiler.md` `TRAP-bishengir-crash-s32`（含 repro，
-    重验触发词 `S=32: COMPILED`）
-  - 未文档化假设：docs/ 无 bishengir-compile 形状相关缺陷清单；估计依据为本任务 S 扫描实测
+    重验触发词 `S=32: COMPILED` / `(batch1,heads64,dim128,seq2048,fp16): COMPILED`）
+  - 〔形态② 复现（2026-10-16 Stage 5 重试段，task …082329Z）〕
+    `examples/TileOPs/reports/tileops/20261016_082438_849619_MultiHeadAttentionBwdOp/{run.json,report.md}`（任务工作区，未上库，允许失效）
+    （`summary.benchmark_tests=20` / `summary.benchmark_failed=2`；report §Failed Cases 两行
+    ——`bench_multi_head_attention::test_mha_fwd_bench[llama-3.1-70b-long-float16]` 与
+    `test_mha_bwd_bench[...]`，均为 `bishengir-compile` 段错误栈）；同报告 `benchmark.json`
+    的 18 条记录中该 shape 仅 bf16 档存在（fp16 档缺失）；`profiler_fallback_count=2` 属另一
+    现象（fwd msprof 降级 events），与本条无关。
+    provenance 形态 = 单算子 report（需整包 fwd+bwd 与 TileOPs 报告链），暂无法最小化为
+    知识域 repro ⇒ 形态② 在 pattern-library 侧标 `repro-missing`。
+  - 未文档化假设：docs/ 无 bishengir-compile 形状相关缺陷清单；估计依据为两形态的实测记录
 workaround: >-
-  该 shape 档按「工具链崩溃（非精度问题）」单独记录为 warn-only，不做精度断言；分层测试的
-  WARN 通道须区分 `[toolchain-crash]` 与 `[precision-record]` 两类（同一通道混记会让读者把
-  后端崩溃误读为数值可疑）。设计侧无可用替代形态（崩溃在编译期，与 kernel 写法无关）。
+  〔形态①〕该 shape 档按「工具链崩溃（非精度问题）」单独记录为 warn-only，不做精度断言；
+  分层测试的 WARN 通道须区分 `[toolchain-crash]` 与 `[precision-record]` 两类（同一通道混记
+  会让读者把后端崩溃误读为数值可疑）。设计侧无可用替代形态（崩溃在编译期，与 kernel 写法
+  无关）。
+  〔形态②〕该 bench 档按 task 策略**只记录不修复**（`report.md` §Failed Cases 留痕；
+  `summary.benchmark_failed=2`），报告整体降级 `partial` 但 correctness 独立判定为 pass；
+  可选的可用形态未验证（换 dtype 档 bf16 可正常 profile+build ⇒ bf16 是该 shape 下当前唯一
+  可用档）。
 occurrences: 1
-tasks: [multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（函数级 _gqa_bwd_kernel Stage 3）]
+tasks: [multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（函数级 _gqa_bwd_kernel Stage 3，形态①）, multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z（Stage 5 重试段单算子 report benchmark，形态②——同 op / 同环境 / 同一任务谱系的 Stage 5 重试段，按同 op 谱系**不计独立 occurrences**，故 occurrences 维持 1）]
 toolchain_stamp: >-
   tilelang 0.1.2 dev root build（/workspace/tilelang-mlir-ascend/build）+ CANN 9.0.0
   （/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile）+ Ascend910B3（AIC=20 / AIV=40 /
   UB 196608 B）/ 2026-10-16
 status: open
-proposal: none（未达 recurring；建议方向 = ① 上游定位 `S == 32` 触发点（提供最小 .npuir 与
-  crash stack）；② 在 `bishengir-compile` 崩溃时输出「已进入 pass 阶段 + 触发 shape」的最小
-  上下文，避免 `PLEASE submit a bug report` 无信息量；issue 须用户批准）
+proposal: none（未达 recurring；建议方向 = ① 上游定位两触发点（提供最小 .npuir 与
+  crash stack，形态① 已有可最小化 repro）；② 在 `bishengir-compile` 崩溃时输出「已进入
+  pass 阶段 + 触发 shape/dtype」的最小上下文，避免 `PLEASE submit a bug report` 无信息量
+  ——形态② 连「哪个 IR 构造触发」都无从判断，只能记录；issue 须用户批准）
 created_by: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（_gqa_bwd_kernel Stage 3 自登记，2026-10-16）
-last_seen: 2026-10-16 multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z Stage 3（L2 warn-only）
+last_seen: 2026-10-16 multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z Stage 5 重试段单算子 report benchmark（形态② = `(B=1,H=64,D=128,S=2048,fp16)` 大 shape × fp16 段错误；形态① 见 Stage 3 L2 warn-only）
 ```

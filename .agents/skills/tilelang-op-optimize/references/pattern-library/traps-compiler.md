@@ -804,17 +804,18 @@ apis: [bishengir-compile, T.Kernel, T.Pipelined, T.gemm, T.atomic_add]
 dtype: [fp16, bf16]
 device: 910B3
 status: verified
-origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3，L2 warn-only 记录）
-toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0（/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile）+ Ascend910B3 / 2026-10-16
+origin_task: multi_head_attention-_gqa_bwd_kernel-20261016T015430Z（Stage 3，L2 warn-only 记录，形态①）/ multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z（Stage 5 重试段单算子 report benchmark，形态②）
+toolchain: tilelang 0.1.2 dev root build + CANN 9.0.0（/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile 1.1.0 / 428ab8fdab46 2026-04-30）+ Ascend910B3 / 2026-10-16
 repro: repro/TRAP-bishengir-crash-s32.py
 ---
 
-### `bishengir-compile` 对 `S == 32` **段错误**（CANN 9.0.0）——与 kernel 逻辑无关的后端崩溃，须与精度告警分离
+### `bishengir-compile` 的**形状/dtype 相关段错误**（CANN 9.0.0）——已知两形态（`S == 32` / `(B=1,H=64,D=128,S=2048,fp16)`），与 kernel 逻辑无关，须与精度告警分离
 
-- **现象**：同一 Developer 骨架（persistent `T.Kernel` + 核内 `T.serial` 任务循环 + `T.Pipelined` query 循环 + 运行时 extent `T.copy` 到预清零操作数缓冲 + `T.gemm` + 逐行 `T.atomic_add`）在 `S = 32` 上 `bishengir-compile` **段错误**：
+- **形态①（`S == 32`，Stage 3）**：同一 Developer 骨架（persistent `T.Kernel` + 核内 `T.serial` 任务循环 + `T.Pipelined` query 循环 + 运行时 extent `T.copy` 到预清零操作数缓冲 + `T.gemm` + 逐行 `T.atomic_add`）在 `S = 32` 上 `bishengir-compile` **段错误**：
   `NPU IR opt failed: PLEASE submit a bug report ... Stack dump:`；而 `S ∈ {16, 24, 40, 48, 56, 64, 96}` **全部编译通过**。崩溃与 tile 形状（`(bm,bn) = (64,64)` 或 `(32,32)`）、`heads`、`dim ∈ {64,128}`、`is_causal` 均无关（各变体实测）。
-- **影响面**：manifest 档（S 为 64 倍数）不受影响；仅 `S == 32` 这一档不可编译，故在分层测试里表现为 L2/Boundary 的一条 WARN，**与数值精度无关**。
-- **记录纪律**：后端编译器崩溃（`bishengir-compile` 段错误 / `PLEASE submit a bug report`）与精度告警属两类事件，混在同一 WARN 通道会让读者把「工具链对某 shape 崩溃」误读成「本 kernel 数值可疑」。本条的工具链缺陷身份与升级路径见 `.agents/evolution/capability-gaps.md` 的对应条目。
-- **重验触发**：若本 repro 报 `S=32: COMPILED`，说明该后端缺陷已被工具链升级修复——按证伪协议刷新版本戳并关闭对应 capability-gap 条目。
+- **形态②（大 shape × fp16，Stage 5 重试段单算子 report，2026-10-16）**：`bench_multi_head_attention.py` 的 `llama-3.1-70b-long-float16` 档（`batch=1, heads=64, dim=128, seq_len=2048, fp16`）在 **fwd 与 bwd 两条 bench 上同时** `bishengir-compile` 段错误（`NPU IR opt failed: PLEASE submit a bug report ... Stack dump without symbol names`，栈顶为 `__kernel_rt_sigreturn`，无 MLIR 诊断）；**同一 shape 的 bf16 档与其余全部 shape 正常** profile + build（该报告 20 条 bench 中仅此 2 例失败，18 条产出记录）。即形态②同样是**形状×dtype 联合取值**触发的后端崩溃，而非 kernel 逻辑或精度问题。**两形态是否同源未证**——无 MLIR 诊断可比对、触发骨架不同（① = Developer persistent + 行原子；② = 同包 fwd Expert / bwd 两条 bench），本条只断言「同一后端版本上存在≥2 个形状/dtype 敏感段错误触发点」。该档的 op 级影响 = benchmark 降级 `partial`（正确性 12/12 不受影响）。
+- **影响面**：manifest 档（S 为 64 倍数）不受影响；`S == 32` 这一档不可编译，在分层测试里表现为 L2/Boundary 的一条 WARN；形态②使对应 bench 档在报告里记为 failed 而**不进性能统计**，两形态均**与数值精度无关**。
+- **记录纪律**：后端编译器崩溃（`bishengir-compile` 段错误 / `PLEASE submit a bug report`）与精度告警属两类事件，混在同一 WARN 通道会让读者把「工具链对某 shape 崩溃」误读成「本 kernel 数值可疑」。本条的工具链缺陷身份与升级路径见 `.agents/evolution/capability-gaps.md` 的对应条目（CG-2026-0030，两形态同条登记）。
+- **重验触发**：若本 repro 报 `S=32: COMPILED`（形态①）或该 bench 档 `(batch1,heads64,dim128,seq2048,fp16): COMPILED`（形态②）说明对应触发点已被工具链升级修复——按证伪协议刷新版本戳并关闭/收窄对应 capability-gap 条目。
 - **边界/量纲**：判据为二元（编译通过 / 段错误），无性能量纲。
-- **证明**：`python repro/TRAP-bishengir-crash-s32.py`（三态对照：A `S=32` 抛崩溃、B `S=40` 通过、C `S=24` 通过）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{repro/TRAP-bishengir-crash-s32.py, history_version 的 d10.py S 扫描 16/24/32/40/48/56/64/96 与 d9.py tile/heads 变体}`。
+- **证明**：形态① = `python repro/TRAP-bishengir-crash-s32.py`（三态对照：A `S=32` 抛崩溃、B `S=40` 通过、C `S=24` 通过）。形态② **`repro-missing`**（证据形态 = 单算子 report 的 benchmark 记录，需整包 fwd+bwd + TileOPs 报告链，暂无法最小化）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{repro/TRAP-bishengir-crash-s32.py, history_version 的 d10.py S 扫描 16/24/32/40/48/56/64/96 与 d9.py tile/heads 变体}`；`examples/TileOPs/reports/tileops/20261016_082438_849619_MultiHeadAttentionBwdOp/{run.json,report.md}`（`summary.benchmark_failed=2`、report §Failed Cases 两行）。
