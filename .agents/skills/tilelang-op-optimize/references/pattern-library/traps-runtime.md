@@ -330,3 +330,26 @@ repro: repro/TRAP-out-idx-uint8-dtype-fallback.py
 - **绕法**：字节载体**一律显式传输出张量、不声明 `out_idx`**（由调用方分配 `torch.uint8` 缓冲），实测逐位一致、无性能/精度代价。
 - **证明**：`python repro/TRAP-out-idx-uint8-dtype-fallback.py`（exit 0；断言 ①`out_idx` 返回 dtype == float32 而 prim_func 声明 uint8、②显式传 uint8 张量往返 bit-exact）。
 - 族内位置：与 TRAP-zero-input-crash（out_idx-only 形态）同属出参分配族但缺陷面不同；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0019`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-out-idx-uint8-dtype-fallback.py, _fp8_quant_kernel.py}`。
+
+---
+id: TRAP-fp16-op-affine-double-rounding
+kind: trap
+family: [norm, migration, golden, test-design]
+apis: [F.group_norm]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: group_norm-_group_norm_kernel-20261015T152755Z（Stage 3 纯 CPU 探针转正）+ group_norm-group_norm-20261015T152158Z（Stage 5 NPU 集成 report 级确证）
+toolchain: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15～16；torch 2.9.0+cpu + torch_npu 2.9.0.post8
+repro: repro/TRAP-fp16-op-affine-double-rounding.py
+---
+
+### fp16「kernel 舍回 dtype + op 层 dtype affine」分层产生的二次舍入——真实 op 复刻超 atol=rtol=1e-3，而 kernel 本体逐位正确
+
+- **形态与触发条件**：算子契约把 affine 分成两层——kernel 输出**已舍回输入 dtype** 的归一化张量，op 层再施加 per-channel `(C,)` `weight/bias`。op 层若在**输入 dtype（fp16）**里算 `y = y·w + b`（乘-舍-加-舍两次舍入），则归一化张量的量化误差 `e1 ≤ 0.5 ulp(n)` 被 `|w|` 放大为 `e1·|w|`；当 `n·w + b ≈ 0` 时绝对误差上界是 `ulp(|n·w|)` 而非 `ulp(|result|)`，`atol` 覆盖不到——表现为**少量元素**（本例 ≤0.3%）超差而非整体偏移。golden（`F.group_norm(x.float(), …, w.float(), b.float()).to(dtype)`）走 fp32 opmath + 单次舍回，与该路径不等价。
+- **Stage 3 纯 CPU 定量（本轮 repro 实跑复现）**：`GroupNorm` 最小复刻（n=16/c=32/d=256/g=8）8 seeds —— dtype affine 违反 **314** 个元素、fp32 affine + 单次 `.to(fp16)` **6**、kernel 级**单位 affine** 对纯归一化 golden **0**（逐位）。
+- **Stage 5 NPU / report 级确证（同一算子）**：`GroupNormFwdOp` 集成 report attempt 1 correctness 12 passed / 7 failed / 2 skipped；7 例全为 fp16、每例仅 1–3 个元素超差（max ~1.0–1.7e-3 vs 门限 1e-3，报告 max abs err 3.91e-03），fp32/bf16 用例全过。集成 kernel 的 fp16 归一化输出与 golden 归一化张量**逐位一致**（`k_norm16 != g_norm16 : 0 / 4096`，另两例 0/1024、0/960）⇒ kernel 无缺陷、残差全部落在 op 层 affine 的 dtype 算术。op 层改 fp32 affine + 单次 `.to(dtype)` 后同 21 用例 **19 passed / 0 failed / 2 skipped**（2 例为单 NPU 环境的多设备 smoke skip，非失败）、benchmark 7/7、4 例 msprof 有效。
+- **门禁遮蔽机制（本陷阱最易漏的部分）**：kernel 级 L0/L1 门禁对 fp16 若采用**单位 affine**（该 kernel 的 `_affine_for` 对 fp16 返回 `"unit"`；DESIGN §8.1 口径「kernel 级输出不含 affine，故对照用单位 weight/bias」），则真实 op 路径的 per-channel affine 从未成为阻塞门禁——Stage 3 全绿（L0 17/17、L1 46/46）直到 Stage 5 以真实 op 调用路径跑全量 report 才暴露。分层算子的 fp16 门禁覆盖因此需要**真实 per-channel affine 的 op 级用例**；同任务 6-seed 实测：fp32 与 bf16 的真实 affine 复刻各 0 违反（可作阻塞判据），fp16 不可（其超差是接口伪影而非 kernel 缺陷）。
+- **定位手法（本任务实测有效，零设备依赖）**：先取「归一化张量」这一中间量在 kernel 输出与 golden 之间做**逐位**比较（`!= : 0/N` 即 kernel 无缺陷），再把残差归因到 op 层 affine 的 dtype 算术（`ideal = normalized.fp16 → fp32 affine → 单次舍回` 给出 `bad = 0`）——「改哪个文件」由此有可执行证据而非猜测。伴生事实：device affine 与 cpu affine 在相同数据上违反集完全相同（排除「NPU 端 fp16 affine 精度异常」方向，归因收敛到接口分层本身）。
+- **与同族条目的分工**：TRAP-fp16-opmath-golden 描述 kernel 侧逐步 fp16 舍入与 golden fp32 opmath 的分歧（对齐通解 = kernel 内 fp32 中转 + 单次舍回）；本条描述 **op 层** affine 的二次舍入（kernel 已单次舍回、对齐通解 = op 层 fp32 affine 单次舍回）——分别对应「kernel 侧舍入路径」与「接口/op 层舍入路径」，互补不重复。
+- **证明**：`python repro/TRAP-fp16-op-affine-double-rounding.py`（exit 0；三段断言：trap 违反数 > 0、fp32-affine 违反数 ×10 < trap、单位 affine == 0；纯 torch CPU，无 NPU、不 import 任务工作区模块）。溯源（任务工作区，未上库，允许失效）：`examples/group_norm/_group_norm_kernel/{RETROSPECTIVE.md, repro/TRAP-fp16-op-affine-double-rounding.py}`、`examples/group_norm/RETROSPECTIVE.md`（Stage 5 复盘）、集成侧 `integration_log.md`（attempt 1 定位段 / attempt 2 授权修复段）。

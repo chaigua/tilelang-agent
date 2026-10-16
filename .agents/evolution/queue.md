@@ -39,6 +39,8 @@ decided_by: evolver / human / -   # 裁决者
 
 ### Tier 1（P 类，2 次独立证据后合入）
 
+> **条目迁移（2026-10-16 蒸馏，group_norm 迁移）**：VP-2026-0043（D：layernorm 矩式方差 catastrophic cancellation 定量边界）第二证达标（第二证来自 task `group_norm-_group_norm_kernel-20261015T152755Z`，不同任务 / 不同算子/族内形态）→ 合入 `algorithm-candidates.md` ALG-layernorm R1 行（定量句写入 R1，pending 指针转为条目引用，两证并列）；完整记录移至下方 `## Decided` 归档区。
+
 > **条目迁移（2026-10-14 蒸馏，max_pool1d_with_indices 双输出 1D 迁移）**：VP-2026-0159（双输出池化索引契约）/ VP-2026-0160（索引归约极值方向）第二证达标（两证均来自 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z`，不同任务/不同算子）→ 分别合入 `pattern-library/traps-runtime.md` TRAP-pool-index-contract-dual-output / TRAP-index-reduce-extremum-direction；VP-2026-0175（纯选择算子 Ratio 判读口径）第二证达标（同上任务）→ 合入 `profile-collection.md` §4.1；VP-2026-0180（1D 长轴窗口池化必需结构）第二证达标（同上任务，输出个数不同的变体）→ 合入 `algorithm-candidates.md` ALG-pooling。完整记录移至下方 `## Decided` 归档区。
 
 > **条目迁移（2026-10-13 蒸馏）**：VP-2026-0003 第二证达标（adaptive_avg_pool2d 迁移），已合入 `pattern-library/layout.md` PL-1.21-vector-persistent-split，完整记录移至下方 `## Decided` 归档区。
@@ -256,25 +258,6 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task multi_head_attention-_gqa_prefill_fwd_kernel-20260909T033622Z 2026-09-09
 - decided_by: -
 - decided_note: -
-
-## VP-2026-0043
-- type: D
-- title: layernorm 矩式方差（var=E[x²]−E[x]²）fp32 计算域失败定量：mean≈3000/σ≈0.5 时 fp64err 1.4e3（两遍式 6.3e-4，差 6 个量级）、违反率 25%，fp16 粗栅格 83%——「须评估 catastrophic cancellation」从定性升定量
-- evidence:
-  - examples/ada_layer_norm/_ada_layer_norm_kernel/verify_equiv.py（moment_form + run_rejection_evidence 段——torch CPU 设计期脚本，无 NPU 依赖）
-  - examples/ada_layer_norm/_ada_layer_norm_kernel/RETROSPECTIVE.md（Stage 1 Value Point Proposals 首行）
-- repro: repro-missing（知识域最小 repro 待同族任务回填；矩式 vs 两遍式差分最小化仅需数行 torch CPU 脚本）
-  - 〔provenance，允许失效〕任务内复现命令：python3 examples/ada_layer_norm/_ada_layer_norm_kernel/verify_equiv.py（输出「C2 rejection evidence」段）
-- toolchain_stamp: torch CPU（设计期脚本）+ tilelang 0.1.2+a83118285a / 2026-09-10
-- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md
-- delta: |
-    update ALG-layernorm R1 行（R1 已有指向本条的 pending 指针——VP-2026-0044 三件套合入时预写；本条闭环时把定量句写入 R1 并把指针转为条目引用）：
-    R1 单遍式矩方差的 catastrophic cancellation 定量边界（ada_layer_norm 2026-09-10 verify_equiv 实测，torch CPU）：mean≈3000/σ≈0.5（pad 校正小 N 大均值位形）时矩式 fp64err 1.4e3 vs 两遍式 6.3e-4（差 6 个量级）、容差违反率 25%；fp16 粗栅格（6e4 行）违反率 83%——两遍式为默认候选。配套：GPU 源的 256-pad 方差校正在 NPU 精确 N 式下可整体舍弃且数值更优（恒等式机器验证 0 违反，pad 列贡献 m² 显式减去）。
-- status: pending
-- confirmations: 1/2
-- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T132324Z 2026-09-10
-- decided_by: -
-- decided_note: 因 target 为 Tier 1 写域（algorithm-candidates.md）+ 缺知识域 repro 而入队（VP-2026-0007 先例形态）；R1 行的 pending 指针已随 VP-2026-0044 合入预写。
 
 ## VP-2026-0052
 - type: P
@@ -4020,6 +4003,7 @@ decided_by: evolver / human / -   # 裁决者
   - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 第二轮（post-revision recheck）：reviewer 在写盘后主动 `python3 -c "... gate_lint.review_lint('examples/argmin/_argreduce_kernel/REVIEW.md', True)"` → `FAILURES: 0 WARNINGS: 0`，据此确认返回 `REVIEW_COMPLETED`——证明该自检可在 `statectl complete` 之前完成（本轮用一次即过）
   - 上一轮（同任务 Stage 2 首轮）的对照成本：`complete 2` 才发现 `S2-MIG-DIM0` 误触 → conductor 定位 ≈80s + 整轮 `design_revision` 回退 382s + 重检视 284s（SESSION_TIMING §3 方案 1）
   - 解释器缺口（同任务 reviewer Stage 2 首轮 Skill Flow Issues）：检视环境默认 `python3`（`/usr/bin/python3`、`/usr/local/python3.12.13/bin/python3`）**无 torch**，`verify_equiv.py` 直接 `ModuleNotFoundError`；改用 `/workspace/venv/bin/python`（torch 2.9.0+cpu）后 exit 0 ALL EQUIV_PASS——解释器选择未成文，试错成本 ≈60–120s（SESSION_TIMING §3 方案 2）
+  - 〔2026-10-16 第三任务独立复现（不同任务，norm 族迁移），task group_norm-_group_norm_kernel-20261015T152755Z Stage 2〕同一缺口第三次发生：系统 `python3` 无 torch → `ModuleNotFoundError: No module named 'torch'`，改用 `/workspace/venv/bin/python3` 后 `verify_equiv.py` 全 5 项 `EQUIV_PASS`（退出码 0）；该失败与「脚本缺失/脚本 bug」在症状上不可区分，易误判为 D-1 失效（`examples/group_norm/_group_norm_kernel/RETROSPECTIVE.md` Stage 2 Skill Flow Issues 首行；任务工作区，未上库）。**证据链追加（不计独立提案）**——本条（提交前自检 + 解释器选择）已有三次不同任务实证，建议审批简报置顶。
 - repro: 复现命令 = 对任一 `examples/{project}/{op}/REVIEW.md` 跑 `gate_lint.review_lint(path, migration=True)`（含 `n/a` 裸子串/维度缺失/维度 8 证据缺失各形态时返回对应 failure）；解释器探测 = `find / -maxdepth 9 -path '*site-packages/torch'`（provenance 允许失效）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+ac0522ed…（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -4048,6 +4032,7 @@ decided_by: evolver / human / -   # 裁决者
   - task argmin-_argreduce_kernel-20261014T151121Z Stage 2 首轮 + Stage 1 revision v1：`verify_equiv.py` E2 基线 `base_source_argmin` 第 85 行 `m = -((-v).max(...))` 被第 87 行 `m = nan_ignoring_min(v)` 立即覆盖（死赋值）→ 候选与基线在 NaN-free 用例上字面等价；E4 的 fp32 上抛为**精确单射**→ 两组各 264 元素全部比较却恒 PASS——机械输出 `violations=0` 与真实覆盖无法区分（REVIEW.md 维度 8-④ 独立推演确认属**覆盖缺口非结论错误**）
   - v1 修复形态（判别力自证）：E2 基线显式保留 `-max(-x)`（fmax NaN-忽略、无覆盖）、E4 改为原生 dtype 流水 vs fp32 上抛的真实跨域对照，并加三组故意错误候选（`neg_last_occurrence`/`neg_small_sentinel`/`neg_coarse_pipeline`，`expect_pass=False`）——本轮 reviewer 亲跑输出 `CTL ... -> CONTROL_OK`（`viol>0`）方判脚本有判别力
   - 交叉引用：现有 Phase 1 第 7 步空真守卫只覆盖「比较元素数 = 0」一种退化 PASS（max_pool2d 2026-10-14 实证）；本条是其形态扩展（**非空真但无判别力**）
+  - 〔2026-10-16 第二任务独立实证（不同任务，norm 族迁移），task group_norm-_group_norm_kernel-20261015T152755Z Stage 2〕同一形态第二任务复现且给出**新的退化对照亚型**：`verify_equiv.py` 的 O1 组 9/31 行、O4 组 6/31 行**不可判别**——幂次 D（`fl(1/D)` 精确）使「除法 → 乘倒数」两臂逐位相同，`pad == 0`（256 对齐 D）使「精确 D」两臂逐位相同（`examples/group_norm/_group_norm_kernel/{verify_equiv.py, REVIEW.md 机械复核段}`；任务工作区，未上库）。⇒ 判别力核对的报告口径应含**有效判别样本数**（除元素数 > 0 外的第二维）。**证据链追加（不计独立提案）**——本条与 2026-10-14 argmin 实证构成两任务独立证据。
 - repro: 复现条件——任一含 `verify_equiv.py` 的迁移/重做任务：检查每组候选与基线是否共用实现路径（如基线存在被后续语句覆盖的死赋值、或两侧经精确单射往返），以及是否存在 `expect_pass=False` 且 `viol>0` 的故意错误候选（provenance 允许失效）
 - toolchain_stamp: 流程规则（无运行时依赖）；证据环境 torch 2.9.0+cpu（脚本侧）+ tilelang 0.1.2+ac0522ed… + CANN 9.0.0 + Ascend910B3 / 2026-10-14
 - target_doc: .agents/skills/tilelang-design-review/SKILL.md
@@ -5020,6 +5005,234 @@ decided_by: evolver / human / -   # 裁决者
 - decided_note: 源工件 §13.14-1（流程信号）。与 VP-2026-0240（已 merged）互补——0240 定「final 后冻结 + 合法重采通道」，本条定「重采后的多 final 记录留档处置」。
 
 > **条目迁移（2026-10-15 apply）**：VP-2026-0238 / 0239 / 0240 经用户批准（Primary 上下文，2026-10-15）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
+
+## VP-2026-0253
+
+- type: P
+- title: 集成期精度失败的**分层归因法**——先取分层的中间量（归一化张量）在 kernel 输出与 golden 之间做**逐位**比较以排除 kernel 缺陷，再把残差归因到 op 层算术路径的 dtype；「改哪个文件」由可执行证据而非猜测决定
+- evidence:
+  - task group_norm-group_norm-20261015T152158Z Stage 5 attempt 1：集成 report 7 例 fp16 失败（每例仅 1–3 元素超差，max ~1.0–1.7e-3 vs 门限 1e-3）；定位两步——① 逐位比较判定 kernel 无缺陷（`k_norm16 != g_norm16 : 0 / 4096`，另两例 0/1024、0/960）；② `ideal = normalized.fp16 → fp32 affine → 单次舍回` 给出 `bad = 0`，残差独占于 op 层 dtype affine（`tileops/ops/norm/group_norm.py` 该站点，任务工作区，允许失效）
+  - 同任务伴生事实（排除法）：device affine 与 cpu affine 在相同数据上违反集完全相同 —— 排除「NPU 端 fp16 affine 精度异常」方向，归因收敛到接口分层本身
+  - `examples/group_norm/RETROSPECTIVE.md`（Stage 5 Value Point Proposals 第 2 行；任务工作区，未上库，允许失效）
+  - 族内互补：queue VP-2026-0006（定征顺序：dtype 隔离/无关性/golden opmath）、VP-2026-0038（误差结构定征：均匀 vs 部分核）、VP-2026-0052（分层中间量导出：指令级定位）——本条补**层次级**归因（kernel 层 vs op/接口层），四者构成「先定类 → 再定层 → 再定指令」梯次
+- repro: 复现条件——任一「kernel 输出已舍回输入 dtype + 上层再施加 affine/bias」的算子：取该分层中间量在 kernel 输出与 golden 之间逐位比较（全 0 即 kernel 无缺陷），再以 fp32-affine 单次舍回形态复算 golden 比较；纯 torch CPU 可复现（知识域最小脚本待同族任务按此形态转正，`repro-missing`）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 x1 + torch 2.9.0 / torch_npu 2.9.0.post8 / 2026-10-15~16
+- target_doc: .agents/skills/tilelang-error-fixer/references/precision-patterns.md
+- delta: |
+    add 新条目「分层归因（kernel 层 vs op/接口层）」（合入时置于 VP-2026-0006 定征顺序与 VP-2026-0052 分层中间量导出之间，三者互链）：
+    手法：分层算子（kernel 只产中间量、上层再施加 affine/bias/缩放）的集成期精度失败，先把该中间量在 kernel 输出与 golden 之间做**逐位**比较——全 0 即 kernel 无缺陷（等价于「kernel 的舍入路径已到极限」），残差随后被归因到 op 层算术的 dtype 选择；再以候选修复形态（fp32 算术 + 单次舍回）复算，`bad = 0` 即确证。
+    判据：逐位相等（`!= : 0/N`）是 kernel 侧的强判据（比容差比较强得多，且零额外成本）；中间量的「分层性」由算子契约给出（哪些量由 kernel 负责、哪些由 op 负责）。
+    互补：与 VP-2026-0052 的指令级定位（out_idx 多输出逐级 dump 对照 fp64）串联使用——本条先定层、再来定指令；与 VP-2026-0038 的误差结构定征（均匀 vs 部分核）并列。
+- status: pending
+- confirmations: 1/2
+- created_by: task group_norm-group_norm-20261015T152158Z 2026-10-16
+- decided_by: -
+- decided_note: 源复盘 target 为 pattern-library `references/migration-analysis.md`（集成/调试模式）；改路由至 error-fixer `precision-patterns.md`——同族定位手法（0006/0017/0038/0052）全部在该文件，检索入口唯一（与 VP-2026-0052 原 target 降档改路由同先例）。事实本体不变，如需保持原 target 请在审批时说明。
+
+## VP-2026-0254
+
+- type: D
+- title: UB auto-multi-buffer 平台值的**结构边界**新数据点——fp32 直连双缓冲（`stage`+`x_f32`+`sq_f32`+5×(bm,1)）`bm=2, D=4096` 编译并运行通过 ⇒ 该结构 ≤24 B/elem，证伪「fp32 直连恒为 26.00 B/elem」的普适性
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 3：L0-6（`(8,128,32,32)` g=32 fp32 bm=2）、L1/fp32/50x3000（bm=3, D=3000）、L2 `(1,1,9216)` fp32 bm=1 均编译+运行 PASS（任务工作区，允许失效）
+  - 冲突对象：`.agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md` 的 TRAP-UB-multibuffer-inflation 第三证规律 1「fp32 直连无论 resident 8 B 还是 16 B，同为**精确 26.00 B/elem**」——26 × 8192 = 212 992 B > 196 608 B，按该值应为溢出
+  - 同向既有证据：同族前作源码注释原始溢出报文 `245760 B = 20 × 3 × 4096` 与 `240000 B = 20 × 4 × 3000`（20 B/elem），本任务实测与该报文口径同向、与条目正文本 26 B/elem 相左
+- repro: repro-missing（NPU 编译探针；最小形态 = 同结构（`stage`+`x_f32`+`sq_f32`+5×(bm,1)）fp32 直连 `bm=2, D=4096` 编译一次，观察是否报 `ub overflow, requires N bits` —— 溢出报文即精确认证）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    动作: update（TRAP-UB-multibuffer-inflation 第三证规律 1 之后追加「结构边界数据点」）
+    定位锚: "1. **膨胀后 footprint 是"结构类平台值"，不随 staging 数量线性增长**：persistent serial（num_local_tasks≥2）激活时，fp16/bf16 中转循环（vcast 链）无论 resident 10 B/elem（3 缓冲）还是 14 B/elem（5 缓冲），multi-buffered 需求同为**精确 20.01 B/elem**；fp32 直连无论 8 B 还是 16 B resident，同为**精确 26.00 B/elem**。⇒ UB 预算 guard 从"resident × 膨胀系数"改为"按结构类查平台值"（transit≈20/21、fp32≈26/27 B/elem）。"
+    new 文本: 同上原文 + 追加：
+    **结构边界数据点（2026-10-15 group_norm 迁移，tilelang 0.1.2+9307929320d / CANN 9.0.0 / Ascend910B3）**：fp32 直连双缓冲（`stage`+`x_f32`+`sq_f32`+5 个 `(bm,1)`）实测 `bm=2, D=4096`（8192 元素）编译并运行通过 ⇒ 该结构 footprint **≤ 24 B/elem**——「fp32 直连恒为 26.00 B/elem」中的 26 对该结构不成立（26×8192 = 212 992 B > 196 608 B 按该值应溢出）。与同族前作源码注释的原始溢出报文 `245760 B = 20×3×4096`（20 B/elem）同向。⇒ 26 B/elem 按「第三证所测结构类」使用，跨结构外推须以编译探针校准（同第四证的「手工预算不能当可编译证明」纪律）；`CONST-capacity-910B2C` 的 ×1.10–1.12 段同款结构依赖注建议一并补（合入时处理）。
+    动机: 该值决定 `block_m` 取档与 UB guard 阈值；跨结构搬运正文数值会误判 `bm` 可行性（本任务设计期已按 20 B/elem 取档，Stage 3 实测与之一致、与 26 相左）。
+- status: pending
+- confirmations: 1/2
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 缺知识域 repro（编译探针类）→ 按 ED-A 降级 Tier 1 入队。冲突消解预判：同口径实测冲突（新版本戳 > 旧版本戳），但**不 deprecate 原文**——本数据点只指出 26 B/elem 的适用边界（结构类），故以 update 加限定句处理；与 VP-2026-0046（膨胀预算标定）/ VP-2026-0122（窄 N 膨胀）/ VP-2026-0129（窄 N ~4× 换算）同族，合入时互链。
+
+## VP-2026-0255
+
+- type: P
+- title: 分层舍入算子的 Stage 3 门禁口径与「分层舍入审计」——kernel 层门禁用单位 affine（或 fp32-affine 单次舍回）对照，真实 dtype affine 的 op 复刻只作 informational（fp32/bf16 可阻塞、fp16 不可）
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 3：首轮 L0-2/4/7/8/13/17 六项 fp16 FAIL（violations 1..230、max_diff 3.9e-3..7.8e-3），改用 kernel 级单位 affine 后 6 项全部归零（6 项均为接口伪影而非 kernel 缺陷）；`_affine_for(dtype)` 三 dtype 6-seed 实测：fp32 0/6、bf16 0/6、fp16 不可作阻塞判据（任务工作区，允许失效）
+  - 独立定量：`repro/TRAP-fp16-op-affine-double-rounding.py`（知识域，2026-10-16 转正；8 seeds：dtype-affine 314 / fp32-affine 6 / unit 0）
+  - 代价证据：该遮蔽使失败暴露推迟到 Stage 5——attempt 1 定位 + 路由 815s（`examples/group_norm/SESSION_TIMING_ANALYSIS.md#3` 方案 2；任务工作区，未上库）
+- repro: repro/TRAP-fp16-op-affine-double-rounding.py（知识域自包含脚本，2026-10-16 转正；evolver 机械拷贝 + py_compile + 实跑 PASS，断言 314/6/0）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 + torch 2.9.0+cpu / 2026-10-15~16
+- target_doc: .agents/skills/tilelang-error-fixer/references/precision-patterns.md
+- delta: |
+    add 新条目「分层舍入算子的门禁口径与分层舍入审计」（与"分层归因"条目邻位、互链）：
+    审计（Stage 3 首轮、跑 gate 之前）：先判算子契约是否**分层舍入**——kernel 输出是否已舍回输入 dtype 而 affine/bias/缩放由上层施加（GPU 源 wrapper 的调用形态与 kernel 签名足以判定，本任务 op 层只传 x、wrapper `_identity_affine_for` 单位元分支即判据）。属该形态时，fp16 的真实 affine 复刻会因二次舍入 + 抵消在 ≤0.1% 元素上超过 atol 1e-3，从而**误拒一个正确的 kernel**；直接判据 = 用单位 affine 复跑同一 shape，violations 是否归零（本任务 6 个 fp16 FAIL 全部如此归零）。
+    门禁口径：kernel 级正确性由单位 affine 对照（bit-exact 于纯归一化 golden）判定；真实 affine 的 op 复刻按 dtype 分层——fp32/bf16 可作阻塞（各 0/6 seeds），fp16 只作 informational；op 路径的 affine 覆盖由集成期真实 op 用例承担（与 develop 门禁侧提案互链）。
+    配对条目：traps-runtime.md TRAP-fp16-op-affine-double-rounding（现象与 repro）；mechanism 归因 = 归一化张量量化误差被 |w| 放大、在 `n·w+b≈0` 处按 `ulp(|n·w|)` 计。
+- status: pending
+- confirmations: 1/2
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 本条三件套已齐备且 repro 在 evolver 上下文实跑 PASS；**未按 E-3 快速通道直接合入**——该次实跑属 ED-C 转正的机械校验（拷贝后的一致性验证），不构成独立上下文的第二证据；按保守序维持 1/2 入队（就高不就低），如审批方认为机械校验可计 2/2 请在审批时说明。
+
+## VP-2026-0256
+
+- type: R
+- title: `tilelang-op-integrator` 编辑范围契约补「ops/ 层数值路径根因 + conductor 显式授权 → 备份 + 记录 + 单点最小 diff」的合法路径（默认仍禁改 `tileops/ops/`）
+- evidence:
+  - task group_norm-group_norm-20261015T152158Z Stage 5：attempt 1 报告根因不修（`integration_log.md`「Root cause is out of the Stage 5 edit scope」，7 例 fp16 marginal 超差全部归因于 `tileops/ops/norm/group_norm.py` 的 fp16 affine，且证据显示 kernel 逐位正确）→ 编排层无授权 → **等待用户决策 28 722.7 s（85.8% 会话跨度，`examples/group_norm/SESSION_TIMING_ANALYSIS.md#1/#3 方案 1`；任务工作区，未上库）** → attempt 2 经用户显式授权做单点修复 303.1 s 后 report passed（correctness 19/0/2、benchmark 7/7、4 例 msprof 有效）
+  - 授权形态（可复用）：备份 `history_version/group_norm.py_s5_attempt2.bak`（编辑前写入，diff 仅该一处表达式）+ `integration_log.md` 记录授权来源与前后结果 + 修复面冻结为**单个表达式**（fp32 affine + 单次 `.to(dtype)`），validation/reshape/其他函数/测试/容差/bench 零改动
+  - 契约缺口位置：`.opencode/agents/tilelang-op-integrator.md` L29–L32「编辑范围严格限定」——禁改清单含 `tileops/ops/`，只写「若失败根因明确在这些文件…如实报告而不修改，交回 conductor 决策」，未给出「根因在 ops/ 且经 conductor 显式授权」时的合法路径、记录要求与最小化约束
+- repro: repro-missing（流程规则；复现条件 = 读 `.opencode/agents/tilelang-op-integrator.md` 的「编辑范围严格限定」与「调试闭环」两段，确认是否含授权路径条款与记录/最小化约束）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15~16（流程规则，无运行时依赖）
+- target_doc: .opencode/agents/tilelang-op-integrator.md
+- delta: |
+    动作: update（「编辑范围严格限定」第 2 条末尾追加一段；不改禁改清单本体）
+    定位锚: "   - **禁止修改**：`tests/`、`benchmarks/`、`tileops/manifest/`、`tileops/ops/`、`tileops/workloads/`、conductor 产物目录 `examples/{op_slug}/`，以及集成包内 `{func}_DESIGN.md`（Stage 1 交付件快照，与 `examples/{op_slug}/{func}/DESIGN.md` 同源，修改会破坏一致性；设计问题走 `[DESIGN_ERROR]` 交回 conductor）。若失败根因明确在这些文件（如测试容差、workload 生成错误），如实报告而不修改，交回 conductor 决策。"
+    new 文本: 同上原文 + 追加：
+      **授权后的单点最小修复路径（例外，仅 `tileops/ops/` 数值路径）**：当证据把根因定位到 `tileops/ops/` 层的**数值/算术**路径（如 op 层把 affine/缩放施加在输入 dtype 而非 fp32），且 conductor 在调度输入中**显式授权**该次修复时，可在以下约束下实施：① 先在 `tileops/kernels/{family}/{op_slug}/{op_slug}_kernel/history_version/{name}_s5_attempt{N}.bak` 写备份；② 修复面冻结为**单个站点/表达式**，不得顺带重构、不得触碰 validation/reshape/其他函数；③ `integration_log.md` 记录授权来源（conductor 原文）、备份路径、diff 范围与前后 report 结果；④ 修复后重新运行完整单算子 report 取证。未获显式授权时仍按「如实报告不修改 + 交回 conductor」处置（2026-10-15 group_norm 实证：attempt 1 正确回交，attempt 2 授权后单点修复 303.1s 闭环；无授权路径时的用户往返代价 28 722.7 s）。
+    动机: 该形态下闭环内无任何可改文件能消除失败（kernel 已逐位正确、wrapper 拿不到 weight/bias），唯一解在 ops/ 层；契约未给授权后的合法动作与最小化约束时，integrator 只能整轮回交、用户往返一次即耗时数小时。把「显式授权 + 备份 + 记录 + 单点冻结」写进契约，使授权类阻塞的往返成本按「一次确认」而非「一次整轮集成」计。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-group_norm-20261015T152158Z 2026-10-16
+- decided_by: -
+- decided_note: 与 VP-2026-0179（integrator 失败分类表「NPU reference 后端能力缺口」子类的授权边界：仅纯选择类算子、仅 tests/ 侧 reference 路径）同族互补——那条给 tests/ 侧回退的授权边界，本条给 ops/ 层数值路径单点修复的授权边界，均以「显式授权 + 备份 + 记录 + 最小 diff」为共同形态；建议审批简报同批。
+
+## VP-2026-0257
+
+- type: R
+- title: `tilelang-op-develop` Phase 4/5 门禁口径补「op-path affine 覆盖」——kernel 门禁对 fp16/bf16 采用单位 affine 时，另须补一个真实 per-channel affine 的 op 级用例（或在 Stage 5 标为该 trap 的必查项）
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 3 vs `group_norm-group_norm-20261015T152158Z` Stage 5：Stage 3 全绿（L0 17/17、L1 46/46）而 Stage 5 用真实 op 调用路径跑全量 report 时 7 例 fp16 失败——同一现象在 Stage 3 内嵌门禁中因 fp16 采用单位 affine（`_affine_for` 返回 `"unit"`）而从未成为阻塞门禁（`examples/group_norm/_group_norm_kernel/RETROSPECTIVE.md` Stage 3 + `examples/group_norm/RETROSPECTIVE.md` Stage 5；任务工作区，未上库）
+  - 量化证据：`examples/group_norm/SESSION_TIMING_ANALYSIS.md#3` 方案 2——Stage 3 内嵌 fp16 门禁用真实 affine 可在 Stage 3 闭环，省掉 Stage 5 的整轮定位（约 815 s）
+  - 形态边界：凡 wrapper/op 把 affine 挪到 kernel 之外施加的算子（GroupNorm 的 per-channel `(C,)` affine 不匹配 kernel 的 row-broadcast `(D,)`）都可能命中；同任务实测 fp32/bf16 真实 affine 复刻各 0 违反（6 seeds），仅 fp16 不可作阻塞
+- repro: repro-missing（流程规则；复现条件 = 读 `.agents/skills/tilelang-op-develop/SKILL.md` Phase 4/5 段，确认是否含「kernel 门禁用单位 affine 时须补真实 affine 的 op 级用例」口径）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15~16（流程规则，无运行时依赖）
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 4「执行测试」第 2 条之后追加一条门禁口径）
+    定位锚: "2. L0 通过后扩展 L1/L2/Boundary 并跑全量 `--level all`。"
+    new 文本: 同上原文 + 追加：
+      3. **分层舍入算子的门禁口径（op-path affine 覆盖）**：当算子契约是「kernel 输出已舍回输入 dtype + 上层再施加 affine/bias」时，kernel 级门禁的 fp16/bf16 对照须用**单位 affine**（或 fp32-affine + 单次舍回）；同时补一个**真实 per-channel affine 的 op 级用例**（复刻 wrapper/op 的调用路径）作为非阻塞 informational——fp16 的真实 affine 复刻会因二次舍入在 ≤0.1% 元素上超过 atol 1e-3，若误作阻塞判据会拒绝一个正确的 kernel；反之若只跑单位 affine，该接口分层陷阱在 Stage 3 完全不可见（2026-10-15 group_norm 实证：Stage 3 全绿、Stage 5 report 7/21 例 fp16 超差，定位 + 路由开销 ≈815 s；现象与最小复现见 pattern-library traps-runtime.md TRAP-fp16-op-affine-double-rounding）。
+    动机: 门禁的「变体覆盖」目前只覆盖 shape/dtype/结构分支，不覆盖 affine 施加层；分层算子在本族的占比不低（norm 族全部 per-channel affine 由 op 层施加），一条口径可让该 trap 在 Stage 3 内闭环。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-group_norm-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 与 VP-2026-0255（知识侧：分层舍入审计与门禁口径 → precision-patterns.md）、VP-2026-0065（门禁变体集覆盖 wrapper-default 派发路径）互为补充：0255 记录事实与判据、本条把动作写进 develop 流程、0065 管 config 派发路径。
+
+## VP-2026-0258
+
+- type: R
+- title: `tilelang-op-design` Phase 4 验证方案补「oracle conditioning 审计」——给出容差的用例须核对 oracle 自身在该位形的数值噪声 < atol、且分层舍入不使该用例不可达；不满足的位形放 Boundary（non-blocking）
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 3：检视通过的 DESIGN §8.3 测试计划含两个在官方容差下**不可能通过**的用例——① L0-16「精确常量行（var=0）fp32」首轮 max_diff = 2.459e-05、violations 4096/4096，而 kernel 输出精确为 0.0（逐元素核对）；`F.group_norm` 自身在该位形返回 -2.459e-5（> atol 1e-5）且 mean/var 报 3.7/0.0；② L0-17「op 级端到端 fp16」见 VP-2026-0255（接口二次舍入）。二者均非 kernel 缺陷，却使 Stage 3 首轮必然 FAIL 并触发一次精度修复循环（`examples/group_norm/_group_norm_kernel/RETROSPECTIVE.md` Stage 3；任务工作区，未上库）
+  - 伴生实例（同任务 L2）：大均值小方差（3.7±1e-2）下任何非 torch 归约序的 fp32 实现差 ~3.6e-5 > atol 1e-5（与 mean 的 fp32 ulp 4.8e-7 × rstd~1e2 同阶）
+  - 处置先例：两例最终降为 Boundary / L2 informational（non-blocking），门禁结果 L0 17/17、L1 46/46
+- repro: repro-missing（流程规则；复现条件 = 读 `.agents/skills/tilelang-op-design/SKILL.md` Phase 4 第 9 项「验证方案」，确认是否含 oracle conditioning 审计条款）
+- toolchain_stamp: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15（流程规则；现象侧为 torch 2.9.0+cpu 设计期脚本）
+- target_doc: .agents/skills/tilelang-op-design/SKILL.md
+- delta: |
+    动作: update（Phase 4 列表第 9 项「验证方案」行末追加一句）
+    定位锚: "9. 验证方案（Golden + **L0 门槛测试计划**；完整分层套件 L1/L2/Boundary 交由 `tilelang-op-develop`，不在此枚举）"
+    new 文本: 同上原文 + 追加：
+      **oracle conditioning 审计**：给出容差的每个 L0 用例须核对两点——① **oracle 自身**在该位形下的数值噪声量级是否 < atol（退化位形：常量行 / var=0 / 大均值小方差 / 极端动态范围；`F.group_norm` 在 var=0 行自身返回 -2.459e-5 而精确值为 0，已大于 atol 1e-5）；② 分层舍入是否使 kernel 无法达到该容差（「kernel 输出已舍回输入 dtype + 上层再施加 affine」的算子，fp16 的真实 affine 复刻不可作阻塞）。不满足的位形写入 Boundary（non-blocking）并在 §8.3 标注理由（2026-10-15 group_norm 实证：两个不可能通过的用例进阻塞 L0 使首轮必然 FAIL 并触发一轮精度修复循环）。
+    动机: 测试计划的容差与位形成对时，oracle 侧噪声与接口舍入都会让「正确实现必然 FAIL」——这类失败与真实缺陷在同一条门禁里不可区分，白耗一轮精度修复；审计只需核对 oracle 在该位形的噪声量级，属设计期零实验成本项。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 源复盘给出「tilelang-op-design 或 design-review」两个候选 target；本条取**设计侧**（验证方案的作者），检视侧配套见 VP-2026-0259/0260 同文件族。如需改路由到 design-review 维度 6（验证方案）请在审批时说明。
+
+## VP-2026-0259
+
+- type: R
+- title: `tilelang-design-review` 补仲裁规则——pattern-library 条目正文与其 provenance 原始实测报文冲突时，**以原始实测报文为准**并在 REVIEW.md 机械复核段登记冲突
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 2：UB 平台值冲突——`traps-compiler.md#TRAP-UB-multibuffer-inflation` 正文/ada `opt_log.md` L234 记「fp32 8 B 与 16 B resident 同为 26 B/elem」，而同族前作源码注释的原始溢出报文（`_ada_layer_norm_kernel.py` L138-139）为「fp32 bm=3 N=4096 → 精确 245760 B = 20×3×4096、bm=4 N=3000 → 240000 B = 20×4×3000」；两者对本 kernel 完全同形的结构给出 20 vs 26（差 30%，且跨 192 KB 容量边界），直接决定维度 2 判 pass/warn/fail（`examples/group_norm/_group_norm_kernel/REVIEW.md` + RETROSPECTIVE.md Stage 2；任务工作区，未上库）
+  - 后续独立实证：本任务 Stage 3 实测 fp32 直连双缓冲 `bm=2, D=4096` 编译运行通过（该结构 ≤24 B/elem）——支持原始报文口径、与条目正文 26 B/elem 在该结构上相左（queue VP-2026-0254）
+  - 现行检视流程无该仲裁条款：Phase 1 第 5 步要求「代价类负向论断与 pattern-library 实测条目矛盾 → 维度 8 fail」，但未覆盖「条目正文与其 provenance 报文互相矛盾」时检视侧如何取值
+- repro: repro-missing（流程规则；复现条件 = 读 `.agents/skills/tilelang-design-review/SKILL.md` Phase 1 第 5 步「弃选论证查证（强制）」段，确认是否含条目正文 vs provenance 报文的仲裁规则）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（Phase 1 第 5 步「弃选论证查证（强制）」末尾追加仲裁规则）
+    定位锚: "检索得到但与设计论断矛盾的，维度 8 fail。"
+    new 文本: 同上原文 + 追加：
+      **条目正文 vs provenance 原始报文的仲裁**：pattern-library 条目正文是蒸馏产物，可能与它的 provenance（源码注释里的编译溢出报文、opt_log 原始读数、repro 实跑输出）不一致——涉及容量/性能判定的常数冲突时以**原始实测报文**为准，并在 REVIEW.md「机械复核」段登记该冲突（含条目 ID、冲突数值、采信来源）；同时提示回写该条目（evolver 侧按 D 类 update 处理，见 queue VP-2026-0254 形态）。2026-10-15 group_norm 实证：TRAP-UB-multibuffer-inflation 正文 26 B/elem 与同族前作原始溢出报文 20 B/elem 差 30% 且跨 192 KB 边界，直接决定维度 2 的 pass/warn/fail，而现行规则只覆盖「设计论断 vs 条目」方向。
+    动机: 检视侧对同一常数有两个「权威」来源时无取值规则，只能各自解释；原始报文可追溯到测量行为本身，蒸馏正文可能被泛化（本例即结构类泛化过头）。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 与 VP-2026-0254（数据侧该冲突的 update 提案）成对——本条规定检视侧取值与登记，0254 收口知识域条目。
+
+## VP-2026-0260
+
+- type: R
+- title: `tilelang-design-review` 检查项补两行——维度 0 增「声明形参消费性 / 调用形态双证」、维度 7 增「行号级辅助引用抽查」
+- evidence:
+  - ① 形参消费性（本任务 Stage 1/2 双复盘）：kernel 声明 `weight/bias` 两个 `(D_padded,)` 形参但**全程不读**（op 层 `kernel(x_2d)` 只传 x + NPU wrapper `_identity_affine_for` 单位元分支）；把单位元当真实计算去实现会白付每元素 2 个向量 op。核对手法（可复用四步）：对 prim_func 每个声明形参核其在内核体的**消费性** → 用 op 层调用形态双证 → 单位元消除的等价性用**逐位（ULP）机器证据**（本任务 31 案例 max ulp = 0；`python3 verify_equiv.py`，任务工作区，允许失效）→ 登记「其它调用方传非单位元会静默忽略」的风险行。现行维度 0 表（9 行）无该检查项（`examples/group_norm/_group_norm_kernel/DESIGN.md` §0.1/§0.5/§0.6 R6/§1.6.1 O5 + RETROSPECTIVE.md Stage 1/2）
+  - ② 行号级辅助引用（本任务 Stage 2 抽读）：两处内容级错误——`examples/norm/group_norm.py` 无矩式原型（DESIGN §1.6.0 R1#2/§1.6.1 C1 证据列指向该文件第 43-46 行）、§9.2 的 45% 归因实属 attention vcmp 案例；均不影响实质结论，但现有维度 7 只核「§3.5.3 引用的 examples/ 路径存在」（gate_lint S1-REF-PATHS 机械做掉）、维度 8 只核「负向断言/代价机制前提」，**不承载结论的辅助引用（行号级）无任何检查项**，只能靠 reviewer 自觉抽读（`examples/group_norm/_group_norm_kernel/RETROSPECTIVE.md` Stage 2 Skill Flow Issues 第 3 行；任务工作区，未上库）
+- repro: repro-missing（流程规则；复现条件 = 读 `.agents/skills/tilelang-design-review/SKILL.md` 维度 0 与维度 7 检查项表，确认是否含「形参消费性」与「行号级辅助引用抽查」两行）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-design-review/SKILL.md
+- delta: |
+    动作: update（维度 0 检查项表 + 维度 7 检查项表各追加一行；两锚点同属「检查项补充」，故合为一个提案）
+    定位锚 1（维度 0 表末行）: "| 多输出/变体函数的迁移范围 | 源算子含多输出或变体函数（如 `_*_with_indices_kernel`）时，核对「排除范围」与 manifest 声明（如 `return_indices=False`）一致，无范围蔓延 | 源算子含 indices 变体、manifest 只声明前向，设计未显式声明排除范围 |"
+    new 文本 1: 同上原文 + 追加一行：
+      | 声明形参消费性 / 调用形态双证 | 对 prim_func 每个声明形参核其在内核体内的**消费性**（是否存在实际读取）；凡设计声称「恒为单位元 / 恒定值 / 恒不读」的形参，须以 op 层**实际调用形态**双证（如 op 层 `kernel(x_2d)` 只传 x、wrapper 的单位元分支），单位元消除（去掉 ×1+0）的等价性须有**逐位（ULP）机器证据**（`verify_equiv.py` 类脚本，max ulp = 0）而非「乘 1 显然等价」，并在风险点登记「其它调用方传非单位元会被静默忽略」 | 单位元形参被当作真实计算实现（白付每元素 2 个向量 op）；「恒不读」仅凭设计自述无调用形态佐证；等价性以「显然」代替机器证据 |
+    定位锚 2（维度 7 表「同类引用真实」行）: "| 同类引用真实 | §3.5.3 引用的 examples/ 路径真实存在 |"
+    new 文本 2: 同上原文 + 追加一行：
+      | 行号级辅助引用抽查 | 引用 `examples/`/`docs/` 的具体**行号或函数**时（含不承载结论的辅助引用），至少抽读 1–2 条确认该行/函数内容与引用意图相符；不符记为建议级并在 REVIEW.md 注明 | 引用 `examples/norm/group_norm.py` 第 43-46 行作为矩式原型而该文件无此内容；把 attention 案例的归因数字当作本算子的批注（2026-10-15 group_norm 实证两处） |
+    动机: ① 迁移任务普遍出现「形参保留但恒不读/恒不生效」的分层形态，误当真实计算实现会白付代价；等价性又最容易以「显然」放行（本任务用 max ulp = 0 的机器证据才闭合）。② 辅助引用无规则覆盖时会污染后续任务的证据链（本任务两处内容级错误均未被任何维度覆盖）。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 源复盘把两条分列为「形参消费性」（P）与「行号级辅助引用抽查」（P），但两者的落地形态都是**修改 design-review SKILL.md 的检查项表**——按 merge-policy「SKILL.md 属 Tier 2 写域」就高不就低归 R，并因同一文件/同一性质（检查项补充）合并为一个提案；如审批偏好转 P（Tier 1）需换 target_doc。
+
+## VP-2026-0261
+
+- type: R
+- title: `migration-analysis.md` §5.3 能力映射表补一行——CUDA 专属对齐常量（如 256 元素 SMEM 对齐）在 NPU 无对应约束 → 处置「等价替换（后端常量适配）」，并提示连带核对 wrapper 的 host padding 分支是否随之失效
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 1：`ALIGNMENT = 256` / `_align_up` 随脚手架 wrapper 一起迁移，既非 kernel 参数又直接决定 wrapper 是否做 host 侧 `F.pad`；DESIGN §0.5 ALIGNMENT 行与 §0.6 R7 把它判为「后端常量适配」，按对错分层论证后重导出 `ALIGNMENT = 1`（使 `pad = D_padded − D` 恒为 0，`F.pad` 分支与 `y[:, :D]` 截断分支均不触发）——但迁移设计规范文本**未给判定依据**，存在各任务各自解释的空间（`examples/group_norm/_group_norm_kernel/DESIGN.md`；任务工作区，未上库）
+  - 支撑事实：NPU `T.copy`/向量 op 接受任意行 extent（同族前作 `_ada_layer_norm_kernel.py` 的 L0 用例 N = 13 / 514 / 1152 / 3000 / 4096 全部通过）；直接照搬 256 对齐会让非对齐 workload 多付一整遍张量拷贝（输入流量翻倍）
+- repro: repro-missing（流程规则/映射表行；复现条件 = 读 `.agents/skills/tilelang-op-design/references/migration-analysis.md` §5.3，确认是否含「CUDA 专属对齐常量」映射行）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-design/references/migration-analysis.md
+- delta: |
+    动作: update（§5.3 能力映射表追加一行）
+    new 文本: |
+      | CUDA 专属对齐/padding 常量（如 SMEM 256 元素对齐、`ALIGNMENT` / `_align_up` 类脚手架常量） | NPU 无对应约束（`T.copy`/向量 op 接受任意行 extent） | **等价替换（后端常量适配）**——重导出为「无需 padding」的值使 wrapper 的 host `F.pad` 分支与输出截断分支均不触发；判定依据 = 该常量是否只服务于 CUDA 后端实现细节（不改变算子对外参数列表与语义） | 照搬会让非对齐 workload 多付一整遍张量拷贝（输入流量翻倍）；须连带核对 wrapper 的 padding/截断分支是否随之失效 | 2026-10-15 group_norm：`ALIGNMENT=256 → 1`，`pad = D_padded − D ≡ 0` |
+    动机: 该常量随脚手架迁移且直接决定 host 侧流量，但现行规范未给「后端常量 vs 算法常量」的判定依据与连带核对项，各任务各自解释（本任务靠 DESIGN 内论证自洽通过，无规范可依）。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 与 VP-2026-0056（extracted-import 契约：wrapper 从 GPU 模块导入的 helper/常量构成 re-export 契约）相邻——那条管「名字必须存在」，本条管「这类常量的语义处置口径」；合入时互链。
+
+## VP-2026-0262
+
+- type: R
+- title: 编排/设计侧补「同族前作 Stage 1 工作区已不在库」时的降级来源路径——以 pattern-library durable 条目 + 已上库的集成产物（kernel / 设计快照）为替代来源
+- evidence:
+  - task group_norm-_group_norm_kernel-20261015T152755Z Stage 1：「参考同族前作 RETROSPECTIVE.md 的 Transferable Lessons」这一调度约定在本任务**不可执行**——前作（ada_layer_norm）的 Stage 1 任务工作区未在本仓留存，`cases.md` 的 CASE-norm-adalayern-migration 条目 provenance 指向已失效路径；实际改以 pattern-library durable 条目 + 已上库集成产物（`examples/TileOps`... 见同族前作的 kernel 与设计文档快照）作为教训来源，改走一圈额外的 Glob/Grep（DESIGN.md §0.7「同族前作（形态参照）」注；任务工作区，未上库）
+  - 机制背景：ED-A 已定义「provenance 允许失效 + durable 载体」为知识侧的解耦形态，但**调度模板/设计流程**侧仍按「读前作 RETROSPECTIVE.md」组织输入，缺前作工作区时无成文降级路径
+- repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-design/references/migration-analysis.md` 与 conductor 迁移调度模板，确认是否含「前作工作区缺失时的替代来源」条款）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-design/references/migration-analysis.md
+- delta: |
+    动作: update（「信息源优先级」小节或 §5.3 邻位追加一段降级路径）
+    new 文本: |
+      **同族前作工作区不可用时的降级来源**：迁移设计开工先查两处（源文件模块级 docstring 的隐式契约 / 目标 wrapper 的实际调用形态）；若调度输入指定的「同族前作 RETROSPECTIVE.md」已不在库（任务工作区不随交付上库），等效替代来源为：① `pattern-library/cases.md` 的同族案例条目及其 durable 载体指针；② `pattern-library/traps-*.md` / `layout.md` / `constants.md` / `algorithm-candidates.md` 的同族实测条目；③ 已上库的集成产物（同族前作的 kernel 与设计文档快照，通常在 `examples/` 对应族目录下）。三层替代的信息密度与「读原复盘」等价（ED-A：durable 条目不随过程文件存亡失效），避免每个任务重新发现同一降级路径。
+    动机: 2026-10-15 group_norm 迁移的实际输入缺口——约定不可执行时 agent 只能自行摸索（多走 Glob/Grep 一轮）；成文后可零成本命中。
+- status: pending
+- confirmations: -/-
+- created_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16
+- decided_by: -
+- decided_note: 低优先级（成本量级为一次额外检索轮）；如审批简报需要压缩条目数，本条可合并进 VP-2026-0261 的同一 §5.3 邻位批次。
+
 
 ## Decided（merged / rejected / expired / conflict 归档）
 
@@ -6149,3 +6362,24 @@ decided_by: evolver / human / -   # 裁决者
 - confirmed_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14（不同任务 / 不同算子 / 不同设备与 CANN：+inf 方向确认 + 索引中性机器验证 + 负载画像边界）
 - decided_by: evolver
 - decided_note: 2026-10-14 蒸馏：第二证来自不同任务（argmin 共享 kernel 迁移初例的同一 pad 契约裁决），达 Tier 1 阈值 2/2，本周期合入 `.agents/skills/tilelang-op-design/references/algorithm-candidates.md` ALG-reduction 行 R4 的 **「R4 附注：TileOPs reduce 族的 Op 层 pad 契约（两证）」**段——按原提案 delta 的四个要点展开（契约与声明宽度 / pad 单位元方向 / **pad 契约下的索引中性**〔第二证新增，机器验证〕/ **高杠杆翻转的边界**〔第二证修正：负载画像决定收益，argmin 无窄 N 负载时保留契约优于翻转〕），front-matter `kb_links` 同步补 CASE-argmax-argreduce-integration。原提案「高杠杆项最高 64×」的表述在合入文本中按第二证加负载画像前提，防无条件泛化。
+
+## VP-2026-0043
+- type: D
+- title: layernorm 矩式方差（var=E[x²]−E[x]²）fp32 计算域失败定量：mean≈3000/σ≈0.5 时 fp64err 1.4e3（两遍式 6.3e-4，差 6 个量级）、违反率 25%，fp16 粗栅格 83%——「须评估 catastrophic cancellation」从定性升定量
+- evidence:
+  - examples/ada_layer_norm/_ada_layer_norm_kernel/verify_equiv.py（moment_form + run_rejection_evidence 段——torch CPU 设计期脚本，无 NPU 依赖）
+  - examples/ada_layer_norm/_ada_layer_norm_kernel/RETROSPECTIVE.md（Stage 1 Value Point Proposals 首行）
+  - 〔2026-10-16 第二证（不同任务 / 不同算子，norm 族同形态），task group_norm-_group_norm_kernel-20261015T152755Z〕`examples/group_norm/_group_norm_kernel/{DESIGN.md §1.6.1 否决项表, verify_equiv.py}`（任务工作区，允许失效）：group_norm 形态独立实测——大均值 fp16 **相对误差 6.018e3**、违反 1536 元素；**padding 抵消角点**（D=2）基线矩式 0.995 vs 精确两遍式 0.0094
+- repro: repro-missing（两任务均为设计期 verify_equiv.py 脚本，过程文件；知识域最小 repro 待同族任务回填——矩式 vs 两遍式差分最小化仅需数行 torch CPU 脚本）
+  - 〔provenance，允许失效〕任务内复现命令：python3 examples/ada_layer_norm/_ada_layer_norm_kernel/verify_equiv.py（输出「C2 rejection evidence」段）；python3 examples/group_norm/_group_norm_kernel/verify_equiv.py（rejection 段与 O4 corner evidence 段）
+- toolchain_stamp: 首证 torch CPU（设计期脚本）+ tilelang 0.1.2+a83118285a / 2026-09-10；第二证 torch 2.9.0+cpu + tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md
+- delta: |
+    update ALG-layernorm R1 行（R1 的 pending 指针转为条目引用）：
+    R1 单遍式矩方差的 catastrophic cancellation 定量边界——**两任务实测**：① ada_layer_norm 2026-09-10（torch CPU，verify_equiv）mean≈3000/σ≈0.5（pad 校正小 N 大均值位形）时矩式 fp64err 1.4e3 vs 两遍式 6.3e-4（差 6 个量级）、容差违反率 25%，fp16 粗栅格（6e4 行）违反率 83%；② group_norm 2026-10-15（group_norm 形态）大均值 fp16 相对误差 6.018e3、违反 1536 元素，padding 抵消角点（D=2）基线矩式 0.995 vs 精确式 0.0094——两遍（中心化）式为默认候选。配套：GPU 源的 256-pad 方差校正在 NPU 精确 N 式下可整体舍弃且数值更优（恒等式机器验证 0 违反，pad 列贡献 m² 显式减去）。
+- status: merged
+- confirmations: 2/2
+- created_by: task ada_layer_norm-_ada_layer_norm_kernel-20260910T132324Z 2026-09-10
+- confirmed_by: task group_norm-_group_norm_kernel-20261015T152755Z 2026-10-16（不同任务 / 不同算子 / 跨工具链 9307929320d，group_norm 形态独立定量 + padding 抵消角点）
+- decided_by: evolver
+- decided_note: 2026-10-16 蒸馏：第二证来自不同任务（group_norm 迁移，norm 族同形态、跨工具链），达 Tier 1 阈值 2/2，本周期合入 `algorithm-candidates.md` ALG-layernorm R1 行（两证并列定量 + pending 指针转条目引用）。知识域 repro 维持 `repro-missing`（与 VP-2026-0173/0043 首证合入先例一致）。

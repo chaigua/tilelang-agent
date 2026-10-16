@@ -525,6 +525,24 @@ pool 家族**第六个**迁移算子、**双输出（value + int64 indices）1D 
 **适用触发条件**：双输出（value + index）池化/argmax 类算子迁移或设计——索引契约逐要素实测、退化特化逐路输出独立可证、空窗口契约与 torch-oracle 陷阱、索引型 UB 记账、`_plan` 逐字复现设计闭式、等价脚本分支采样；Stage 5 集成期 torch 多输出 API golden 可用性核对（静默损坏判据 = dtype/shape 与契约不符）。
 
 ---
+id: CASE-norm-groupnorm-migration
+kind: case
+family: [norm, reduction]
+mode: [developer]
+dtype: [fp32, fp16, bf16]
+device: 910B3
+status: verified
+origin_task: group_norm-group_norm-20261015T152158Z（op 级）/ group_norm-_group_norm_kernel-20261015T152755Z（函数级；Stage 1/2/3 各 1 attempt、Stage 5 attempts 2）
+toolchain: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15～16；torch 2.9.0 + torch_npu 2.9.0.post8
+repro: none
+---
+
+### `examples/group_norm/_group_norm_kernel/` + `examples/TileOPs/tileops/kernels/norm/group_norm/`（任务工作区/集成包，未上库）
+
+**durable 载体**：fp16 分层 affine 二次舍入陷阱自包含于 traps-runtime.md TRAP-fp16-op-affine-double-rounding（含知识域 repro）；row-reduction 迁移基准形态见 algorithm-candidates.md ALG-layernorm R4；矩式方差定量边界见 ALG-layernorm R1（本任务为第二证）；UB 膨胀平台值第三结构数据点见 traps-compiler.md TRAP-UB-multibuffer-inflation 与 queue VP-2026-0254；rsqrt 近似指令绕法见 traps-runtime.md TRAP-vrsqrt-plain-precision。
+
+norm 族 **GroupNorm 迁移档案**（同族追加于 ada_layer_norm 之后；Developer 单函数、Stage 1/2/3 各 1 attempt 零返工）。要点：① **affine 分层**——op 层经 `kernel(x_2d)` 只传 x，per-channel `(C,)` weight/bias 留在 op 层施加；kernel 的 `(D_padded,)` 行广播 affine 形参保留但恒为单位元（D-1 机器验证 max ulp = 0），单元测试的 affine 模式作为 kernel 参数自造（`_run_case(affine="op"/"unit")` + `_affine_for(dtype)`）；② **Stage 3 全绿 → Stage 5 fp16 marginal 超差**：kernel 级 fp16 门禁用单位 affine 遮蔽了 op 路径真实 per-channel fp16 affine 的二次舍入（7/21 例失败、每例 1–3 元素、max ~1.7e-3 vs 1e-3），逐位比较确证 kernel 无缺陷（0/4096）→ 用户显式授权 ops 层**单点**修复（fp32 affine + 单次 `.to(dtype)`，备份 `history_version/group_norm.py_s5_attempt2.bak`、diff 仅该一处）后 19/0/2（见 traps-runtime.md 同名条目、queue VP-2026-0256/0257）；③ **UB 平台值第三结构数据点**——fp32 直连双缓冲（`stage`+`x_f32`+`sq_f32`+5×(bm,1)）`bm=2, D=4096` 编译运行通过 ⇒ 该结构 ≤24 B/elem，证伪「fp32 直连恒为 26 B/elem」在该结构的普适性（与原始溢出报文 `245760 B = 20×3×4096` 的 20 B/elem 同向）；④ **矩式方差灾难性抵消第二证**（group_norm 形态：大均值 fp16 相对误差 6.018e3、违反 1536 元素；D=2 padding 抵消角点基线 0.995 vs 精确式 0.0094，见 ALG-layernorm R1）；⑤ **msprof bench 4 例**（`n=8,c=128,g=32,spatial=[32,32]` fp16 10.7802µs / bf16 11.0602µs；`n=4,c=256,g=32,spatial=[28,28]` fp16 8.1802µs；`n=4,c=128,g=16,spatial=[30,30]` fp16 6.0201µs；roofline util 10.5–15.4%，带宽 1.75 TB/s——与 constants.md CONST-fabric-bw「聚合 ≥1.73 TB/s」同量级、独立数据点）；⑥ **设计侧复用形态**：wrapper 重导出 `ALIGNMENT = 1` 使 host `F.pad` 分支与 `y[:, :D]` 截断分支均不触发（256 对齐属 CUDA SMEM 后端实现细节、NPU 无对应约束），`T.vsqrt`+`T.vdiv` 组合替代 `T.vrsqrt`，oracle conditioning 审计把「精确常量行（var=0）」与「大均值小方差」降为 Boundary（`F.group_norm` 在该位形自身返回 -2.459e-5 而精确值为 0）。适用触发条件：groupnorm/layernorm 类**分层 affine** 迁移（kernel 只出归一化张量、affine 留 op 层）；fp16 集成期 marginal 精度失败的分层定位；norm 族 UB 预算与矩式/两遍方差取舍设计参考。
+---
 id: CASE-quant-fp8-quant-migration
 kind: case
 family: [quantization, fp8, elementwise]

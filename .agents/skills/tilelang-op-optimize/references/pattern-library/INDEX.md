@@ -120,6 +120,7 @@
 | TRAP-index-reduce-extremum-direction | 索引归约极值方向由「写入语义 + 候选集」决定——单遍破纪录集取 max / 两遍等式集取 min，混搭即静默错值 | verified |
 | TRAP-argreduce-edge-semantics | argreduce 边界语义三基准分野：±0.0 可区分全序（NPU）/ NaN 传播→掩码全失败输出哨兵 `2^30`（两证）/ ±inf 精确——golden 选择与容差设计据此分野 | verified |
 | TRAP-out-idx-uint8-dtype-fallback | `@tilelang.jit(out_idx=...)` 对非白名单输出 dtype（uint8 字节载体）静默 fallback 到 `torch.float32`（shape 对、dtype 错、不报错）；绕法 = 显式传输出张量（含 repro） | verified |
+| TRAP-fp16-op-affine-double-rounding | fp16 分层算子（kernel 舍回 dtype + op 层 dtype affine）二次舍入在 ≤0.3% 元素上超 atol=rtol=1e-3；kernel 逐位正确（0/4096）、op 层 fp32 affine 单次舍回后 0 失败（含 repro，纯 CPU） | verified |
 
 ### constants.md — 硬件常数表（D-2，设计期 roofline 口径）
 
@@ -174,6 +175,7 @@
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
 | CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
 | CASE-quant-fp8-quant-migration | quantization 族首个 / **字节载体（fp8）首例**（软件 e4m3 编码 + uint8 载体 + host `.view` 保契约；舍入/符号/幂三陷阱 + 覆盖缺口假 PASS；集成 8/8 + bench 3/3 BW 1.75 TB/s） | verified |
+| CASE-norm-groupnorm-migration | norm 族 GroupNorm 迁移档案（affine 分层 + Stage 5 fp16 二次舍入逐位定位 + UB 平台值第三结构数据点 + 矩式方差第二证；集成 19/0/2、bench 4 例 6.0–11.1µs / 1.75 TB/s） | verified |
 
 ### repro/ — 最小可复现代码（ED-B）
 
