@@ -109,6 +109,8 @@
 | TRAP-vec-cube-ub-scratch-role-conflict | 同一 UB buffer 兼作 vector 暂存与 GEMM 输出 ⇒ 消费端**静默读到损坏值**（2048 cell 全错、`max_diff 1.33e2`、无报错无 NaN）——一个 buffer 只能有一个引擎写者角色；kernel 级后果 = causal 档 mask 惩罚与 g2 抢 `dsum` 致 `dk` 最大 1.96e4（独立 `dsd` 缓冲后 6.7e-4）；**2026-10-16 新增，含 repro** | verified |
 | TRAP-reduce-rowsum-store-shape | 行归约输出 `(blk_s,1,1)` 直写 S 连续段被 codegen 拒（`bufferization.materialize_in_destination` shapes incompatible）——region 单位维**只能从左侧折叠**、payload 轴须两侧尾部对齐；绕法 = 1-D UB 中转（`max_diff 3.3e-06`）或单轴 `T.transpose`（引入 `vtranspose`）；**2026-10-16 新增，含 repro** | verified |
 | TRAP-bishengir-crash-s32 | `bishengir-compile` **形状/dtype 敏感段错误**（CANN 9.0.0）**两形态**：① `S == 32`（Developer persistent+Pipelined+动态 extent copy+gemm+行原子骨架；`S ∈ {16,24,40,48,56,64,96}` 全编译、与 tile/heads/dim/is_causal 无关）② `(B=1,H=64,D=128,S=2048,fp16)`（fwd/bwd 两条 bench 同崩，同 shape bf16 与其余 shape 全正常）⇒ 后端缺陷、须与精度告警分通道记录；**2026-10-16 新增（形态①含 repro，形态② repro-missing）**（重验触发词：`S=32: COMPILED` / `(batch1,heads64,dim128,seq2048,fp16): COMPILED`） | verified |
+| TRAP-window-decimation-primitives | 窗口类「折叠成宽归约」的三种抽取原语实测**全部不可用**：`T.gather` ≈**1.8 ns/元素** / `extract_slice` 行距不匹配 ⇒ UB→GM→UB 物化**且被标量化**（301.9→**23328 µs**，scalar 22878）/ 位置主序改造仍 998.92 µs > baseline 302 µs；逃逸方向 = 改 CH 形状与 DMA 行长（含 repro） | verified |
+| TRAP-deinterleave-two-phase-only | `T.deinterleave` 相位数上限实测 = **2**：`channel_nums=2` 语义正确（含 region 目标），`=3` → `bishengir-compile` **SIGABRT**（rc=−6，NPU IR 已生成后崩溃；docs §2.3 称「特殊限制：无」未标注上界）；2 相正向参照见 CASE-argmax-argreduce-stage4（130.3×）（含 repro + 重验触发词） | verified |
 | TRAP-npuir-ir-gate-loop-scope | IR 形态门禁的 `scf.for` / `if_then_else` **禁令按路径/变体限定**——驻留（单 tile）路径 lowering 无 `scf.for`，列分块路径的静态 `T.serial` tile 循环**合法地**含 `scf.for`；把 `TRAP-parallel2d-bm-ge2-scalarize` 的禁令逐字套到 tiled 变体会对**完全向量化**的 kernel 报假失败；正确门禁 = 对所有变体断言 `vreduce <mode>` + `reduce_dims=[1]` + 无 `arith.cmpf`，禁令只对驻留变体（含 repro，compile-only） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
@@ -140,6 +142,7 @@
 | CONST-L1-port-bw | L1 端口 r+w ≈ 148–154 GB/s/核（Cube 操作数流地板） | verified |
 | CONST-vector-launch-overhead | 向量发射 ~0.5µs/op；f16≈f32 | verified |
 | CONST-fabric-bw | fabric 聚合 ≥1.73 TB/s | verified |
+| CONST-msprof-ratio-compute-roofline | msprof roofline `Ratio` = `(total_fops/TaskDuration)/computility`，**不与 latency 成反比**（结构改写同向压低分子 `total_fops`：10.12x 时延仅换 1.26x / 1.60x 时延仅换 1.076x）；设 Ratio 硬目标前必算上限 `(total_fops/时延地板)/computility`（resnet ≈12% ⇒ 70% 结构不可达；本任务三条目标线全部不可达）；分子恒定时退化为 `∝1/duration`、分母随 op 混合比塌缩可虚高 | verified |
 | CONST-mte2-degradation | MTE2 带宽退化曲线 + 混合流量地板 + L2 驻留口径（数字见条目） | verified |
 | CONST-copy-floor-method | copy-floor 标定法（方法学） | verified |
 | CONST-flag-id-budget | flag id 预算 ≤15/核（n-block 下标可贴限） | verified |
@@ -151,6 +154,7 @@
 | CONST-reduce-dims0-skinny | dims=0 长条形 (K,4) 逐列串行（(400,4)=33µs）；transpose+dims=1 绕法 | verified |
 | CONST-npuir-f32-division-not-ieee-rounded | npuir fp32 除法非 IEEE correctly rounded：`T.vdiv` 2-D ~6.1% lane 1 ulp 偏、标量除法式 135/256 值 1–2 ulp 偏、**列形态 (M,1)/(M,1) 逐位精确**（含 repro） | verified |
 | CONST-copy-floor-dma-granularity | 同形纯拷贝地板随 **DMA 粒度**变化（(2048,4096) fp16 / 910B3：16 KB 15.82µs=1.06TB/s、64 KB 13.61µs=1.23TB/s；64 KB 档需 4× UB，与算法缓冲不可共存） | verified |
+| CONST-dma-burst-rowstride-floor | 2D 跨步行块读地板由**行长（burst）/行距**决定：行长 128 B + 行距 8 KB（窗口 span 载入形态）实测 **≈0.38 TB/s**（比同库 16 KB 连续块档 1.06 TB/s 低 ≈2.8×）；同探针内 UB 内 `(80,64)→(64,80)` 转置 `aiv_vec` 仅 6.594 µs/2080 次 ⇒ **瓶颈是行长不是转置**（含 repro） | verified |
 | CONST-aiv-time-decomposition | `Task Duration ≈ max(mte2, vec) + scalar` 分解口径（三处同档拟合）+ ratio 读法（vec/scalar 是 aiv_time 分量非总时长占比）+ 「UB 字节吞吐」误判更正（链式改 fp16 仅 −1.7%） | verified |
 | CONST-msprof-task-floor-910B3 | msprof op Task 固定地板（空 kernel 3.37µs / 固定开销 ≈2.4µs）+ 必需流量地板 4.25µs + 逐元素 pass 单价 0.23–0.3µs + 拟合式 `Task ≈ aiv_time + 2.4–2.6µs` | verified |
 | CONST-reduce-ub-per-element | BishengHIR 归约 lowering 的 UB 单价：按 `ch×H*W` 线性记账、单价由归约链形态决定（原位平方和 ≈32 / 非原位 ≈64 / fp16 掩码 ≈96 / bool 掩码 ≈128 B/元素），**绑定 3-D 整平面 `(CH,1,H*W)`+dim=2**；CH 上限 = 196608/(单价·H*W)；探针须 DCE 免疫；**2026-10-16 形态适用域追加**：2-D 行归约（`(bm,tn)`+dim=1）单价按 dtype 分档——fp16/fp32 精确 8.00 / **bf16 12.00**（`vcmp` 上抛 f32）B/元素，硬上限 24576（fp16/fp32 口径），竞态安全档 `E_cap=8192`；**第四数据点**（`any`，独立重标定）：`reduce_min` 链与 `sum`/`max` 链**同价**（归约算子不额外定价） | verified |
@@ -185,7 +189,7 @@
 | CASE-pool-adaptivemaxpool2d-migration | pool 族同族追加档案（max 归约 NaN 追踪 + 无代数化简 + vcmp-ne 陷阱定位 + 首轮逐位 max_diff=0 + 集成 bench 3 例）——**Stage 4 续档**（C4 扁平宽归约 + 原位平方-sum NaN 追踪 + 单波 CH 判据；PL-1.13 在纯 Vector 上不适用；320.83→18.86 µs） | verified |
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7）；**Stage 4 续档**（2026-10-15：扁平整平面读 + dtype 宽度扫描 + 写侧生产者纪律 + 双输出单波 CH；global 144.4→91.9µs/1.57x；C4 双输出被归约链 UB 单价封顶） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0） | verified |
-| CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工） | verified |
+| CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工）——**Stage 4 续档**（`[DESIGN_LIMIT]`：窗口类三项 70% Ratio 在冻结设计族内不可达，路由附录补记；`_CH_MAX` 64→128 消尾块 padding lane（−37.6%/−26.8%）+ C4 等代价 NaN 追踪（−8.6%）；两个结构族被实测否决 + 相位数/转置/行长三探针；三条 durable 载体） | verified |
 | CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
 | CASE-quant-fp8-quant-migration | quantization 族首个 / **字节载体（fp8）首例**（软件 e4m3 编码 + uint8 载体 + host `.view` 保契约；舍入/符号/幂三陷阱 + 覆盖缺口假 PASS；集成 8/8 + bench 3/3 BW 1.75 TB/s） | verified |
 | CASE-norm-groupnorm-migration | norm 族 GroupNorm 迁移档案（affine 分层 + Stage 5 fp16 二次舍入逐位定位 + UB 平台值第三结构数据点 + 矩式方差第二证；集成 19/0/2、bench 4 例 6.0–11.1µs / 1.75 TB/s） | verified |

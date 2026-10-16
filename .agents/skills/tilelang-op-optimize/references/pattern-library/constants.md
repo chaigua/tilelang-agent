@@ -79,6 +79,35 @@ repro: repro-missing
 shared=distinct=pp 无争用惩罚。fa4096 级 workload 现聚合 1.41TB/s 未触顶——地板因子排序通常为 L1 端口 / 向量发射率先于 fabric。
 
 ---
+id: CONST-msprof-ratio-compute-roofline
+kind: constant
+family: [pooling, reduction, general, migration]
+apis: [msprof]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z（Stage 4 首证）/ max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 第二证，不同任务/不同算子） / adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z（round-3 分母塌缩分支补充）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第二证 tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+source: profile-collection.md §4.1（纯选择/带宽受限算子 Ratio 判读口径）/ queue VP-2026-0081（采数管线）/ VP-2026-0227（本条来源提案）
+repro: repro-missing
+---
+
+### msprof roofline `Ratio` 是 compute-roofline 利用率，**不与 latency 成反比**——结构改写会同时压低分子 `total_fops`
+
+- **口径（官方 report 复现，`tileops.benchmark.msprof_roofline.compute_from_csvs`，与 `visualize_data.bin` Method 1 一致）**：`perf = total_fops / TaskDuration`（`total_fops` = `ArithmeticUtilization.csv` 实测累加的 `aiv_vec_fops`，**非** manifest 理论 flops）；`AI = total_fops / total_bytes`（`total_bytes` = L2 read-miss 数 × 128B cacheline）；`peak = min(AI × gm_bw(1.8 TB/s), computility)`（`computility` = 器件算力峰值按实测 dtype 占比加权）；**`Ratio(%) = perf / peak`**。
+- **结论**：**分子与分母都会被结构改写影响**——改写若删减 op 数（窄归约/掩码平面/转置等），`total_fops` 同向下降，时延收益被部分抵消。因此「时延降 X 倍 ⇒ Ratio 升 X 倍」的推论不成立（与 profile-collection.md §4.1 的判读动作衔接）。
+- **两证实测（不同任务 / 不同算子，工具链亦不同）**：
+  - 首证（`adaptive_avg_pool2d` C4 路径，2026-10-15 report）：时延 169.2634 → 16.7203 µs（**10.12x**）而 Ratio 2.3008% → 2.9020%（**1.26x**）——`total_fops` 16.86M → 2.20M（7.66x）、`performance` 0.1043 → 0.1315 TOps/s（1.32x），分母 `computility` 4.5326 TOps/s 固定。
+  - 第二证（`max_pool1d` general/窗口路径，task …20261016T090104Z Stage 4）：`_CH_MAX` 64→128 的结构改写使 sincnet 时延 301.936 → 188.454 µs（**1.60x**）而 Ratio 13.727% → 14.776%（**1.076x**）——`total_fops` 153.4M → 106.0M（−30.9%）；若 fops 不变该比值应为 ≈22.0%。同任务 textcnn/ecg 分别 18.334%→20.053%（时延 1.09x）与 12.229%→15.306%（时延 1.37x）。
+  - **边界解释（`performance × duration` 反解 `total_fops`）**：分子**恒定**时本条退化为 `Ratio ∝ 1/duration`（fp8_quant 2026-10-15 实测：`total_fops` 保持 ≈17.83 M ⇒ 21.2x 时延 vs 21x Ratio）；分母随 op 混合比**塌缩**时 Ratio 可虚高（adaptive_avg_pool2d round-3：删 fp32 平面 ⇒ `computility` 4.53→0.28 TOps/s、Ratio 2.81%→45.40% 而时延仅 −2.9%）。判别动作 = 由 `performance × duration` 反解 `total_fops` 并与基线对比。
+- **可达性筛查（设 Ratio 硬目标前必算，零成本）**：`ratio_max ≈ (total_fops / 该 workload 的时延地板) / computility`。首证算例：地板 ≈4 µs ⇒ 上限 ≈0.55/4.5326 ≈ **12%** ⇒「Ratio → 70%」对无矩阵乘的池化/选择类算子在 compute-roofline 口径下结构不可达。第二证的算式（窗口路径）：sincnet 70% 要求 T ≤ `105.98M / (0.7×3.806e12)` = **39.8 µs**，而实测 `mte2` 单独 55.482 µs 已超该线；textcnn（带宽受限支）70% 要求 `4.194 MB / (0.7×1.8 TB/s)` = **3.33 µs < 空 kernel 地板 3.37 µs**（`CONST-msprof-task-floor-910B3`）。判据：上限 < 目标时改以 **Task Duration / 流量达成率** 为判据，或按 `perf-feedback.md` §1 走口径不可达处置。
+- **口径纪律**：`Ratio` 是「比较/归约 op 的记账密度」，不是硬件利用率；`Ratio` 硬目标与 latency 目标可能直接冲突（round-3 实证：CH=120 使 Ratio 68.97% 而时延 +2.9% 回退）。引用本条时须同注 `computility` 与 `total_fops` 两个口径来源（`ArithmeticUtilization.csv`），并用同一个 Task Duration 口径（msprof op median）。
+- **证明**：`repro-missing`——结论来自完整 workload 的端到端 report，无法当场最小化为知识域脚本；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 `run.json` 的 `total_fops` / `computility` / `duration` 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`；③ `(total_fops/时延地板)/computility < 目标 ⇒ 结构不可达`。溯源（任务工作区，允许失效）：首证 `examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/opt_log.md#§12` + `examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`；第二证 `examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/opt_log.md#§2.2` + `perf_feedback.md`。
+
+> 〔2026-10-16 蒸馏，Tier 1 合入：queue **VP-2026-0227**（D，`repro-missing`）`confirmations` 1/2 → 2/2（第二证 = task `max_pool1d-_max_pool1d_kernel-20261016T090104Z`，不同任务 / 不同算子 / 不同工具链，且满足该条目自定的第二证条件「以 Ratio 为硬目标且结构改写改变 op 数」）→ 按 merge-policy §2 合入 constants.md；条目正文自包含两证数字与可达性算式。〕
+
+---
+
 id: CONST-mte2-degradation
 kind: constant
 family: [elementwise]
@@ -271,6 +300,33 @@ repro: repro/CONST-copy-floor-dma-granularity.py
 - **粒度上限与 UB 预算耦合（本常数的适用边界）**：64 KB 粒度需要 ~4× UB 占用（flat 32768 f16 = 64 KB/缓冲）；而 resident 行块 + 显式向量链的正确算法实测足迹 ≈ **16 B/elem**（bm=4 @N=4096 = 262 KB > 192 KB 档，编译报 `ub overflow, requires 2097408 bits while 1572864 bits available`）——故「大粒度 DMA 地板」与「算法缓冲」在同一 kernel 内**不可共存**，算法形态实际回落到 16 KB 档地板。
 - **用法（设计期 roofline）**：估「同数据通路的时延下界」时，地板取值须**同时绑定 DMA 粒度与 UB 预算**（16 KB 档 1.06 TB/s vs 64 KB 档 1.23 TB/s，差 ~16%）；按 64 KB 档地板评估需要 4× UB 的算法形态会低估下界。与 `CONST-copy-floor-method`（标定法与 mte2_ratio 判定式）、`CONST-mte2-degradation`（带宽随总流量退化——本条是**粒度**维度，两者正交）配合使用。
 - **证明**：`python repro/CONST-copy-floor-dma-granularity.py`（测量脚本 + 头部断言说明；msprof 重测按头部命令人工执行）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Iteration-1, profiles/round1/, logs/round1/{c_c0_base,d_d1_bm8,d_d3_flat32}.log}`。
+- **低端外推（2026-10-16 追加指针）**：连续块粒度之外还有一条**行长（burst）/行距**轴——2D 跨步行块读（行长 128–156 B、行距 8 KB，窗口类 span 载入形态）实测仅 **≈0.38 TB/s**（比 16 KB 档低 ≈2.8×），见 `CONST-dma-burst-rowstride-floor`（同族不同轴，互链）。
+
+---
+
+id: CONST-dma-burst-rowstride-floor
+kind: constant
+family: [pooling, window, layout, general]
+apis: [T.copy, T.transpose]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize，`probe_tr` 决定性实验）
+toolchain: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（`get_aicore_num()` 实查 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
+source: CONST-copy-floor-dma-granularity（连续块粒度轴；本条是**行长/行距**轴）/ TRAP-transpose-ub-gm-roundtrip（转置误判的负向对照）
+repro: repro/CONST-dma-burst-rowstride-floor.py
+---
+
+### 2D 跨步行块读的地板由**行长（burst 长度）与行距之比**决定，不由带宽上限决定（(32,80,4096) fp16 窗口载入形态，910B3 / CANN 9.0.0）
+
+- **口径**：`msprof op` Task Duration(us)（`--launch-count=20 --warm-up=5 --dump=off`，读 `OpBasicInfo.csv` median）；单 kernel 纯搬运探针（`T.Kernel(40)` persistent，逐 unit 载入 `(CH=80, L=64)` fp16 = 80 行 × 128 B、行距 `L_IN=4096` 元素 = 8 KB，做同形 copy 或 `T.transpose([1,0])` 后写出等量数据）。
+- **实测**：行长 128 B / 行距 8 KB 的读 `mte2 ≈ 51 µs / 520 KB·核` ⇒ **≈0.38 TB/s**（40 核聚合 20.8 MB / 55.5 µs）；`copy` 档 Task **55.461 µs**（`logs/probe_tr_copy.log` 原始 median 56.061 µs，同档）。对照 `CONST-copy-floor-dma-granularity` 的**连续块粒度**轴（同形纯拷贝、dense 行）：16 KB 档 1.06 TB/s、32 KB 档 ≈14.6 µs、64 KB 档 1.23 TB/s ⇒ 本数据点比 16 KB 档低 **≈2.8×**。
+- **同探针的负向对照（排除「窗口类慢是因为要转置」）**：同一探针内 `(80,64)→(64,80)` 的 UB 内 2 轴 `T.transpose` `aiv_vec` 仅 **6.594 µs / 2080 次**，`trans` 档 Task 51.311 µs ≈ `copy` 档 55.461 µs ⇒ **UB 内 2 轴转置本身近乎免费**（`TRAP-transpose-ub-gm-roundtrip` 的降级形态在本 shape 上不触发），时延由**行长 + 行距**决定。
+- **设计期用法（量纲）**：窗口/滑窗类的 span 载入 `x[nb, cb:cb+ch, s0:s0+LSPAN]` 的**行长 = `LSPAN·eb`、行距 = `L_IN·eb`**（`eb` = 元素字节）。容量不等式驱动的短 `LSPAN`（sincnet 合并版 `LSPAN=64` 元素 = 128 B）**同时**把 DMA 突发长度压进 128–156 B 档 ⇒ 该路径的搬运地板被容量取档间接决定。估下界时须把 `LSPAN` 当 **DMA 粒度**用，而不是只当 halo 度量（`LSPAN/(BL·sW)→1`）。
+- **适用域与边界**：适用于「行块 + 大行距」的 2D 区域读（窗口/滑窗、跨行 stride 采样）；**不适用于整平面/连续块**搬运（其地板见 `CONST-copy-floor-dma-granularity`）。本数据点只覆盖 `行长·eb ≤ 156 B`；**≥512 B 档未测**，不外推（中间档待补）。
+- **证明**：`python repro/CONST-dma-burst-rowstride-floor.py --variant {copy,trans}`（测量型：构建 + 跑通 + 打印输出形状；时延按头部 msprof 命令读取，断言为量级/相对关系）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/{probe_tr.py, probe_run_tr.sh, logs/probe_tr_{copy,trans}.log, profiles/probe/tr_{copy,trans}}`；归因侧见该任务 `perf_opt/perf_feedback.md`（`[DESIGN_LIMIT]` 触发项 ② 与「影响面」）。
+
+> 〔2026-10-16 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套齐备）；repro 为 ED-C 机械转正（逐字节拷贝 `probe_tr.py` + 头部登记块，代码与断言零改动，登记后 `py_compile` PASS）。与 `CONST-copy-floor-dma-granularity` 同族不同轴（该条 = 连续块粒度，本条 = 行长/行距），互链不重复；该条正文已补反向指针。〕
 
 ---
 

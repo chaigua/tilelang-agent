@@ -819,3 +819,57 @@ repro: repro/TRAP-bishengir-crash-s32.py
 - **重验触发**：若本 repro 报 `S=32: COMPILED`（形态①）或该 bench 档 `(batch1,heads64,dim128,seq2048,fp16): COMPILED`（形态②）说明对应触发点已被工具链升级修复——按证伪协议刷新版本戳并关闭/收窄对应 capability-gap 条目。
 - **边界/量纲**：判据为二元（编译通过 / 段错误），无性能量纲。
 - **证明**：形态① = `python repro/TRAP-bishengir-crash-s32.py`（三态对照：A `S=32` 抛崩溃、B `S=40` 通过、C `S=24` 通过）。形态② **`repro-missing`**（证据形态 = 单算子 report 的 benchmark 记录，需整包 fwd+bwd + TileOPs 报告链，暂无法最小化）。溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_gqa_bwd_kernel/{repro/TRAP-bishengir-crash-s32.py, history_version 的 d10.py S 扫描 16/24/32/40/48/56/64/96 与 d9.py tile/heads 变体}`；`examples/TileOPs/reports/tileops/20261016_082438_849619_MultiHeadAttentionBwdOp/{run.json,report.md}`（`summary.benchmark_failed=2`、report §Failed Cases 两行）。
+
+---
+
+id: TRAP-window-decimation-primitives
+kind: trap
+family: [pooling, window, layout, reduction]
+apis: [T.gather, T.transpose, T.copy, tensor.extract_slice]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize，`probe_dmg` / `probe_pm` 决定性实验）
+toolchain: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-window-decimation-primitives.py
+---
+
+### 窗口类「折叠成宽归约」的三种抽取原语在本工具链实测全部不可用（region 行距不匹配 ⇒ UB→GM→UB 物化**且被标量化**）
+
+- **背景**：窗口/重叠窗类 general 路径的自然瓶颈是「每输出位置 × 每 tap 一条 **CH 宽**的窄向量 op」（sincnet 实测 `2·k·BL = 156` 条窄 op/单元、全 kernel ≈570K 条、`aiv_vec` 占 `aiv_time` 73%）。结构性出路是把 tap 循环折叠成一个「整 span dilate-max（宽 op）+ 抽取（decimation）」结构。本条目记录该出路的**三条原语级实测否决**（同一任务、同一工具链、均与 baseline 302 µs 对比）。
+- **① `T.gather`（vgather）是逐元素实现，≈1.8 ns/元素**：`(80,21) ← (80,61)` 两次 gather（每 unit 一次，52 单元）使 `aiv_vec` 增加 **≈320 µs**（320 µs / (2·80·21·52) ≈ **1.8 ns/元素**）——抽取本身比它要省的窄 op 更贵。与 `TRAP-C10-strided-gather`（跨步 gather 向量指令缺失）同一根因的**代价侧**数据。
+- **② `tensor.extract_slice` 源/目标**行距不一致**时被 bufferization 降级为 UB→GM→UB 物化，且该物化被标量化**：`(80,61)` 取自 `(80,64)`（结果行 stride ≠ 源 buffer 行 stride）的形态在 sincnet 上使单分支 Task **301.886 → 23328 µs**，其中 `scalar ≈ 22878 µs`（`aiv_vec` 480 µs）——**22328 倍的时延放大**，且编译无任何报错/告警。判据：结构改造必须让**每个 region 操作数与其 buffer 行距一致**（整宽行区间），否则触发该降级。
+- **③ 单点列布局改造（位置主序）不足以救回**：把每个切片都做成整宽行区间（位置主序 `(JLEN, ch)` + `T.transpose` 取回）后，`BL=13` 逐位精确、切片全部连续，Task 仍 **998.92 µs**（`aiv_vec` 771 µs）**> baseline 302 µs** ⇒ 该结构族被实测否决（不是「未穷举即否证」：两个独立结构分支各一实测）。
+- **逃逸方向（同任务实测）**：不要碰「抽取 → 宽归约」，改从**通道分块形状**入手（`CH = min(C, cap)` 且 cap ≥ C，消除尾块 lane 浪费与 `num_logical` 翻倍 ⇒ sincnet −37.7%）与 **DMA 行长**（见 `CONST-dma-burst-rowstride-floor`）。C4/整平面域（`L_out==1`）不受本陷阱影响，其免抽取路径见 layout.md `PL-1.23-flat-spatial-axis-reduce`。
+- **同族条目与缺口**：指令缺失根因见 `TRAP-C10-strided-gather`；物化往返机制族见 `TRAP-transpose-ub-gm-roundtrip`（同一「UB 内 region 操作被降级为经 GM 往返」家族，本条是 **extract_slice 行距** 触发形态且**额外被标量化**）；多相抽取原语见 `TRAP-deinterleave-two-phase-only`。能力缺口登记：`.agents/evolution/capability-gaps.md` **CG-2026-0031**（宽区域跨步抽取无向量原语）/ **CG-2026-0033**（bufferization 物化 + 标量化）。
+- **量纲**：① `ns/元素`；② 倍率（Task 放大 77×，其中 `scalar` 占 98%）；③ 绝对时延对比（µs）。
+- **证明**：`python repro/TRAP-window-decimation-primitives.py --case sincnet --check`（结构正确性）/ 去掉 `--check` 后按头部 msprof 命令测时延（测量型 repro）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/{probe_dmg.py, probe_pm.py, probe.py, logs/probe_dmg_*.log, logs/probe_pm_sincnetbl.log}`；opt_log 侧 `#§5 结构探针`。
+
+> 〔2026-10-16 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套齐备）；repro 为 ED-C 机械转正（逐字节拷贝 `probe_dmg.py` + 头部登记块，代码与断言零改动，登记后 `py_compile` PASS；317 行 / 13.8 KB **超 ED-B 双预算**，按 PL-1.10 先例不裁剪披露——裁剪会破坏多形态可运行对照）。第一手材料同时是 `[DESIGN_LIMIT]` 归因（`perf_feedback.md`「不可移植论证」②③）的量化依据。〕
+
+---
+
+id: TRAP-deinterleave-two-phase-only
+kind: trap
+family: [pooling, window, layout, general]
+apis: [T.deinterleave]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize，`probe_deint` 可行性探针）
+toolchain: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+repro: repro/TRAP-deinterleave-two-phase-only.py
+---
+
+### `T.deinterleave` 相位数上限实测 = **2**：`channel_nums=3` 使 `bishengir-compile` 段错误（非报错、非精度问题）
+
+- **合法形态（case A）**：`T.deinterleave(src, d0, d1, channel_nums=2)` 语义正确——`d0 == x[:, 0::2]`、`d1 == x[:, 1::2]` 逐位相等；**region 目标也成立**（case C：`d0[0:ch, 0:T]` 写入 taller buffer 的切片，未触碰的尾行保持 seed 值 ⇒ 可复用已有缓冲、不额外占 UB）。
+- **失效形态（case B）**：`T.deinterleave(src, d0, d1, d2, channel_nums=3)`（stride 3 的滑窗类需要 3 相）在 **NPU IR 已生成之后**由 `bishengir-compile` **段错误**（rc = −6 / SIGABRT，无 MLIR 诊断）⇒ 相位数 ≥3 在本工具链**不可用**（非「参数不当」）。
+- **文档依据（负向断言）**：`docs/Tilelang.language/shape操作/T.deinterleave.md` §2.1 把 `channel_nums` 描述为 `int`（缺省 `2`）、§2.3「特殊限制说明：**无**」、§2.4 唯一示例为 2 相（`N % 2 == 0` 断言）——即**相位数上界未文档化**；本节结论按实测记录并绑版本戳（未文档化假设）。
+- **绕法**：只用 2 相形态（`channel_nums=2`）；需要 3+ 相时改走逐相 `T.copy`/切片或 reshape 后的多路 2 相分解（代价另计）。**正向参照**：argmax Stage 4 的「窄行宽视图 + deinterleave 相位分解」130.3× 属合法 2 相形态（`pattern-library/cases.md#CASE-argmax-argreduce-stage4`）。
+- **与后端崩溃族的关系**：同属 `bishengir-compile` 段错误家族但触发维度不同——`TRAP-bishengir-crash-s32` 是 **shape × dtype** 敏感，本条是 **API 参数（相位数）** 敏感；两形态是否同源未证（均无 MLIR 诊断可比对），分别登记。
+- **重验触发**：若 repro 的 case B 打印三路 `d0/d1/d2 == x[:, i::3]` 全 `True`，说明该限制已解除——按证伪协议刷新版本戳并关闭/收窄 `.agents/evolution/capability-gaps.md` **CG-2026-0032**。
+- **量纲**：判据为二元（语义正确 / 后端段错误），无性能量纲。
+- **证明**：`python repro/TRAP-deinterleave-two-phase-only.py`（三 case 各自捕获异常并打印 PASS/FAILED，exit 0）；溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/probe_deint.py`。**注**：任务 `opt_log.md#§7.2` 引用的崩溃日志 `perf_opt/logs/probe_deint.log` 在工作区中**不存在**（工作区扫描 0 命中）——durable 证据是本 repro 脚本本身（重跑 case B 即复现），日志路径按 provenance（允许失效）对待。
+
+> 〔2026-10-16 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套齐备）；repro 为 ED-C 机械转正（逐字节拷贝 `probe_deint.py` + 头部登记块，代码与断言零改动，登记后 `py_compile` PASS；179 行超 100 行预算（<8 KB），按 PL-1.10 先例不裁剪披露）。〕

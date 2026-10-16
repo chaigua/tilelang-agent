@@ -37,6 +37,8 @@ decided_by: evolver / human / -   # 裁决者
 
 > **条目迁移（2026-10-14 apply 批次 2）**：VP-2026-0150 / 0047 / 0020 / 0054 / 0116 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 
+> **条目迁移（2026-10-16 蒸馏，max_pool1d Stage 4 optimize）**：VP-2026-0227（msprof roofline `Ratio` 不与 latency 成反比 + 可达性筛查）第二证达标（第二证来自 task `max_pool1d-_max_pool1d_kernel-20261016T090104Z`，不同任务 / 不同算子 / 不同工具链，且满足该条目自定的第二证条件）→ 合入 `pattern-library/constants.md` **新增条目 `CONST-msprof-ratio-compute-roofline`**（含两证数字与可达性算式）+ `INDEX.md` 路由行；完整记录移至下方 `## Decided` 归档区。
+
 ### Tier 1（P 类，2 次独立证据后合入）
 
 > **条目迁移（2026-10-16 蒸馏，group_norm 迁移）**：VP-2026-0043（D：layernorm 矩式方差 catastrophic cancellation 定量边界）第二证达标（第二证来自 task `group_norm-_group_norm_kernel-20261015T152755Z`，不同任务 / 不同算子/族内形态）→ 合入 `algorithm-candidates.md` ALG-layernorm R1 行（定量句写入 R1，pending 指针转为条目引用，两证并列）；完整记录移至下方 `## Decided` 归档区。
@@ -1091,29 +1093,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: D 类无知识域 repro（现象载体为编译警告 + 需 profile 量化）→ 降级 Tier 1。**2026-10-15 补充**：代价已量化（单点 305.5 µs / ≈20 ns/元素，逐元素链上「每 tile 一次可接受」前提被推翻），内容已由 Tier 0 TRAP-vexp2-not-exact-pow2 代价边注承载 ⇒ 合入形态建议为该条目的 update（判据形态）；证据来自同 op 谱系续调任务，不计独立确认，维持 1/2。
 
-## VP-2026-0227
-
-- type: D
-- title: msprof roofline `Ratio` 不与 latency 成反比——结构改写同时压低 `total_fops`，10.12x 时延下降仅换 1.26x Ratio（池化族 169.26→16.72 µs，Ratio 2.30%→2.90%，fops 16.86M→2.20M）；「Ratio 硬目标可达性」须先算上限 `(total_fops / 时延地板) / computility`（resnet ≈12% ⇒ 70% 结构不可达）
-- evidence:
-  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §12 修正附录（append-only 证伪更正——§8 的「同一 roofline 下 Ratio ∝ 1/latency」外推 ≈23.2% 被官方单算子 report 实测推翻）+ §12.2 metric 定义链（`total_fops` = `ArithmeticUtilization.csv` 实测累加**非** manifest 理论 flops、`total_bytes` = L2 read miss × cacheline、`AI = total_fops/total_bytes`、`performance = total_fops/duration`、`roofline_peak = min(AI×bw_peak, computility)`、`ratio = performance/roofline_peak`）+ §12.3（10.12x 时延 vs 1.26x Ratio 的分解：fops 16.86M→2.20M ≈7.66x，performance 0.1043→0.1315 TOps/s 仅 1.32x）+ §12.4 可达性（≈4 µs 地板 ⇒ 上限 ≈0.55/4.5326 ≈ **12%**）
-  - report（provenance，允许失效）：`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`（report.md / benchmark.md / run.json；status=passed，correctness 46/46，Avg Max Abs Error 0.00e+00，Ratio Range 2.90%–4.04%）
-  - 交叉引用：`profile-collection.md` §4.1（纯选择/带宽受限算子 Ratio 判读口径，VP-2026-0175 两证合入——本条补「分子同变」与「目标可达性筛查」两块，互补不重复）；queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数，1/2）；attention.md PL-1.12 指标结构段（Computility 按 48 核计而实机 24；奖励利用率不奖励 padding 缩减）
-  - 〔2026-10-15 边界/正对照证据（**不构成本条自定的第二证候选**——本任务 `total_fops` 恒定、未发生结构改写导致的 op 数变化，故 confirmations 维持 1/2），task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize；不同算子族，quantization）〕同一规则的另一分支被实测：fp8_quant 消除单点标量化（`T.vshl`→`vexp2` + `BLOCK_ELEMS` 2048→4096）后 **`total_fops` 保持 ≈17.83 M 未下移**（由 roofline `performance` 1.468–1.534 TOps/s × duration 反解核对，AI 仍 = 16.9974）⇒ **Ratio 提升 ≈ latency 提升（21.2× vs 21×，1.62%→34.15%；21.1× / 22.0× 同档）**。即本条的「分子同变」机制在**分子恒定**分支下退化为 `Ratio ∝ 1/duration`——判别动作 = 由 `performance × duration` 反解 `total_fops` 并与基线对比（分子动了则 Ratio 与时延解耦，未动则同步）。同任务另有可达性筛查的第二实例：主判据线 ≤5.52 µs 而平台空 kernel 地板 3.37 µs + 必需流量地板 4.25 µs（占预算 77%）⇒ 分母侧结构不可达，与上式同构（`ratio_max = (total_fops/时延地板)/computility`）。溯源：`perf_opt/opt_log.md` §7/§8 机制 A 核对 + `perf_feedback.md`（任务工作区，允许失效）；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3
-  - 〔2026-10-15 round-3 续调证据（**同 op 谱系续调，不计独立确认，维持 1/2**），task `adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z`〕**分母塌缩机制**——同一 resnet-global workload 删掉 fp32 全平面 `vcast`（改 fp16 同型精简链）后 Ratio 2.81% → **45.40%**（16.2x），但时延仅 −2.9%（ab 合并中位 −3.79%）：`computility` 分母由**实测向量 op 的 dtype 混合比**加权（`(64·fp32_prop + 32·misc_prop)·freq·40`），删 fp32 op 使其占比塌缩 ⇒ `computility` **4.53 → 0.28 TOps/s**，而分子 `perf` 几乎不变（0.1271 → 0.1271 TOps/s）⇒ **Ratio 上升几乎全部来自分母口径收缩，非硬件利用率改善**——本条的「Ratio 非硬件利用率」结论在**分母随 op 混合比变动**分支下进一步强化。**同任务另一实证：Ratio 硬目标与 latency 目标直接冲突**——同一 fp16 精简链把 `CH_GLOBAL` 设为 120（4 轮）Ratio 达 **68.97%**（逼近 70%），但时延 17.27 µs 相对 round-2 收束 **+2.9% 回退**，按「时延为唯一主指标」未采纳（单常量改动即可切换，`profiles/probe/round3/r3gf_f16same_ch120`）。溯源：`perf_opt/opt_log.md` §13.12（双口径分列）+ `perf_opt/ratio.py`（compute-roofline 复算，与官方 report 复算 2.805% vs 2.902% / AI 5.4772 校验一致）；toolchain tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
-- repro: repro-missing（需 msprof + 目标算子环境；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 run.json 的 total_fops / computility / duration 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`（本任务 1.26x vs 10.12x）；③ 目标可行性：`(total_fops/时延地板)/computility < 目标` ⇒ 判结构不可达）
-- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；report 侧 TileOPs Reporting 0.1.0
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
-- delta: |
-    add 条目 CONST-msprof-ratio-compute-roofline（置于 CONST-fabric-bw 邻域，与 profile-collection.md §4.1 互链）：
-    **msprof roofline `Ratio` 是 compute-roofline 利用率，不与 latency 成反比**——`Ratio = performance / roofline_peak`，其中 `performance = total_fops / duration`（`total_fops` 取 `ArithmeticUtilization.csv` 实测累加，**非** manifest 理论 flops）、`roofline_peak = min(AI × bw_peak, computility)`（`computility` = 器件算力峰值按 dtype 占比加权，不随 kernel 结构变化）。**分子与分母都会被结构改写影响**：改写若删减 op 数（如去掉两级窄归约 + 转置），`total_fops` 同向下降，latency 的收益被抵消。实证（adaptive_avg_pool2d C4 路径，2026-10-15 report）：时延 169.2634 → 16.7203 µs（10.12x）而 Ratio 2.3008% → 2.9020%（**1.26x**）——`total_fops` 16.86M → 2.20M（7.66x）、`performance` 0.1043 → 0.1315 TOps/s（1.32x），分母 `computility` 4.5326 TOps/s 固定。
-    **可达性筛查（设 Ratio 硬目标前必算）**：`ratio_max ≈ (total_fops / 该 workload 的时延地板) / computility`。上式算例：地板 ≈4 µs ⇒ 上限 ≈0.55/4.5326 ≈ **12%** ⇒「Ratio → 70%」对无矩阵乘的池化/选择类算子在 compute-roofline 口径下结构不可达（同类 spp/nondiv 的 computility 更低 3.72/3.68 ⇒ 上限同样远低于 70%）。判据：上限 < 目标即改以 **Task Duration / 流量达成率** 为判据（与 profile-collection.md §4.1 的三条判读动作衔接）。
-- status: pending
-- confirmations: 1/2
-- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
-- decided_by: -
-- decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。**2026-10-15 补充**：fp8_quant Stage 4 的机制 A 核对（`total_fops` 恒定 ⇒ Ratio ≈ latency 同步提升）+ 空 kernel 地板可达性筛查记为**边界/正对照证据**（该任务未改变 op 数，按本条自定的第二证候选条件不计独立确认）——待一条「结构改写压低 `total_fops`」的调优任务出现方能达 2/2。
-
 ## VP-2026-0246
 
 - type: D
@@ -1183,6 +1162,7 @@ decided_by: evolver / human / -   # 裁决者
   - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.6（G14 branch `round3_genh`）、§13.7（ab 交错协议 spp r2-merged 16.320 vs r3_genh 15.460 µs，pair_diffs −0.83/−0.93/−0.90，3/3 同向 = B_better）、§13.9（winner：spp/nondiv 均 G14）、§13.11（BlockDim 24→36、`aiv_time` 13.28→12.04 µs；nondiv CH 保持 32、BlockDim 28）
   - 规则脚本（溯源，允许失效）：`perf_opt/check_ch_rule.py`（全 L0/L1/L2 形状前后对比）
   - 对照：round-1 的「折半」判据已入 `layout.md` PL-1.4 第五数据点；G13 `CH_GENERAL=48` 对比显示 spp 改善但 nondiv +4.8% 回退 ⇒ 需形状感知判据（本条细化）
+  - 〔2026-10-16 边界证据（不同任务 / 不同算子；**不计独立确认，`confirmations` 维持 1/2**）〕task max_pool1d-_max_pool1d_kernel-20261016T090104Z：同一排序键 ② 在**多波 regime** 下被独立量化——1D 窗口池化 `C=80` 且 `CH` 被容量上限钉在 64 ⇒ `ceil(C/CH)=2`、尾块 `real_c=16` 仍按 CH 全宽执行（尾块浪费 `2·64−80 = 48`）；抬上限使 `CH = min(C, cap) = 80`（尾块浪费 0）后 sincnet **301.936 → 187.964 µs（−37.7%）**、`num_logical` 3392 → 2080、三 dtype 逐位精确。⇒ v2 的「单波集合」在无单波档时为空（该 workload `units = 3392 ≫ 40`），但**排序键 ②（尾块浪费最少）在多波 regime 仍是有效杠杆**。本条**不构成 0249 自定第二证**（本任务未做 CH 单波分档）——属 v2 判据的**适用域外延伸**，证据链已追加；落点见 queue `VP-2026-0299` → layout.md PL-1.4 第八数据点。
 - repro: repro-missing（最小形态 = 对一组单波候选 CH 按 v2 三元排序独立复算选中档并与实测 Task 对照——断言 spp 类选 48、nondiv 类选 32；效应载体 = `repro/PL-1.4-single-wave-ch.py` 的 v2 变体，待同族任务补）
 - toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
@@ -1194,6 +1174,46 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z 2026-10-15
 - decided_by: -
 - decided_note: 价值点 VP-I（源工件 P，慢→快关键更改含三元判据）。按 Tier 1：首次证据（1/2），缺知识域 repro 标 `repro-missing`。第二证候选 = 任一多单元 persistent 纯 Vector 算子做 CH 单波分档的任务（不同任务/不同算子）。
+
+## VP-2026-0299
+
+- type: D
+- title: 窗口/归约类纯 Vector 算子的 `CH` 容量上限低于 C 时，通道尾块的窗口 op 仍按 CH 全宽执行——尾块 padding lane 是纯开销且 `num_logical` 翻倍（`_CH_MAX` 64→128：sincnet 301.936→187.964 µs / −37.7%、ecg −26.9%，逐位精确）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（`C=80`、`CH=64` ⇒ `num_cblk=2`、第 2 块 `real_c=16` 但窗口 op 仍按 CH=64 跑 ⇒ **37.5% 的 lane 是 padding**、`num_logical` 翻倍）与 §3.2 R1a 行；§4 Round 1 候选表（`chfull`：sincnet **187.964 µs** / textcnn 12.740 / ecg **113.002 µs**，L0 pass）+ Round 2/3 合并与 final 记录（188.454 / 113.182 / 11.620 µs，`max_diff=0.000e+00`）
+  - `perf_opt/perf_records.jsonl` round 1 `chfull` 三行（`artifact_sha256 c30d7ecb71736efc325fefb10ab1b3400809f626c60e56cc86fe81670434fcaa`）与 round 3 final 三行（`f8ae961c…`）
+  - 正面对照（正确性侧「尾块不写回即无害」）：queue VP-2026-0145 ②（通道块尾动态切片）——该纪律保证正确性，但**不消除 padding lane 的性能代价**，两条互补不矛盾
+  - 边界/延伸：queue VP-2026-0249（CH 判据 v2，单波集合内按核占用→尾块浪费排序）——本任务属 `units = 3392 ≫ vector_cores = 40` 的**多波 regime**（单波集合为空），尾块浪费判据仍成立（已按边界证据追加至 0249 证据链）
+- repro: repro-missing（最小形态 = 同一 1D 窗口 kernel 上 `_CH_MAX ∈ {64, ≥C}` 两档各采一次 msprof op 并比对 `num_logical` 与 Task；效应只在完整 kernel 规模显现，知识域脚本待同族任务回填）
+- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    update `PL-1.4-tiling-heuristic`（在「最小可行 CH（第六数据点）」段之后追加「第八数据点」段）：
+    **第八数据点（2026-10-16，纯 Vector 1D 窗口池化 general 路径；toolchain c3c39ba / CANN 9.0.0 / Ascend910B3）**：当 `CH` 被**容量上限**（而非容量不等式）钉在 `C` 之下且 `ceil(C/CH) > 1` 时，通道尾块同时付两份代价——① 窗口/归约 op 仍按 **CH 全宽**执行（尾块只把 `real_c = min(CH, C−cb·CH)` 段写回，padding lane 照样占向量位）：`C=80, CH=64` ⇒ 第 2 块 `real_c=16`、**37.5% 的 lane 是 padding**；② 单元数随 `ceil(C/CH)` 翻倍（`num_logical = N·ceil(L_out/BL)·ceil(C/CH)`：3392 → 2080）。把上限抬到 ≥ C 使 `CH = min(C, cap) = 80`（**容量不等式不变**、`BL` 由同一不等式自动收缩 26→21）后：sincnet 301.936 → **187.964 µs（−37.7%）**、ecg（`C=128`）154.653 → **113.002 µs（−26.9%）**，`aiv_vec` 205.5 → 113.4 µs，**L0/L1 三 dtype 逐位精确**（`max_diff=0.000e+00`）。适用域：`units ≫ vector_cores` 的**多波 regime**（此时「单波判据/最小可行 CH」（第五/六数据点）的单波集合为空、判据不适用，但**排序键「尾块浪费最少」仍成立**）；与第七数据点的双输出形态互不冲突。数据（任务工作区，允许失效）：`perf_opt/{perf_records.jsonl round 1 chfull 三行（sha c30d7ecb…）+ round 3 final、opt_log.md#§3.1/#§4, _max_pool1d_kernel_round1_chfull.py}`。
+- status: pending
+- confirmations: 1/2
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: -
+- decided_note: 价值点 VP-P1（源工件标 D）。含实测数字与倍率 ⇒ D；无知识域 repro（效应只在完整 kernel 规模显现）⇒ 按 merge-policy §1 降级 Tier 1 并标 `repro-missing`。第二证候选 = 任一「通道分块上限低于 C 且 `ceil(C/CH)>1`」的窗口/归约类纯 Vector 调优任务（不同任务/不同算子）——重点看 `num_logical` 是否翻倍与 padding lane 是否被计入。
+
+## VP-2026-0300
+
+- type: D
+- title: 窄向量 op（CH 宽）的发射/地址代价实测 ≈**14.4 ns/op/核**（910B3）——`CONST-vector-launch-overhead` 的「~0.5 µs/op」是**宽块**档，不可外推到 CH 宽的窄 op（设计期据此估算失准 13.6×）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（结构 = `T.serial(k) × T.serial(BL)` 内每 `(kw, owl)` 一条 `vmax` + 一条 NaN 掩码 `vmul`，即每逻辑单元 `2·k·BL + 12` 条 **CH 宽**向量 op；sincnet `2·3·26 = 156` 条窄 op + 12 条宽 op/单元、全 kernel **570K 条窄 op**；`aiv_vec` 205.498 µs ⇒ 570K / 40 核 ÷ 205 µs ≈ **14.4 ns/窄 op/核**）与 §2.3（`DESIGN.md §1.6.0` 估算下界 22.2 µs vs 实测 baseline 301.936 µs = **13.6×** 失准，且该节自标「发射项口径 = 未文档化假设」）
+  - `perf_opt/perf_feedback.md`「实测与假设矛盾」段（发射项实测确为主导项：`aiv_vec` 占 `aiv_time` 73%；`BL` 变化不改变窗口 op 总数 ⇒ 非 tiling 参数可解）
+  - 机制同族第二实例（不同算子/不同工具链）：`TRAP-vexp2-not-exact-pow2` 代价边注（`T.vshl` 在 UB 上被标量化 ≈ 20 ns/元素）；本条的「每 op 固定发射代价随宽度缩放」是另一维度
+- repro: repro-missing（最小形态 = 同一 UB tile 上扫 op 宽度 `{1,8,32,64,128,256}` 各跑 N 条同构向量 op 取斜率，断言 `ns/op` 随宽度单调下降且在 CH≈64 档落 ≈10–20 ns；需 msprof）
+- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40）/ 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    update `CONST-vector-launch-overhead`（正文与 front-matter 各一处）：正文追加「**窄 op 档（2026-10-16 实测）**：每 op 代价随**操作数宽度**缩放——`.5 µs/op` 仅在宽块（bn≈512 级）成立，**CH 宽（≤128 元素）的窄向量 op 实测 ≈14.4 ns/op/核**（1D 窗口池化：570K 条 CH=64 宽 op / 40 核 ÷ 205 µs `aiv_vec`）；把宽块单价外推到窄 op 会使设计期『发射项』估算失准一个量级以上（同任务 `DESIGN.md §1.6.0` 估算 22.2 µs vs 实测 301.936 µs = 13.6×，且失准主项即该发射项）。用法：向量链时延下界须按**宽度分档**取单价（宽块 ≈0.5 µs/op、CH 宽 ≈14.4 ns/op）后再乘 op 数，并注意 `2·k·BL` 条窄 op 的总数只与 `CH` 分块有关、与 `BL` 无关。」；front-matter 的 `origin_task` / `toolchain` 追加本任务与版本戳，`repro` 维持 `repro-missing`（待同族任务以宽度扫描脚本回填）。
+- status: pending
+- confirmations: 1/2
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: -
+- decided_note: 源工件未列为 VP（由 opt_log §3.1 与 `perf_feedback.md` 的归因数字蒸馏所得）。含实测数字与量纲 ⇒ D；无知识域 repro（需 msprof 宽度扫描）⇒ 降级 Tier 1 标 `repro-missing`。第二证候选 = 任一需要「向量 op 数 × 单价」估下界的调优/设计任务（不同任务/不同算子），重点看窄 op 单价是否落在 10–20 ns 档。
 
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
 
@@ -3073,6 +3093,7 @@ decided_by: evolver / human / -   # 裁决者
   - 〔2026-10-15 第四数据点（不同任务，pool 族 optimize；**含基础设施中断混淆项，如实标注**）〕task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：Stage 4 attempt 1 在 25931s（≈7.2h）后以 `stage4_artifact_gate_incomplete` 失败（`.task_timeline.jsonl` 00:34:31Z），conductor 按门禁失败流程 `fail 4 → start 4` 重调度，attempt 2 仅 202s 即 complete——补齐的两处机械工件为 **`workload_inventory.json` 的 per-workload `tuning_status` 字段缺项** + **opt_log Final Performance Test Data 表格式**（后者即本条目已覆盖的第三亚型再发）。⇒ **同族第四亚型「Phase 1 产物字段缺项」**：`workload_inventory.json` 在 optimize SKILL.md Phase 1 被要求「完整清单写入 … 供 gate 4 核对覆盖范围」，但 gate 4 亦校验 per-workload `tuning_status`（如 `winner_merged` / `no_gain`），该字段清单未成文。
   - 〔同上一行，**混淆项披露**〕attempt 1 同时被**基础设施重启中断**（7.2h 后无 verdict，conductor 自行判门禁），故「字段缺项」有多少属中断致写入未完成、多少属契约未成文不可分离——本条按「证据链追加」登记不新开 proposal_id（同主题合并规则），并**建议审批时把第 ① 项的覆盖范围一并扩展至 `workload_inventory.json` 的 per-workload 字段清单**（使会话中断时该缺项也能被前置自检拦下）。
   - 〔2026-10-15 蒸馏期确认〕本任务在 gate 失败后（00:35:54Z）的 kb_search 检索到了本条目（返回集含 VP-2026-0114）——属「待审批知识未生效」型复发（同 stats ⑧⑩ 形态），非检索缺口；命中计数 +1。
+  - 〔2026-10-16 第五数据点（不同任务，pool 族 optimize；**本族「Final 表格式」再发**）〕task max_pool1d-_max_pool1d_kernel-20261016T090104Z：Stage 4 attempt 1 因 `opt_log.md` 机械格式（**Final 表标题尾随括号 + 非 5 列表**）触发 gate 4 `S4-PERF-RECORDS-RECON`，经 `fail_stage(4) → start_stage(4)` 重调度后通过（`.stage_state.json` `stage_retry_count[4]=1`；`.task_timeline.jsonl` 记 attempt 1 `verdict=runtime` / `duration_s=3999`，attempt 2 `complete 210s`）。**两处新增观察**：① **复盘缺口**——该次 fail 的 gate 侧原因未见于 `opt_log.md` §7（Skill Retrospective 只记 §6.2 目标未达成与 §7.1 三条流程建议），失败细节只能来自 conductor 终态钩子输入（同 ssd 2026-09-21 先例，属 stats ⑧⑩ 形态）；② **负例未留存**——首轮产的失败态 `opt_log.md` 被原地修复覆盖，工作区只剩修复后的形态（现为 `### Final Performance Test Data` + 5 列纯数字），**gate 拒绝的负例形态无处可取**（复现只能靠本条 evidence 描述 + `gate_lint.py` 正则）。⇒ 建议本条目 delta 的覆盖范围同时明确「失败态工件的留存或可复现描述要求」（与 VP-2026-0117 互补：那条保全产物本体，本条要的是失败形态的可复现描述）。
 - repro: python3 .agents/tools/gate_lint.py（现行 S4-PERF-RECORDS-RECON 规则；负例 = final 行 artifact_path 带仓库根前缀 + Final 表加粗 6 列形态，正例 = 本任务 attempt 2 修复后产物）
 - toolchain_stamp: gate_lint.py 现行版本（statectl gate 4 机械核对层）；发生环境 tilelang 0.1.2+15ad002b3d / CANN 8.5.0 / Ascend910B2C / 2026-09-21
 - target_doc: .agents/skills/_shared/standards/signal-registry.md
@@ -5995,7 +6016,79 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: -
 
+## VP-2026-0301
+
+- type: R
+- title: `tilelang-op-optimize` Phase 0「首轮必查项」增「**性能目标口径核定**」——目标含 `Ratio`/带宽类指标时，先复现官方反解公式并标注分子口径（`Ratio` 的分子 `total_fops` 会随结构改写同向变化，按「带宽 roofline」理解会瞄错目标）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z：`perf_opt/opt_log.md` §7.1 流程问题 1 + §2.2（调度 prompt 给的口径是「带宽 roofline（`achieved_bw ÷ 1.75 TB/s`）」，按官方 report 的 `compute_from_csvs` 实测复现后发现 `Ratio = (total_fops/TaskDuration)/computility`——sincnet/ecg 在该模型中**计算受限**、只有 textcnn 是带宽受限支）+ §6.2（结果：**时延降 37.6% 只换来 Ratio +1.05pt**）
+  - 知识侧已生效：queue **VP-2026-0227** 已 2/2 合入 `pattern-library/constants.md CONST-msprof-ratio-compute-roofline`（含反解公式、两证数字与可达性筛查算式）——本条只承担「**优化侧的读取时点**」（Phase 0 必查项），不重复数据
+  - 相关：queue VP-2026-0081（Ratio 采数管线：`--aic-metrics=Roofline` + `--kernel-name` 过滤）
+- repro: repro-missing（流程规则；复现条件 = 给定一条 Ratio 类目标，按现行 SKILL 走 Phase 0 观察是否要求执行端先复现 `compute_from_csvs` 反解公式并标注分子口径）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c3c39ba / CANN 9.0.0 / Ascend910B3 / 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0 步骤 4「首轮必查项」列表首行之后插入一条 bullet）
+    定位锚: "- **首轮必查项（来自 pattern-library，不得跳过）**："
+    new 文本: |
+      - **首轮必查项（来自 pattern-library，不得跳过）**：
+        - **性能目标口径核定（目标含 `Ratio` / 带宽 / roofline 类指标时必做，先行）**：先把用户/调度 prompt 给的目标口径**反解成公式**并与官方 report 的算法对齐——`tileops.benchmark.msprof_roofline.compute_from_csvs` 的 `Ratio = (total_fops/TaskDuration) / computility`（`total_fops` = `ArithmeticUtilization.csv` 实测累加、**非** manifest 理论 flops；`total_bytes` = L2 read-miss × 128B；`computility` 按实测 dtype 占比加权）并**标注分子口径**：结构改写会**同向压低** `total_fops`，故「时延降 X 倍 ⇒ Ratio 升 X 倍」不成立（`constants.md CONST-msprof-ratio-compute-roofline`，两证实测；max_pool1d 2026-10-16 实测时延 −37.6% 仅换 Ratio +1.05pt）。口径与 prompt 不一致时（如 prompt 给「`achieved_bw ÷ 1.75 TB/s`」而 report 用 compute-roofline），在 opt_log 显式记录差异与最终判据，不得按未核定的口径优化。
+    动机: 执行端按错误口径优化会瞄准错目标——本任务首轮即在「带宽 roofline」假设下排序候选，实测复现官方口径后才发现 sincnet/ecg 属计算受限支（分子随结构改写同向下降），使「降时延 ≡ 升 Ratio」的预期落空（`opt_log.md#§7.1` 流程问题 1）。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: -
+- decided_note: 数据侧（公式与两证数字）已由 VP-2026-0227 合入 constants.md；本条只改**读取时点**（optimize Phase 0），属 Tier 2。与 VP-2026-0238（`_shared/standards/perf-feedback.md §1` 已 apply 的「目标线 vs 空 kernel 地板」机械前置判据）互补：那条管**可达性**、本条管**口径**。
+
+## VP-2026-0302
+
+- type: R
+- title: `tilelang-op-optimize` Phase 1（baseline 之后）增「**目标线 vs 平台地板 / 必需流量地板**」机械前置比较——把不可达 workload 在进入迭代前就标记（判据已在 `perf-feedback.md §1` 生效，缺的是 Phase 1 的调用点）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z：`perf_opt/opt_log.md` §7.1 流程问题 2（**直到 §6.2 才**用 `CONST-msprof-task-floor-910B3` 反解出 textcnn 的目标线 3.33 µs **低于**空 kernel 地板 3.37 µs）+ §6.2 三行（textcnn 目标 3.33 < 地板 3.37；sincnet / ecg 的实测 `mte2` 55.482 / 25.261 µs 单独已超各自 70% 线 39.8 / 24.7 µs）
+  - 反例形态（「不可达内容被排进迭代」）：三个 tune workload 全部进入 Phase 2 排序与迭代（§1.2），其中一个的口径不可达只能事后判死
+  - 已生效的判据来源：`_shared/standards/perf-feedback.md` §1「机械前置判据（先行，零成本）」（VP-2026-0238 **已于 2026-10-15 apply**）+ `constants.md CONST-msprof-task-floor-910B3`（910B3 空 kernel 3.37 / 必需流量 4.25 µs）
+  - 交叉引用：queue VP-2026-0236（elements-throughput 阶段的达标性前置标定 → `bottleneck-patterns.md BP_ub_traffic_floor`，P 类 1/2）——那条管**单价标定**，本条管 **Phase 1 的一次比较**；VP-2026-0250（Phase 0 空转/固定开销标定必做项）
+- repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 走 Phase 1，观察 baseline 采集后是否要求做「目标线 vs 空 kernel 地板 / 必需流量地板」比较并记录判定）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c3c39ba / CANN 9.0.0 / Ascend910B3（地板常数同为 910B3）/ 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（在 Phase 1 末尾、`### Phase 2：优化闭环` 之前插入一条要求 bullet）
+    定位锚: "### Phase 2：优化闭环"
+    old 文本: （即上述定位锚原文）
+    new 文本: |
+      - **目标线可达性前置比较（baseline 采集后立即做，零成本一行）**：按 `_shared/standards/perf-feedback.md` §1 的机械前置判据，把用户/设计给出的目标线（含回落线）与本平台两条地板比较——**空 kernel Task 地板**（`constants.md CONST-msprof-task-floor-910B3`：910B3 = 3.37 µs）与**必需流量地板**（同条目 4.25 µs，或按本 workload 的 `mte2` 分量）。判据：① 目标线 ≤ 空 kernel 地板 ⇒ **口径/结构不可达**（由这一行比较直接给出，不得先进迭代）；② 目标线 ≤ 实测 `mte2`（或必需流量项）⇒ 同判。命中时在 `opt_log.md` Phase 1 段记录该比较与结论、把该 workload 的 `tuning_status` 尽早标为不可达，并按 `perf-feedback.md` §1 的两条件决定是否走 `[DESIGN_LIMIT]`/口径修正路由——**不把不可达 workload 排进 Phase 2 迭代**。
+    动机: 本任务直到 §6.2（收束段）才用该判据反解出 textcnn 的目标线（3.33 µs）低于空 kernel 地板（3.37 µs），此前三个 workload 全部按「可优化」排入迭代（`opt_log.md#§7.1` 流程问题 2）；`perf-feedback.md §1` 的判据已生效但缺 Phase 1 调用点，一处补句即可把不可达性提前到零成本时点。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: -
+- decided_note: 与 VP-2026-0238（已 apply 的标准文件判据）互补：那条**建立**判据、本条把调用点写进 Phase 1；与 VP-2026-0236（单价标定方法）/ VP-2026-0250（空转开销标定）不重叠。
+
 ## Decided（merged / rejected / expired / conflict 归档）
+
+## VP-2026-0227
+
+- type: D
+- title: msprof roofline `Ratio` 不与 latency 成反比——结构改写同时压低 `total_fops`，10.12x 时延下降仅换 1.26x Ratio（池化族 169.26→16.72 µs，Ratio 2.30%→2.90%，fops 16.86M→2.20M）；「Ratio 硬目标可达性」须先算上限 `(total_fops / 时延地板) / computility`（resnet ≈12% ⇒ 70% 结构不可达）
+- evidence:
+  - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z：`perf_opt/opt_log.md` §12 修正附录（append-only 证伪更正——§8 的「同一 roofline 下 Ratio ∝ 1/latency」外推 ≈23.2% 被官方单算子 report 实测推翻）+ §12.2 metric 定义链（`total_fops` = `ArithmeticUtilization.csv` 实测累加**非** manifest 理论 flops、`total_bytes` = L2 read miss × cacheline、`AI = total_fops/total_bytes`、`performance = total_fops/duration`、`roofline_peak = min(AI×bw_peak, computility)`、`ratio = performance/roofline_peak`）+ §12.3（10.12x 时延 vs 1.26x Ratio 的分解：fops 16.86M→2.20M ≈7.66x，performance 0.1043→0.1315 TOps/s 仅 1.32x）+ §12.4 可达性（≈4 µs 地板 ⇒ 上限 ≈0.55/4.5326 ≈ **12%**）
+  - report（provenance，允许失效）：`examples/TileOPs/reports/tileops/20261015_003854_809663_AdaptiveAvgPool2dFwdOp/`（report.md / benchmark.md / run.json；status=passed，correctness 46/46，Avg Max Abs Error 0.00e+00，Ratio Range 2.90%–4.04%）
+  - 交叉引用：`profile-collection.md` §4.1（纯选择/带宽受限算子 Ratio 判读口径，VP-2026-0175 两证合入——本条补「分子同变」与「目标可达性筛查」两块，互补不重复）；queue VP-2026-0081（Ratio 采数管线：Roofline metrics + kernel-name 过滤 + 口径基数，1/2）；attention.md PL-1.12 指标结构段（Computility 按 48 核计而实机 24；奖励利用率不奖励 padding 缩减）
+  - 〔2026-10-15 边界/正对照证据（**不构成本条自定的第二证候选**——本任务 `total_fops` 恒定、未发生结构改写导致的 op 数变化，故 confirmations 维持 1/2），task fp8_quant-_fp8_quant_kernel-20261015T064614Z（Stage 4 optimize；不同算子族，quantization）〕同一规则的另一分支被实测：fp8_quant 消除单点标量化（`T.vshl`→`vexp2` + `BLOCK_ELEMS` 2048→4096）后 **`total_fops` 保持 ≈17.83 M 未下移**（由 roofline `performance` 1.468–1.534 TOps/s × duration 反解核对，AI 仍 = 16.9974）⇒ **Ratio 提升 ≈ latency 提升（21.2× vs 21×，1.62%→34.15%；21.1× / 22.0× 同档）**。即本条的「分子同变」机制在**分子恒定**分支下退化为 `Ratio ∝ 1/duration`——判别动作 = 由 `performance × duration` 反解 `total_fops` 并与基线对比（分子动了则 Ratio 与时延解耦，未动则同步）。同任务另有可达性筛查的第二实例：主判据线 ≤5.52 µs 而平台空 kernel 地板 3.37 µs + 必需流量地板 4.25 µs（占预算 77%）⇒ 分母侧结构不可达，与上式同构（`ratio_max = (total_fops/时延地板)/computility`）。溯源：`perf_opt/opt_log.md` §7/§8 机制 A 核对 + `perf_feedback.md`（任务工作区，允许失效）；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3
+  - 〔2026-10-15 round-3 续调证据（**同 op 谱系续调，不计独立确认，维持 1/2**），task `adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z`〕**分母塌缩机制**——同一 resnet-global workload 删掉 fp32 全平面 `vcast`（改 fp16 同型精简链）后 Ratio 2.81% → **45.40%**（16.2x），但时延仅 −2.9%（ab 合并中位 −3.79%）：`computility` 分母由**实测向量 op 的 dtype 混合比**加权（`(64·fp32_prop + 32·misc_prop)·freq·40`），删 fp32 op 使其占比塌缩 ⇒ `computility` **4.53 → 0.28 TOps/s**，而分子 `perf` 几乎不变（0.1271 → 0.1271 TOps/s）⇒ **Ratio 上升几乎全部来自分母口径收缩，非硬件利用率改善**——本条的「Ratio 非硬件利用率」结论在**分母随 op 混合比变动**分支下进一步强化。**同任务另一实证：Ratio 硬目标与 latency 目标直接冲突**——同一 fp16 精简链把 `CH_GLOBAL` 设为 120（4 轮）Ratio 达 **68.97%**（逼近 70%），但时延 17.27 µs 相对 round-2 收束 **+2.9% 回退**，按「时延为唯一主指标」未采纳（单常量改动即可切换，`profiles/probe/round3/r3gf_f16same_ch120`）。溯源：`perf_opt/opt_log.md` §13.12（双口径分列）+ `perf_opt/ratio.py`（compute-roofline 复算，与官方 report 复算 2.805% vs 2.902% / AI 5.4772 校验一致）；toolchain tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+- repro: repro-missing（需 msprof + 目标算子环境；最小化形态 = 同一 workload 结构改写前/后各采一次 report（或读 run.json 的 total_fops / computility / duration 字段），断言 ① `ratio ≈ (total_fops/duration)/computility`；② `ratio 提升 ≪ latency 提升`（本任务 1.26x vs 10.12x）；③ 目标可行性：`(total_fops/时延地板)/computility < 目标` ⇒ 判结构不可达）
+- toolchain_stamp: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；report 侧 TileOPs Reporting 0.1.0
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    add 条目 CONST-msprof-ratio-compute-roofline（置于 CONST-fabric-bw 邻域，与 profile-collection.md §4.1 互链）：
+    **msprof roofline `Ratio` 是 compute-roofline 利用率，不与 latency 成反比**——`Ratio = performance / roofline_peak`，其中 `performance = total_fops / duration`（`total_fops` 取 `ArithmeticUtilization.csv` 实测累加，**非** manifest 理论 flops）、`roofline_peak = min(AI × bw_peak, computility)`（`computility` = 器件算力峰值按 dtype 占比加权，不随 kernel 结构变化）。**分子与分母都会被结构改写影响**：改写若删减 op 数（如去掉两级窄归约 + 转置），`total_fops` 同向下降，latency 的收益被抵消。实证（adaptive_avg_pool2d C4 路径，2026-10-15 report）：时延 169.2634 → 16.7203 µs（10.12x）而 Ratio 2.3008% → 2.9020%（**1.26x**）——`total_fops` 16.86M → 2.20M（7.66x）、`performance` 0.1043 → 0.1315 TOps/s（1.32x），分母 `computility` 4.5326 TOps/s 固定。
+    **可达性筛查（设 Ratio 硬目标前必算）**：`ratio_max ≈ (total_fops / 该 workload 的时延地板) / computility`。上式算例：地板 ≈4 µs ⇒ 上限 ≈0.55/4.5326 ≈ **12%** ⇒「Ratio → 70%」对无矩阵乘的池化/选择类算子在 compute-roofline 口径下结构不可达（同类 spp/nondiv 的 computility 更低 3.72/3.68 ⇒ 上限同样远低于 70%）。判据：上限 < 目标即改以 **Task Duration / 流量达成率** 为判据（与 profile-collection.md §4.1 的三条判读动作衔接）。
+- status: merged
+- confirmations: 2/2
+- created_by: task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261014T172114Z 2026-10-15
+- decided_by: evolver
+- decided_note: D 类无知识域 repro（结论来自完整 kernel 的端到端 report，无法当场最小化为知识域脚本）→ 降级 Tier 1 并标 `repro-missing`；target 为 pattern-library 主题文件（Tier 0 写域），「同一 workload 前后双 report」采集脚本回填后即可直接合入。第二证候选 = 任何以 `Ratio` 为硬目标且结构改写改变 op 数的调优任务。**2026-10-15 补充**：fp8_quant Stage 4 的机制 A 核对（`total_fops` 恒定 ⇒ Ratio ≈ latency 同步提升）+ 空 kernel 地板可达性筛查记为**边界/正对照证据**（该任务未改变 op 数，按本条自定的第二证候选条件不计独立确认）——待一条「结构改写压低 `total_fops`」的调优任务出现方能达 2/2。 **2026-10-16 蒸馏：confirmations 1/2 → 2/2 并合入**——第二证 = task `max_pool1d-_max_pool1d_kernel-20261016T090104Z`（不同任务 / 不同算子 / 不同工具链；满足本条自定的第二证条件「以 Ratio 为硬目标且结构改写改变 op 数」：`_CH_MAX` 64→128 ⇒ sincnet 时延 1.60x 而 Ratio 仅 1.076x、`total_fops` 153.4M→106.0M）。合入锚点：`.agents/skills/tilelang-op-optimize/references/pattern-library/constants.md#CONST-msprof-ratio-compute-roofline`（新条目，紧邻 `CONST-fabric-bw`；两证数字与可达性算式已内嵌），`INDEX.md` 路由行已同步。
 
 ## VP-2026-0263
 - type: D

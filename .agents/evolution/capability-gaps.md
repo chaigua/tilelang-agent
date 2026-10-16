@@ -1104,6 +1104,104 @@ created_by: evolver 复原登记，2026-10-15（**溯源**：task adaptive_avg_p
 last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z Stage 4（round 3 G9/G16 探针）
 ```
 
+### CG-2026-0031
+
+```yaml
+gap_id: CG-2026-0031
+layer: Frontend API（`tilelang/language/customize_npuir.py` 的 `npuir_gather` / `npuir_deinterleave`——「宽区域跨步抽取」原语）
+capability: >-
+  宽区域「跨步抽取」（decimation：从一条整宽 span 中按固定步长取出子集）没有可用的向量原语：
+  ① `T.gather`（vgather）是**逐元素**实现，实测 ≈**1.8 ns/元素**（`(80,21)←(80,61)` 两次 gather 使
+  `aiv_vec` 增加 ≈320 µs / 52 单元）——抽取本身比它要省的窄 op 更贵；
+  ② `T.deinterleave` 相位数上限 = 2（`=3` 触发 `bishengir-compile` 段错误，见 CG-2026-0032），而
+  stride 3 的窗口类需要 3 相；
+  ③ `T.transpose` 抽取需 3D 视图（`vtranspose` 仅 2 轴），且 `extract_slice` 行距不匹配即被物化
+  （见 CG-2026-0033）。三者组合使「把窗口类 tap 循环折叠成 O(k) 条宽 op」的路线不可实现。
+blocked_algo: >-
+  窗口/重叠窗类 general 路径的「折叠 owl 循环 → 宽 dilate-max + 抽取」结构族：本任务以两个独立
+  结构分支实测否决（通道主序 DMG 23328 µs、位置主序 PM 998.92 µs，均劣于 baseline 302 µs）⇒
+  被迫放弃该结构族，转从通道分块形状与 DMA 行长入手（收益 −37.6%）。性能上限：窄 op 结构
+  （每输出位置 × 每 tap 一条 CH 宽向量 op，实测 ≈14.4 ns/op/核）在冻结设计族内无法消除。
+evidence:
+  - 实测（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/{probe_dmg.py, probe_pm.py, probe_deint.py, logs/probe_dmg_*.log, logs/probe_pm_sincnetbl.log}`
+  - 知识域 repro：`pattern-library/repro/TRAP-window-decimation-primitives.py`（gather + 物化形态）与 `pattern-library/repro/TRAP-deinterleave-two-phase-only.py`（相位数上限 2；重验触发词 = case B 三路全 True）
+  - docs/Tilelang.language/shape操作/T.deinterleave.md §2.1（`channel_nums: int`，缺省 2）/ §2.3「特殊限制说明：无」（未标注相位数上界）；docs/ 无「宽 gather / decimation 原语」条目（未文档化假设）
+  - 知识域条目：`pattern-library/traps-compiler.md` TRAP-window-decimation-primitives / TRAP-deinterleave-two-phase-only / TRAP-C10-strided-gather
+workaround: >-
+  放弃宽抽取路线，改从形状与搬运入手：① `CH = min(C, cap)` 且 cap ≥ C，消除通道分块尾块在窗口 op
+  上的 padding lane 浪费并把 `num_logical` 3392→2080（sincnet −37.7% / ecg −26.9%）；② 把 `LSPAN`
+  当 DMA 粒度（行长）看（`CONST-dma-burst-rowstride-floor`：行长 128–156 B ⇒ ≈0.38 TB/s）；
+  ③ 2 相抽取可用（argmax 案例 130.3×，`CASE-argmax-argreduce-stage4`）。
+occurrences: 1
+tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z]
+toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
+status: open
+proposal: none（未达 recurring；建议方向 = ① 提供硬件级宽 gather（带 stride 的向量抽取）或把 `T.deinterleave` 扩展到任意相位数；② 至少在 docs 记载 `channel_nums` 上界与 decimation 原语的能力边界）
+created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md#§7.3`，evolver 终态蒸馏核验归档）2026-10-16
+last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
+```
+
+### CG-2026-0032
+
+```yaml
+gap_id: CG-2026-0032
+layer: BishengIR（`bishengir-compile` 后端，`hivm.hir.vdeinterleave` lowering）
+capability: >-
+  `T.deinterleave(..., channel_nums=3)`（3 相解交织，stride-3 滑窗需要）使 `bishengir-compile`
+  **段错误**（rc = −6 / SIGABRT）：NPU IR 已正常生成、崩溃发生在后端，无 MLIR 诊断可比对；
+  `channel_nums=2` 同形态语义正确（含 region 目标）⇒ **相位数 >2 不可用**。
+blocked_algo: >-
+  stride-3 滑窗（sincnet k3s3p0）的「相位分解」抽取路线无法用单条原语实现，只能退化为逐相
+  slice/`T.copy`（成本另计）；本任务据此放弃该抽取路线（结构侧后果见 CG-2026-0031）。
+evidence:
+  - 知识域 repro：`pattern-library/repro/TRAP-deinterleave-two-phase-only.py` case B（**注**：任务 `opt_log.md#§7.2` 引用的崩溃日志 `perf_opt/logs/probe_deint.log` 在工作区中不存在〔扫描 0 命中〕，durable 证据 = 重跑该 repro）
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/probe_deint.py`
+  - docs/Tilelang.language/shape操作/T.deinterleave.md §2.1（`channel_nums: int`，缺省 2）/ §2.3「特殊限制说明：无」——**未标注相位数上界**（未文档化假设）
+  - 关联：`pattern-library/traps-compiler.md` TRAP-bishengir-crash-s32（同后端段错误家族的 **shape×dtype** 形态；本条是 **API 参数** 维度，两形态是否同源**未证**）+ `.agents/evolution/capability-gaps.md` CG-2026-0030
+workaround: >-
+  仅使用 2 相形态（`channel_nums=2`，含 region 目标）；多相需求改走逐相切片/`T.copy` 或 reshape 后
+  的多路 2 相分解。正向参照：argmax Stage 4 的「窄行宽视图 + 2 相 deinterleave」130.3×。
+occurrences: 1
+tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z]
+toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0（bishengir-compile）+ Ascend910B3 / 2026-10-16
+status: open
+proposal: none（未达 recurring；建议方向 = 修复 `vdeinterleave` 相位数 >2 的后端崩溃，或在前端对 `channel_nums > 2` 给出显式诊断而非静默进入后端崩溃）
+created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md#§7.3`，evolver 终态蒸馏核验归档）2026-10-16
+last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
+```
+
+### CG-2026-0033
+
+```yaml
+gap_id: CG-2026-0033
+layer: TileLangIR pass / bufferization（`tensor.extract_slice` 的「行距不匹配」降级路径）
+capability: >-
+  `tensor.extract_slice` 的结果 tensor 行 stride ≠ 源 buffer 行 stride 时（如 `(80,61)` 取自
+  `(80,64)`），bufferization 把它降级为 **UB→GM→UB 物化**，且该物化**被标量化**（无向量化兜底、
+  无编译期告警）：sincnet 单分支 Task 301.886 → **23328 µs**（`scalar ≈ 22878 µs`、`aiv_vec 480 µs`）
+  ⇒ **77× 时延放大**，正确性不受影响（不报错），只有时延与标量占比能暴露。
+blocked_algo: >-
+  「region 抽取 + 宽归约」结构（窗口类折叠 + 单点列布局改造）不可用——除非每个 region 操作数都与
+  其 buffer **行距一致**（整宽行区间）；本任务位置主序变体（切片全部连续、BL=13 逐位精确）实测仍
+  998.92 µs > baseline 302 µs ⇒ 结构族整体否决。
+evidence:
+  - 知识域 repro：`pattern-library/repro/TRAP-window-decimation-primitives.py`（`--mode` 选择 extract_slice 形态；sincnet `scalar` ≈ 22.9 ms）
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d/max_pool1d_kernel/perf_opt/{probe_dmg.py, probe_pm.py, logs/probe_dmg_sincnetblmodestatic.log}`
+  - 机制同族但**不同层 / 不同 op**（故分列不合并，互链）：`pattern-library/traps-compiler.md` TRAP-transpose-ub-gm-roundtrip + 本簿 CG-2026-0024（BishengIR 层 `hivm.hir.vtranspose` → UB→GM→UB）；本条 = TileLangIR/bufferization 层 + `extract_slice` **行距**触发，且额外被**标量化**
+  - 标量化兜底缺失证据：`scalar` 占 98%（22 878 / 23 328）
+workaround: >-
+  结构改造必须保证每个 region 操作数与其 buffer 行距一致（整宽行区间）；免抽取/免物化的替代路径：
+  整平面域走 `pattern-library/layout.md` PL-1.23-flat-spatial-axis-reduce（扁平声明 + 宽最内轴归约，
+  9.96×）；窗口类改从 CH 形状与 DMA 行长入手（`constants.md` CONST-dma-burst-rowstride-floor）。
+occurrences: 1
+tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z]
+toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
+status: open
+proposal: none（未达 recurring；建议方向 = 对「源/目标行距不一致的 `extract_slice`」给出编译期诊断（warning），或提供向量化的物化兜底路径）
+created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md#§7.3`，evolver 终态蒸馏核验归档）2026-10-16
+last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
 > **条目位置说明（2026-10-16）**：`CG-2026-0003` 本次由 `open` 升级为 `recurring`（第二形态 = Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性与 CANN 9.0.0 bishengir-compile 的版本错配），为便于回溯两形态的完整证据链，其**正文保留在下方 `## Open` 区原位更新**（标题已标注 recurring），proposal 字段已产出，与本节其余 recurring 条目同等待推动状态。
