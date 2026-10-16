@@ -23,6 +23,7 @@
 | **GEMM 要求 M,N 为 block 整数倍** | `M // block_M` 整除依赖；`M < block_M` 时零 block 启动 | 输出全零或除零编译崩溃 | 设计文档 §4/§5 必须明确处理策略：host 侧 padding+crop 或 Kernel 动态 block |
 | **L0C 容量上限** | A2/A3 设备 L0C = 128KB | `block_M × block_N × sizeof(accum) > 128KB` 导致 segfault | 设计 block 时满足 `block_M × block_N ≤ 16384`（float32 accum） |
 | **物理核数限制** | AI Core 物理核数有限，实际数目必须通过 `NPUUtils.get().get_aicore_num()` 实查（Cube/混合算子直接使用返回值；纯 Vector 算子核数翻倍，即 `get_aicore_num() * 2`），禁止以文档假设或经验值替代实查；超发逻辑内核会被运行时串行调度并引入额外核启动开销 | 逻辑核数远超物理核数 → 串行调度性能急剧下降；内核总数非物理核数整数倍 → 负载不均（如启动 21 个内核将导致其中一个物理核执行两倍任务） | 逻辑核数 ≤ 物理核数：无需适配（附依据）；中等规模：调整 block_M/block_N 使内核总数接近物理核数整数倍（按实查核数取 1×/2×/3×）；极大规模：固定启动内核数 = 物理核数，核内 `T.serial` 串行处理多个逻辑块（`num_local_tasks = T.ceildiv(num_logical_kernels - kernel_id, num_physical_kernels)`，边界静态）。见 docs/开发指南.md §3.3 |
+| **raw 宽度无须对齐 pad（计数 / 谓词 / 选择类语义）** | 实测（2026-10-16，910B3 / CANN 9.0.0，两个 reduction 族迁移独立复现）：非 256 倍数行宽 N = 2 / 4 / 64 / 300（4 / 8 / 128 / 600 B 行宽）**编译通过**，且 N = 300 / 64 / 4 运行期逐位精确；静态尾块宽度同理（tail = 808 / 1808 / 1 均 bit-exact） | 反过来说：宽度 pad **不是**编译必要条件，**不为编译安全而 pad**——pad 会引入 `N_padded` 域记账与额外的 UB 平面开销 | 仅当语义**需要单位元**（min / max / sum 累加类）时才必须 pad；32 B 尾轴 `T.copy` 切片合规性与 UB 对齐仍按 §1 既有约束核对 |
 
 ## 2. 强制检测规则
 

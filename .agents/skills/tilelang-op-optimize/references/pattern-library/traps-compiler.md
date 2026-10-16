@@ -339,8 +339,8 @@ apis: [T.vcmp, T.vcast, T.vmul, T.vselect, T.reduce_min, T.vmax, T.reduce_max]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第二数据点：计数类的合法形态延伸 + NPU 运行期实证）
-toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261013T104045Z（首证）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（第二数据点：计数类的合法形态延伸 + NPU 运行期实证）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：谓词 AND 类补式方向 + 运行期三 dtype 实证）
+toolchain: tilelang 0.1.2+db1783d948b43d3b5eed38c542e158c08cde3df5（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-13；第二数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
 repro: repro/TRAP-vcmp-ne-ordered-nan.py
 ---
 
@@ -351,6 +351,7 @@ repro: repro/TRAP-vcmp-ne-ordered-nan.py
 - **合法绕法（本工具链实测，逐位正确）**：NaN 探测走 IEEE 正确的 `"eq"`（或 `"le"`/`"ge"`）取反——行级 `cond = T.vcmp(x, x, "eq")` → `T.vcast(cond, f32)` 得 {0,1} 掩码 → 逐元素 **in-place `T.vmul(flag, mask, flag)`**（`flag` 初值 1：0 吸收、1 中性）→ 末尾 `vcmp(flag, 0, "eq")` 即 `has_nan`（整平面 C4 路径以 `T.reduce_min` 收尾）。全程只用 IEEE 正确的比较模式，不依赖 `T.vmax`/`T.reduce_max` 的 NaN 行为。文档侧：`docs/Tilelang.language/比较操作/T.vcmp.md` §2.3 只列合法枚举，未说明 NaN 行为。
 - **证明**：`python repro/TRAP-vcmp-ne-ordered-nan.py`（exit 0：`ne` 自比 NaN 行全 0 复现 + `eq` 为 `isnan` 的 IEEE 补集断言 + eq-mask 乘性累积 `flag==0 ⟺ 列含 NaN` 断言 + NaN-free 操作数对 `ne` 正常）。与 TRAP-expert-v-operands（vcmp 操作数形态与 int16 标量化）互补：前者管操作数形态与执行代价，本条管比较模式的 NaN 语义。溯源（任务工作区，未上库，允许失效）：`examples/adaptive_max_pool2d/_adaptive_max_pool2d_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-vcmp-ne-ordered-nan.py}`。
 - **〔2026-10-16 第二数据点：计数/谓词类的合法形态〕** 需要「非零 / 非等」判决的**计数类**算子（`count_nonzero` 形态）在本工具链的合法表达式是**有序 EQ 的补式**：`y = N − Σ_j [x_j == 0.0]`——① 数学恒等（行内 `#{x≠0} + #{x=0} = N`）；② `eq` 为 IEEE 正确 ⇒ NaN 不满足 `== 0` ⇒ NaN 计入非零，与 torch `count_nonzero` 及源侧 unordered-NE 判决一致（用 `ne` 判非零会把 NaN 误判为零）；③ 取反路线不可行——`T.vnot` 的 dtype 表不含 `bool/int1`（`docs/Tilelang.language/逻辑操作/T.vnot.md` dtype 表；bool 仅可作片上中间结果、不可 load/store GM，同文档注），故 `[x≠0]` 只能以补式表达；④ **补式的落点在行级微缓冲**（`N − Σ` 在 `(bm,)` 微元上做 1 次 `vsub`），不是在全宽平面做 `1 − ind`（后者 +1 个 4 B/元素平面与 +1 个全宽 pass）。**运行期实证（NPU，非仅文档）**：fp16/bf16/fp32 三路 `vcmp(eq)→vcast(i1→f32, rint)→reduce_sum(dim=1)` 链在 `count_nonzero` L0-12 / L1-4 上逐位精确——`[NaN,0,-0,1,-1]` 行计数 2（NaN 计入非零、±0 不计入）、最小亚正规行（fp16 2^-14 谱系 / fp32 2^-149 谱系）计数与 torch 一致（**亚正规不做 FTZ**）；纯算法侧判别力对照（有序-NE 路线在 NaN 行报出 42 处差异）见 `examples/count_nonzero/_logical_reduce_kernel/verify_equiv.py`（torch CPU，provenance 允许失效）。溯源：`examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§1.6.1-E1, _logical_reduce_kernel.py#run_L0 L0-12 / run_L1 L1-4}`（任务工作区，未上库，允许失效）；工具链同 front-matter 第二数据点。
+- **〔2026-10-16 第三数据点：逻辑 AND / 谓词类的合法形态——补式方向由目标语义决定，且两向后果不对称〕** 同一「有序 EQ 补式」纪律在 `torch.all` 语义（`all` / 谓词 AND 类）上的落地形态是 `y = 1 − max_j [x_j == 0]`：① **合并算子是 max 而非 sum**——补式表示下「行内命中零」= OR，跨 tile 在线合并须用 `T.vmax`（照抄计数类的 `T.vadd`/`T.vsum` 或源 tiled 的 `T.min(acc, tile_acc)` 都会语义翻错）；② **补式落点仍为 `(bm,)` 微缓冲**（在微元上做 1 次 `vsub`，不在全宽平面做 `1 − ind`）；③ **取反不可行**（`T.vnot` dtype 表无 bool/int1，同第二数据点）；④ **误用 ordered-NE 的后果比计数类更重**——`vcmp("ne")` 对含 NaN 的行把 `all` 判决**整行翻 False**（NaN 在 `all` 语义下应计为非零 ⇒ 不破坏 AND），而计数类只少计 1；⑤ **运行期实证（NPU，非仅文档/编译期）**：fp16 / bf16 / fp32 三路上 `vcmp("eq") → vcast(i1→f32, rint) → reduce_max(dim=1) → (bm,) vsub` 链与 `torch.all` **逐位一致**——11 行构造角点（`got=[F,T,F,F,F,T,T,F,T,T,T]`，其中「NaN 无零行 = True」与「NaN 混零行 = False」两条必须同时成立，任一相反即 ordered-NE 误用）、NaN 整列 × 3 dtype = 全 True、次正规/极值行 `FTTTFT`；⇒ 本机 `vcmp("eq")` 为 IEEE ordered EQ、`±0` 计入零、**亚正规不做 FTZ**；⑥ **路径 C（列分块）合并链同时被证实可用**：`T.vmax(acc, mx, new_acc)` + `T.copy(new_acc, acc)`（no-alias 三件套，勿原位累加）在 `(bm,1)` fragment 上编译通过且逐位精确（见 layout.md PL-1.25）。溯源：`examples/all/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, _logical_reduce_kernel.py#run_L0 L0-2a/b/c / run_boundary / run_L1 L1-4, DESIGN.md#1.6.1-A1}`（任务工作区，未上库，允许失效）；工具链同 front-matter 第三数据点。
 
 ---
 id: TRAP-npuir-vbrc-region-dropped
@@ -430,8 +431,8 @@ apis: [T.Parallel, T.cast, T.vcast]
 dtype: [float32, uint8, int8]
 device: 910B3
 status: verified
-origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）
-toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: fp8_quant-_fp8_quant_kernel-20261014T153942Z（op 级 fp8_quant-fp8_quant-20261014T152721Z）/ all-_logical_reduce_kernel-20261016T024920Z（现象 ④：bool/int8 载体出栈两步链）
+toolchain: tilelang 0.1.2+8b16bccacfd9fa17b09ebd4313bd4501fee03760（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-14；现象 ④ tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16
 repro: repro/TRAP-parallel-f32-uint8-cast-rounding.py
 ---
 
@@ -441,7 +442,8 @@ repro: repro/TRAP-parallel-f32-uint8-cast-rounding.py
 - **现象 ②（符号空间）**：codegen 把 `uint8` 降到 **i8**（`memref<...xi8>`）；f32→uint8 直接 cast 对 ≥128 的值**饱和到 127**（= e4m3 NaN 载荷），表现为输出大片 NaN。正确写法是让字节出在 **signed i8 空间**（`bits - 128·[q<0]`，clamp 到 `[-128,127]`）。
 - **与前端 warning 的关系**：`src/transform/npu_loop_vectorize.cc:801` 的 warning「Parallel cast lowering uses fixed round mode 'rint'」在 f32→i8/ui8 **窄化**路径上**与实际行为不符**（该 warning 的截断/取整语义登记见 queue VP-2026-0205；本条以 repro 给出「窄化路径非 rint」的反例）。文档面：`docs/Tilelang.language/数据类型转换操作/T.vcast.md` 规格表无 `f32|ui8` 行（仅 `f16|ui8`）。
 - **现象 ③（窄化源类型，2026-10-15 补充，origin_task fp8_quant-_fp8_quant_kernel-20261015T064614Z optimize Stage 4）**：`T.vcast` 的 **int32→int8** 形态在本工具链下不可用——探针里 `int32 buffer → u8` 的 store 路径两次触发 `vcast int32_t_to_int8_t_rintmode` 报错（探针侧缺陷，非 kernel 缺陷）。据此，写 uint8 字节载体的可靠窄化链存在于 **f32 载体**：`f32 --vcast(rint)--> i32 --vcast(rint)--> f32 --T.cast--> u8`（与现象 ① 的「先整数化再窄化」同一条链）；整型（i32）中间量直接窄化到 i8/u8 字节空间在本工具链无可采纳形态，字节落盘的载体是 f32。溯源（任务工作区，允许失效）：`perf_opt/` 探针侧两次触发记录；toolchain tilelang 0.1.2+31064b17e98e14347379b0926ee59dfd58c57f96 + CANN 9.0.0 + Ascend910B3。**该形态的独立最小 repro：`repro-missing`（待补）。**
-- **证明**：`python repro/TRAP-parallel-f32-uint8-cast-rounding.py`（exit 0；断言直接 cast 与 `round()` 分歧、两步 rint 逐值一致）。
+- **现象 ④（bool / int8 载体出栈的合法两步链，2026-10-16 补充，origin_task all-_logical_reduce_kernel-20261016T024920Z Stage 3/1）**：谓词类算子的 bool 载体（kernel 侧 int8）**出栈**须走 **`f32 → f16 → i8` 两步** `T.vcast`（两个表项均存在；0.0/1.0 值域下位精确，实测 A5 组 0 偏差、L0/L1 全过）。`T.vcast` 的**规格表无 `f32 → i8` 表项**（与本条现象 ① 的 `f32|ui8` 缺行同源）——**不得**据此误判「无法输出 bool / int8 载体」而改契约（如改用 int16 载体）。溯源（任务工作区，允许失效）：`examples/all/_logical_reduce_kernel/{verify_equiv.py#A5, DESIGN.md#3.2, _logical_reduce_kernel.py#run_L1 L1-5}`；toolchain tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa + CANN 9.0.0 + Ascend910B3。
+- **证明**：`python repro/TRAP-parallel-f32-uint8-cast-rounding.py`（exit 0；断言直接 cast 与 `round()` 分歧、两步 rint 逐值一致；现象 ④ 的两步 bool 载体链证据在任务工作区 `verify_equiv.py` A5 组，独立最小 repro `repro-missing`）。
 - 族内位置：与 TRAP-vcast-same-dtype-rounds（同 dtype 退化 rint）、TRAP-vcast-shape-and-gm-source（vcast 形状/源约束）同属 npuir cast/舍入族；能力缺口本体见 `.agents/evolution/capability-gaps.md#CG-2026-0020`。溯源（任务工作区，允许失效）：`examples/fp8_quant/_fp8_quant_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-parallel-f32-uint8-cast-rounding.py}`。
 
 ---
@@ -612,3 +614,26 @@ repro: repro/TRAP-primfunc-compile-time-if-buffer-def.py
 - **绕法（本工具链实测可用）**：把结构性条件提升到 `@tilelang.jit` **工厂层**，按变体返回**独立 prim_func**（一 variant 一 prim_func）——repro 断言 C：两形态均编译通过，且在有 NPU 设备时逐位精确（`torch.equal`，`x[:, ::3] = 1.0` 的行非零计数精确）。本任务三形态 = 路径 R（resident）/ 列分块无尾块 / 列分块带静态尾块。
 - **族内位置**：本文件 §C11「parser var-table 作用域问题」（无细节的裸条目）在此获得可复现的具体形态与最小触发。与 `TRAP-tir-range-loop-not-unrolled`（Python `range` 非编译期展开）同属「Python 层直觉 ≠ 前端语义」族——两者的共同事实：Python 层的条件/循环不构成前端可用的结构分派，结构决策的有效表达位置是 `@tilelang.jit` 工厂层。
 - **证明**：`python repro/TRAP-primfunc-compile-time-if-buffer-def.py`（exit 0，`ALL ASSERTIONS PASS`；A = tail>0 抛 `Undefined variable` / B = tail==0 干净编译（隔离进程）/ C = 工厂层两 prim_func 变体编译且（设备存在时）精确）。溯源（任务工作区，未上库，允许失效）：`examples/count_nonzero/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-primfunc-compile-time-if-buffer-def.py}`；同族决策记录见该任务 `_logical_reduce_kernel.py` docstring（"one dedicated prim_func per variant"）。
+
+---
+
+id: TRAP-npuir-lowered-mlir-access
+kind: trap
+family: [general, reduction, migration]
+apis: [JITKernel.get_kernel_source, kernel.mlir_content, T.Kernel]
+dtype: [fp16, int8]
+device: 910B3
+status: verified
+origin_task: all-_logical_reduce_kernel-20261016T024920Z（Stage 3）
+toolchain: tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro/TRAP-npuir-lowered-mlir-access.py
+---
+
+### 取降级后 kernel body 的文本通道是 `kernel.mlir_content`；`JITKernel.get_kernel_source()` 在 NPU 类上不是文本通道
+
+- **现象**：编译后的 `target="npuir"` kernel 是 `JitKernel_NPU`（非通用 `JITKernel`）。公开 API `JITKernel.get_kernel_source()`（签名 `(self) -> str`）在该类上**不可用作文本通道**：同一会话内既观察到返回**链接 ELF 的 bytes**（实测 3736 B），也观察到抛 `TypeError: a bytes-like object is required, not 'str'`。降级后的 device function body 可用属性 **`kernel.mlir_content`（`str`**，TileLangIR/HIVM MLIR，含 `hivm.hir.*` op 与 `reduce_dims` 属性）。
+- **代价（本任务实测）**：按签名直调 `get_kernel_source()` 的「向量化/IR 形态门禁」首版直接失败，须自查出 `mlir_content` 后重写门禁，白耗一轮实现。
+- **适用场景**：凡需要在 kernel 编译后核对**是否真的向量化**（判决链有无退化为逐元素标量循环）的 Stage 3 L0 检查——典型回归通道是 `TRAP-parallel2d-bm-ge2-scalarize`（MLIR 中出现 `arith.cmpf` / `scf.for` / `if_then_else` 即说明判决链退化为标量形态）；grep ELF bytes 或生成的 host source 均取不到该信息。
+- **可用断言形态（本 repro 的三段）**：A = `mlir_content` 为非空 `str` 且含本算子输出链 `hivm.hir.vcmp → vcast(i1→f32) → vreduce<max> → vsub → vcast(f32→f16) → vcast(f16→i8)`（含 `<max>` 归约标记与 `reduce_dims = [1]`）；B = 同一文本**不含** `arith.cmpf` / `scf.for` / `if_then_else`（bm = 8 下无标量退化）；C = `get_kernel_source()` 不返回文本源（抛 `TypeError` 或返回 `bytes`，两条分支都视为 PASS——断言只锁「文本源须来自 `mlir_content`」）。
+- **边界**：断言 A/B 属**编译期**检查（只证明 IR 形态，不证明数值语义）；语义前提仍须 Stage 3 的运行期用例闭合（同族纪律见 develop skill Phase 4）。
+- **证明**：`python repro/TRAP-npuir-lowered-mlir-access.py`（exit 0，`ALL ASSERTIONS HOLD`；需 NPU 环境，纯编译期检查）。溯源（任务工作区，允许失效）：`examples/all/_logical_reduce_kernel/{RETROSPECTIVE.md Stage 3, repro/TRAP-npuir-lowered-mlir-access.py, _logical_reduce_kernel.py#_run_vectorised_ir_check}`。

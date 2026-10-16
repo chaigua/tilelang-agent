@@ -633,3 +633,27 @@ reduction 家族**首个 logical_reduce / 计数类** TileOPs 迁移（`CountNon
 - **实测**：函数级 L0/L1/L2/Boundary 全过（`torch.equal`、int64 精确）；集成 report `status=passed`——正确性 **37/37**、benchmark **7/7**（4 例 msprof 有效）：`sparsity-hidden [2048,4096]` fp16 22.7405 µs（roofline 42.16%）/ bf16 29.2006 µs、`sparsity-seq [32,16384]` fp16 4.5001 µs（路径 C）、`3d-multidim-reduce [4,128,4096]` fp16 9.6602 µs；带宽口径 1.75 TB/s。
 - **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束），但其**能力动机**（大 N 可处理）由 NPU 自身 UB 元素预算驱动的列分块承接——源工厂不迁移 ≠ 其能力动机不迁移。
 - **durable 载体**：两条 trap 条目（`TRAP-primfunc-compile-time-if-buffer-def` 含 repro / `TRAP-vcmp-ne-ordered-nan` 计数类延伸）；元素预算单价与适用域限定见 constants.md `CONST-reduce-ub-per-element`（追加数据点入队 VP-2026-0263）；行归约「布尔指示平面→补式」形态集入队 VP-2026-0265。本任务 `RETROSPECTIVE.md`（op 级/函数级）/ `SESSION_TIMING_ANALYSIS.md` / 集成侧 `integration_log.md` 为 provenance（任务工作区，未上库，允许失效）。
+
+---
+id: CASE-reduction-all-migration
+kind: case
+family: [reduction]
+mode: [developer]
+dtype: [bool, int8, fp16, bf16, fp32, int32, int64, complex64, complex128]
+status: verified
+origin_task: all-_logical_reduce_kernel-20261016T024920Z（函数级）/ all-all-20261016T023951Z（op 级，Stage 5 集成）
+toolchain: tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16
+repro: none
+---
+
+### `examples/all/_logical_reduce_kernel/`（任务工作区，未上库；集成副本 `examples/TileOPs/tileops/kernels/reduction/all/`，同任务工作区）
+
+reduction 家族**第二个 logical_reduce / 谓词 AND 类** TileOPs 迁移（`AllFwdOp`，`op_kind=all` ⇒ 逐行 **bool** 输出、kernel 载体 int8，与同工厂兄弟 kind `count_nonzero` 的 **int64** 契约相反；`op signature 另有 keepdim` 参数，兄弟无）。Stage 0/5 各 1 attempt 首过；函数级有一次 `S2-MIG-DIM0` 机械误报返工与一次 `S3-GOLDEN-TORCH` 门禁修复（均非设计缺陷）。
+
+- **语义/契约（设计师第一件事）**：输出契约取自 **manifest**（`bool`，kernel 载体 int8；兄弟 kind `count_nonzero` 为 int64，两者相反）；`ops/reduction/reduce.py` 里的 `"all"` 只是 **roofline 记账 kind、不是实现入口**。边界语义须以 **torch 实测** 为锚：`±0.0` → `all=False`、NaN 无零行 → `True`、NaN 混零行 → `False`、`N=0`（空规约维）→ `True`。**测试输入的判别性信号** = 约 30% 置零 + 强制角点（`x[0,0]=0`、`x[0,1]=1`、`-0.0`、`NaN`），并显式构造「NaN 无零行（True）」与「NaN 混零行（False）」两用例（`randn` 的零密度 ≈ 0 ⇒ 恒等实现亦通过）。
+- **设计主选（补式 + 元素预算双路径）**：`vcmp("eq") → vcast(i1→f32, rint) → reduce_max(dim=1) → (bm,) micro-buffer vsub(1 − max)`——`vcmp("ne")` 不适用于本语义（ordered NE，NaN 恒假 ⇒ 含 NaN 行整行误判 False）；取反不可行（`T.vnot` dtype 表无 bool/int1）⇒ 补式落 `(bm,)` 微缓冲而非全宽平面。容量判据按元素预算（`bm·W ≤ E_cap`，本算子链最坏 dtype bf16 实测 12.00 B/元素 ⇒ `E_cap = 8192`；硬上限 24576）。**路径 R**（`N=8192` 单 tile 驻留）/**路径 C**（`N>E_cap` 列分块 + 补列置 AND 中性 1.0 + 静态宽度尾块），跨 tile 合并 = **`T.vmax(acc, mx, new_acc)` + `T.copy(new_acc, acc)`（no-alias 三件套；原位累加会命中 carried-state 陷阱）**——照抄兄弟计数类的 `vsum` 语义翻错。
+- **实现纪律（可复用）**：`bm` 尾块守卫（`real_m = T.min(block_m, M − start)` + src/dst 双显式 slice）；**调用方 `block_m` 越预算时 kernel 侧按元素预算回落**（迁移期 wrapper `default_config` 仍是 GPU 期 SMEM 启发式，`(256,4096)` 给 `bm=8` ⇒ 32768 元素 > 24576；kernel `_resolve_block_m` 回落即不溢出且结果不变，**无需改 wrapper**）；结构性条件一律提到 `@tilelang.jit` 工厂层、按变体返回独立 `prim_func`（`@T.prim_func` 内解析期 `if` 定义 buffer 会 `ParserError`）；IR 形态门禁走 `kernel.mlir_content`（`get_kernel_source()` 在 NPU 类上不可用）。
+- **陷阱（本任务关联知识条目）**：`TRAP-npuir-lowered-mlir-access`（本任务新增，含 repro）/ `TRAP-vcmp-ne-ordered-nan` 第三数据点（谓词 AND 类补式方向）/ constants.md `CONST-reduce-ub-per-element` 形态适用域 + dtype 分档 / layout.md `PL-1.25-row-reduce-indicator-complement`。
+- **实测**：函数级 L0 27 / L1 25 / L2 / Boundary 全过（`--level all` exit 0，bool 输出 `max_diff=0.00e+00`）；集成 report `status=passed`——正确性 **42/42**（bool/int32/int64/complex64/complex128/非整除 N/尾 M/1D-4D/多 dim/keepdim）、benchmark **6/6**、3 例 msprof 有效（`invalid_profile_count=0`）：`mask-validation-4k [32,4096]` bool dim=-1 2.8601 µs（roofline 10.48%）/ `mask-validation-32k [32,32768]` 6.7201 µs（35.67%）/ `3d-multidim-reduce [4,128,4096]` dim=[0,2] 10.9002 µs（43.98%）；带宽 1.75 TB/s。集成 attempt 1 首跑仅因 `PYTHONPATH` 缺仓库根在 import 冒烟报 `ModuleNotFoundError: No module named 'tilelang'`（环境路径，非代码缺陷，未计 attempt）。
+- **门禁交互（非设计缺陷的两类返工，供后续同族任务预判）**：① `S2-MIG-DIM0` 裸子串 `"n/a"` 被源路径 `reduction/all` 命中（词边界修复见 queue VP-2026-0197）；② `S3-GOLDEN-TORCH` 要求 golden **函数体内联 `torch.*` 命名空间调用**——`x.bool().all(dim, keepdim)` 语义等价但被 AST 判失败，改 `torch.all(x, dim=dim, keepdim=keepdim)` 即过（VP-2026-0107 第三数据点；本例未产生精度语义变化，复数真值判据 `real != 0 or imag != 0` 与 Op 层契约一致）。
+- **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束）；其「大 N 可处理」的能力动机由 NPU 侧元素预算驱动的列分块路径承接。同工厂兄弟档案见 `CASE-reduction-countnonzero-migration`（契约相反：int64 vs bool）。

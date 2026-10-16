@@ -229,3 +229,31 @@ repro: repro/PL-1.23-flat-spatial-axis-reduce.py
 - **适用条件与边界**：要求被合并的空间轴在内存中**连续**（NCHW 的 H、W 天然连续；C 在外层）且 `H*W` 为编译期常量。**不适用于 general grid**（每个输出 bin 是矩形子区域，扁平化后行不连续）——general 路径仍走逐行二轴转置 + C 轴累加（PL-1.2）。
 - **替代关系**：本条是 PL-1.1「核内转置把 C 变最内轴」路线的**免转置替代**；当转置可用（两边 ≥ 向量宽且为向量宽整数倍）时两者皆可，转置被降级时本条是唯一可行路径。
 - repro：`repro/PL-1.23-flat-spatial-axis-reduce.py`（slow/fast 两形态可运行、输出与 torch 整平面均值一致；≥2x 的性能断言需 msprof，命令族见 repro 头部）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/{opt_log.md#4-6, perf_records.jsonl}` 与 `profiles/probe/round0/{p7_r49_c32, p6_f6}`。
+
+---
+id: PL-1.25-row-reduce-indicator-complement
+kind: pattern
+family: [reduction]
+apis: [T.vcmp, T.vcast, T.reduce_sum, T.reduce_max, T.vsub, T.vmax, T.copy, T.min]
+dtype: [fp16, bf16, fp32]
+device: 910B3
+status: verified
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（首证，计数类）/ all-_logical_reduce_kernel-20261016T024920Z（第二证，谓词 AND 类：合并算子方向 + `T.vmax` no-alias 链 + dtype 分档）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第二证 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+repro: repro-missing
+---
+
+### 1.25 行归约的「布尔指示平面 → 归约 → 补式」形态与元素预算双路径（`(bm,tn)` + `dim=1`）
+
+**优化见解摘要**：行归约（`(bm,tn)` tile，`reduce dim=1`）的 UB 记账按**元素数**线性、单价由链形态与 dtype 决定（`vcmp(eq) → vcast(i1→f32) → reduce` 指示链：fp16/fp32 = 8.00 B/元素；bf16 = 12.00，因 `vcmp` 操作数被 lowering 上抛 f32——见 constants.md `CONST-reduce-ub-per-element` 形态适用域），故容量判据写成 `bm·tn ≤ E_cap`（竞态安全档 8192；单 block 硬上限 24576 按最坏 dtype 记账）而非字节数。据此得到**双路径**：① **resident**（`N ≤ E_cap`）单 tile 全 N 驻留 + 行归约，`bm` 由元素预算阶梯给出；② **column-tiled**（`N > E_cap`）`bm=1`、`tn` 取「≤ min(E_cap,N) 的最大 256 倍数且整除 N」，跨 tile 用 `(bm,1)` 微元在线累加/合并（GM 流量仍 1 遍，代价 = 每 tile 数个微元 op + tile 循环控制）。判决量是**元素预算**，不是 GPU 期的 SMEM/线程启发式。
+
+- **补式（判决方向由目标语义决定，两向后果不对称）**：需要「非零 / 非等」判决时，本工具链的合法形态是**有序 EQ 的补式**（`ne` 为 ordered-NE，NaN 恒假——见 traps-compiler.md `TRAP-vcmp-ne-ordered-nan`）：
+  - 计数类（`count_nonzero`）：`y = N − Σ_j [x_j == 0]`（合并 = sum）；
+  - 谓词 AND 类（`all`）：`y = 1 − max_j [x_j == 0]`（合并 = **max**，命中零即 OR）；
+  - 共同纪律：补的落点 = **`(bm,)` 微缓冲**（在全宽平面做 `1 − ind` 会多出 1 个 4 B/元素平面与 1 个全宽 pass）；取反路线不存在（`T.vnot` dtype 表无 `bool/int1`，bool 仅可作片上中间结果）；误用 ordered-NE 的代价在 `all` 上更重（含 NaN 行整行翻 False，计数类只少计 1）。
+- **跨 tile 合并算子是语义决定的实现正确性部件**：`all` 的补式表示下合并的合法形态是 **`T.vmax(acc, mx, new_acc)` + `T.copy(new_acc, acc)`（no-alias 三件套）**——照抄计数类的 `T.vadd`/`vsum` 或源 tiled 的 `T.min(acc, tile_acc)` 都语义翻错（实测路径 C 逐位精确）；原位累加命中 carried-state 陷阱（`TRAP-vselect-inplace-carried-state` 同族）。
+- **静态尾块用「独立缓冲组 + 固定宽度 + 独立 prim_func」**：`tail` / `num_full` / 路径全为工厂期 Python 常量，每变体返回独立 `prim_func`（`@T.prim_func` 内解析期 `if` 定义 buffer 不可用，见 `TRAP-primfunc-compile-time-if-buffer-def`；运行时常量偏移的行展开另有静默错值先例 `TRAP-scf-for-row-offset-silent-miscompile`）。`tn` 选择 = **优先取整除 N 的最大 256 倍数**（`N=8448 → tn=2816/tail=0`），无整除因子时取最大 256 倍数 + 静态尾块（`N=9000 → tn=8192/tail=808`、`N=10000 → tail=1808`、`N=8193 → tail=1`）；**尾块宽度为 raw（零 pad）**——raw 非 256 倍数宽度可编译（实测 N=2/4/64/300；见 design `ascend-constraints.md` §1）。
+- **实测（首证，count_nonzero，resident/column-tiled 两路径集成态）**：resident `[2048,4096]` fp16 22.7405 µs（roofline 42.16%）；column-tiled `[32,16384]` fp16 4.5001 µs；`[4,128,4096]` fp16 9.6602 µs；正确性 37/37、benchmark 7/7。
+- **实测（第二证，all，逐位精确 + 集成态）**：路径 R（`N=8192`）与路径 C（`N=16384`，补列置 AND 中性 1.0）结果 `torch.equal`；整除/非整除分派实测一致（`N=16384 → tn=8192/num_full=2/tail=0`、`N=9000 → tail=808`、`N=10000 → tail=1808`、`N=8448 → tn=2816/tail=0`、`N=8193 → tail=1`）；`bm·W ≤ E_cap` 最紧档位 bf16 `(256,4096)`、`bm=2`（96 KB = UB/2）设备运行通过且逐位精确；集成 report 正确性 42/42、benchmark 6/6、msprof 3 例有效（roofline 10.48%–43.98%，带宽 1.75 TB/s）。
+- **调用方分块参数须在 kernel 侧做元素预算复核**：迁移期 wrapper 的 `default_config` 可能是 GPU 期 SMEM 启发式（`(256,4096)` 下给 `bm=8` ⇒ 32768 元素 > 24576 硬上限），kernel 侧按 `bm·W ≤ E_cap` 回落到阶梯值即可（`block_m` 只决定行分块，不影响结果），无需改写 wrapper 即可零 report 失败。
+- **溯源（任务工作区，允许失效）**：首证 `examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§5.4/§5.6, _logical_reduce_kernel.py#_build_resident/_build_tiled/_build_tiled_tail}`；第二证 `examples/all/_logical_reduce_kernel/{DESIGN.md#4.5/§8.2, _logical_reduce_kernel.py#_resolve_block_m/run_L0 L0-3a..e/run_L1 L1-1/L1-7a..c/L1-9}`。代码骨架待最小化（ED-B delta 形态），两证任务均标 `repro-missing`。

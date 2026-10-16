@@ -329,8 +329,8 @@ apis: [T.reduce_max, T.reduce_sum, T.reduce_min, T.vcmp, T.vmul, T.vcast]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）
-toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）
+toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
 repro: repro/TRAP-reduce-ub-per-element.py
 ---
 
@@ -352,6 +352,17 @@ repro: repro/TRAP-reduce-ub-per-element.py
 - **机制**：`hivm.hir.vreduce` lowering 为归约链物化多份中间张量（IR 可见 `memref.alloc` + `tensor.insert_slice` + `hivm.hir.vreduce`），规模随输入 tile 元素数增长。关闭 auto-multi-buffer（`pass_configs={"npuir.enable_auto_multi_buffer": False}`）**不改变**该记账（实测 open/close 数字完全相同）。
 - **伴随实测（同任务）**：整平面 `reduce` 与 GM→UB `T.copy` **不重叠**——global-1x1 实测 `mte2 = 9.10 µs / 1.92 MB = 211 GB/s`，而同栅格同粒度的纯拷贝标定为 690 GB/s（`T.Pipelined(2/3)` 复测无改善，±1% 噪声内）。
 - **证明**：compile-time sweep 见 `repro/TRAP-reduce-ub-per-element.py` 头部（失败信息含 `ub overflow, requires N bits while M bits available`）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md#3.2, probe_ub2.py}`。
+- **形态适用域（2026-10-16 追加，Tier 1 合入 VP-2026-0263 两证：count_nonzero + all 两个 logical_reduce 迁移）**：上表单价绑定 **3-D 整平面 `(CH,1,H*W)` + `reduce dim=2`**。**2-D `(bm,tn)` + `reduce dim=1`** 的行归约链实测单价显著更低、且**按 dtype 分档**：
+
+  | 2-D 行归约链 | 单价（B/元素） | 单 block 元素上限（196608 B） |
+  |---|---:|---:|
+  | `vcmp(eq) → vcast(i1→f32) → reduce_sum(dim=1)`（fp16 / fp32） | **精确 8.00** | 24576 |
+  | `vcmp(eq) → vcast(i1→f32) → reduce_max(dim=1)`（bf16） | **12.00** | 16384 |
+
+  - **dtype 分档的机制**：bf16 上 `vcmp` 的操作数被 lowering 上抛 f32（IR 可见 `vcast bf16→f32` 作用于两操作数，多 2 个 f32 平面 ⇒ 单价 ×1.5）；「含 `vcmp` 的归约链」的容量估算依赖对目标 dtype 的逐档实测（compile-only 探针约 3 s/配置）——按「单价与 dtype 无关」外推（沿 8 B/元素对 bf16 记账）在负载上直接 UB 溢出。
+  - **实测通过点**（compile-only 探针反解 + 运行期闭合）：fp16 24576 / fp32 16384 / bf16 16384 元素；竞态安全档 `E_cap = 8192`（按最坏 dtype 12 B 记账）。**最紧档位运行期通过**：bf16 `(256,4096)`、`bm=2` ⇒ 8192 元素 × 12 B = 96 KB = UB/2（恰触双缓冲余量上限）在设备上逐位精确、无需降阶或切列分块路径。
+  - **设计期后果（实录）**：把上表 3-D 整平面单价（最高档 ≈128 B/元素）代入 2-D 行形态会高估容量需求 **16×**，使可行负载被误判为不可实现（或过度引入列分块/转置等结构性开销）；反之按 8 B/元素对 bf16 记账则低估 1.5×。⇒ 容量判据按 `bm·N ≤ E_cap`（**元素数**）记账，且**引用本表任一单价前先核对形态适用域与 dtype 档**。
+  - 形态与双路径落地（resident / 列分块 + 静态尾块）见 layout.md `PL-1.25-row-reduce-indicator-complement`；上游降级原因（ED-A）：探针为任务工作区 `history_version/design_probe_ub.py`，本形态最小化 repro 待同族任务回填（`repro-missing`）。
 
 
 ---
