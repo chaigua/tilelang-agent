@@ -1202,6 +1202,40 @@ created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md
 last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
 ```
 
+### CG-2026-0034
+
+```yaml
+gap_id: CG-2026-0034
+layer: TileLangIR pass / lowering（条件分支内的 `vdeinterleave` 被丢弃）
+capability: >-
+  `T.deinterleave` 落在**运行时 `if/else` 分支**内时，lowering 把该 op **静默丢弃**：编译通过、
+  运行无报错、输出全错；生成的 hivm IR 中**不存在** `vdeinterleave`，应被写入的目标缓冲被下游当作
+  未初始化数据读。无编译告警、无 MLIR 诊断 —— 属**正确性级**缺口（静默错值），且只在「结果全错 +
+  降级 IR 无该 op」时才可归因。
+blocked_algo: >-
+  「两路 deinterleave 按运行时奇偶（`r % 2`）做 ping-pong 行选择」这一自然写法不可用——本任务
+  ping-pong 行预取的首个版本即因此产出垃圾输出（编译/运行均正常）；被迫改为**编译期（trace 期）
+  奇偶展开**（pair loop 拆两、两条 deinterleave 均为直线代码），语义等价但失去运行时单路径的代码量
+  优势。副作用：任何「按运行时索引选择抽取相位」的通用写法（如可变 `channel_nums` 路由）同样不可信。
+evidence:
+  - 知识域条目：`pattern-library/traps-compiler.md` TRAP-deinterleave-two-phase-only（case D 形态 + 绕法）
+  - 知识域 repro（绕法侧）：`pattern-library/repro/PATT-row-pingpong-pipeline.py`（trace 期展开后 448 unit 逐位相等、`max_diff = 0.0`）
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool2d/max_pool2d_kernel/perf_opt/{probe_pipe.py, opt_log.md#Round-3, PROGRESS.md}`（hivm IR 中 op 缺失 + 输出全错的实测记录）
+  - 同族但**不同触发维度**（不合并、互链）：CG-2026-0032（`channel_nums > 2` → `bishengir-compile` SIGABRT，参数维度）；本条是**控制流位置**维度（参数合法、op 被丢）
+workaround: >-
+  奇偶/相位选择在 **trace 期展开**（pair loop 拆两或 Python 层分支），保证每条 `T.deinterleave` 都是
+  直线代码；改完后用 `--check` 对参考实现做逐位（`torch.equal`）验证，并 grep `kernel.mlir_content`
+  确认 `vdeinterleave` 仍在。代价：行级 ping-pong 的代码量翻倍（两条 row body 路径），实测收益不变
+  （vgg/alexnet 六例 −7.0%~−25.0%）。
+occurrences: 1
+tasks: [max_pool2d-_max_pool2d_kernel-20261017T043853Z]
+toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-17
+status: open
+proposal: none（未达 recurring；建议方向 = ① 条件分支内遇到无法下沉的 DMA/向量 op 时给出编译期 warning（而非静默丢弃）；② 在 `T.deinterleave` 文档补「必须位于直线代码」的限制条款）
+created_by: max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 round-3 falsification，evolver 终态蒸馏核验归档）2026-10-17
+last_seen: 2026-10-17 max_pool2d-_max_pool2d_kernel-20261017T043853Z Stage 4（首次识别）
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
 > **条目位置说明（2026-10-16）**：`CG-2026-0003` 本次由 `open` 升级为 `recurring`（第二形态 = Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性与 CANN 9.0.0 bishengir-compile 的版本错配），为便于回溯两形态的完整证据链，其**正文保留在下方 `## Open` 区原位更新**（标题已标注 recurring），proposal 字段已产出，与本节其余 recurring 条目同等待推动状态。

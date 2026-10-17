@@ -6065,6 +6065,221 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0238（已 apply 的标准文件判据）互补：那条**建立**判据、本条把调用点写进 Phase 1；与 VP-2026-0236（单价标定方法）/ VP-2026-0250（空转开销标定）不重叠。
 
+## VP-2026-0303
+
+- type: P
+- title: 行级 ping-pong 软流水（双 row scratch 预取）——触发判据 `dur ≈ vec+mte2+mte3`（串行化签名）、奇偶在 trace 期展开、写回保持 unit 级、`ub_bytes(pipe=True)×1.7` 结构谓词不满足即保持串行（max_pool2d 6 例 −7.0%~−25.0%）
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，round 3 单点实验）：`perf_opt/opt_log.md#Round-3`（9 例 candidate vs current best 表：vgg-block bf16 63.06→47.30 µs = −25.0%、vgg f16 −7.0%、vgg f32 −15.1%、alexnet f16 −10.7% / bf16 −11.2% / f32 −7.7%；resnet 三例 pipe=off，Δ ±0.8% 噪声带内；六例均值 −12.8%，九例均值 −8.6%）
+  - 同任务 `perf_opt/probe_pipe.py`（决定性重叠探针，resnet-f16 精确 row body、无 per-row store）：serial 201.0 µs（vec 105.2 + mte2 76.5 + mte3 30.2 = 211.9，完全串行）→ ping-pong 156.6 µs（vec 108.5 / mte2 98.9，DMA 被覆盖）；`--check` 448 unit 逐位相等（`max_diff = 0.0`）
+  - 同一任务的两条实现必要条件（均在探针内实测）：① 运行时 `r % 2` 奇偶分支使 `vdeinterleave` 从 hivm IR 消失、输出全错 → 改 trace 期展开；② 把 store 搬进 row body（per-row store）使 resnet f16 486 µs / `u2g` 5544 KB·blk⁻¹（unit 级 229.6 µs / 616 KB·blk⁻¹）
+  - 结构谓词：resnet-stem `acc`(bh·out_w·ch) 102 KB + 第二 scratch 14 KB → ×1.7 = 197 KB > 192 KB ⇒ 保持串行（同算术同 taps），plan 与 round-2 byte-identical（`plan_same=True`）
+- repro: repro/PATT-row-pingpong-pipeline.py（ED-C 机械转正：逐字节拷贝 `perf_opt/probe_pipe.py` + 头部登记块，代码零改动 + `py_compile` PASS；247 行 / 11 155 B（含 26 行 docstring 登记块）超 ED-B 双预算按 PL-1.10 先例不裁剪披露；首次测量在来源任务内完成）
+- toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（BP_pipeline_overlap 追加触发信号与推荐动作；旧文本零删除）
+    定位锚 1: "- MTE 和 compute 管线交替忙，串行感明显。"
+    新文本（其后追加）: |
+      - **串行化签名（机械判据）**：`Task Duration ≈ vec + mte2 + mte3`（三 pipe 忙时之和 ≈ 总时延，误差 <10%）——三 pipe **零重叠**；此时该「和」不是 roofline 下界（见 `constants.md CONST-aiv-time-decomposition` 的 sum vs max 判别）。已重叠形态是 `dur ≈ max(mte2, vec) + scalar`。
+      - 循环内**载入即消费**（copy → 首个 v-op 无间隔），且外层无 tile 可借跨迭代深度（persistent 单任务串行）。
+    定位锚 2: "- 若单 block 内需要分 tile，可用 `T.Kernel(ceildiv(N, block_size))` + `for t in T.serial(num_tiles)` 尝试 pipeline / multi-buffer overlap。"
+    新文本（其后追加）: |
+      - **行级 ping-pong 预取（外层无 tile 可 pipeline 时）**：给行循环配两张 row scratch，第 r+1 行 DMA 覆盖第 r 行的向量工作。三个形态约束：① 奇偶在 **trace 期展开**（pair loop 拆两）——运行时 `if/else` 分支内的 `vdeinterleave` 被 lowering 静默丢弃（`TRAP-deinterleave-two-phase-only` case D）；② 写回保持**原粒度**（per-row store 实测 ≈9× 写放大：486 vs 229.6 µs）；③ **结构谓词启用**——`ub_bytes(pipe=True) × 1.7 > 192 KB` 时**不启用**、保持原串行循环（同算术同 taps）。实测：vgg/alexnet 六例 −7.0%~−25.0%，UB 装不下的 resnet-stem 保持串行（Δ ±0.8%）。
+      - 单行深度只到 `max(vec, mte2) + mte3`；仍 DMA 受限的 shape（vgg f16 vec 16.2 / mte2 35.7 µs）需两行深度（第三张 scratch，UB 另算）。
+    动机: 本任务 round-2 画像已写出 `dur ≈ vec+mte2+mte3`，但把它读成 roofline 下界 ⇒ 得出「无可优化项」并关闭一轮（代价一个 session）；同一 kernel 加一张 row scratch 即 −7%~−25%。判据与两种必要形态都是可复用的结构知识，非本算子特例。
+- status: pending
+- confirmations: 1/2
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与 `PL-1.10-loads-first-decoupling`（多输入 staging 复用链 → per-input staging）同族不同形态：那条解多输入**缓冲复用**造成的串行，本条解**单输入行循环**的载入即消费，并给出「Σ 忙时 = 串行」的机械判据与 UB 谓词回退。与 `PL-1.12-task-pipeline-depth2`（跨引擎 flag 流水）正交。第二证候选：任一「窗口/行循环 + 单 scratch」形态的 optimize 任务重跑本 repro（`python repro/PATT-row-pingpong-pipeline.py --check`）即可走 E-3 快速通道。
+
+## VP-2026-0304
+
+- type: P
+- title: 窗口池化 `s_w==2` 的「整行滑窗 max + 2 相 `T.deinterleave` 抽取」路径——把 `k_w·out_w` 条 128 B 窄 op 折叠成 `k_w` 条 CH 宽 op（resnet −84.8% / alexnet −69.4% / vgg −55.8%）
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，round 1）：`perf_opt/opt_log.md#Round-1` 9 例表（resnet-stem 1512.06→230.42 / 1513.56→216.19 / 2880.14→300.99 µs；vgg-block 124.55→55.08 / 124.39→62.31 / 206.41→76.86；alexnet-ceil 217.67→66.65 / 219.21→70.27 / 395.95→103.19；三 dtype 逐位 `max_diff = 0.0`）
+  - 原语可行性：`perf_opt/opt_log.md#§5` 探针 1（`T.deinterleave(channel_nums=2)` 是唯一一次成型的偶/奇相位分离原语；两条 strided `T.copy` gather / `vcast` reshape / `vbrc` trick 要么编译失败要么退化为逐元素对一条窄 op）；相位数上限与分支内丢弃形态见 `TRAP-deinterleave-two-phase-only`
+  - 结构细节：taps 以 `(phase, base)` 表达（`k_w=3,p=1,s_w=2` → taps `[(1,0),(0,1),(1,1)]`）；向量轴 = 通道轴（operand base 为 `ch` 的倍数、行 stride = `ch` 元素）；行严格只载入一次/输出行块（halo 比 `((bh−1)·s_h+k_h)/(bh·s_h)`）；右侧越界 tap 由守卫 `(out_w−1)·s_w+(k_w−1)·d_w−p_w ≤ w_in−1` 挡回一般路径（否则末列读相位 tile 陈旧尾部，`probe_outw_floor.py` 实测 5–9/960 元素错）
+  - 同族旁证（不含内确认）：argmax Stage 4 的「窄行宽视图 + deinterleave 相位分解」130.3× 是 2 相形态的另一用法（`cases.md#CASE-argmax-argreduce-stage4`）——用途不同（输出抽取 vs 窗口 tap 抽取），不作为第二证
+- repro: repro-missing（完整 phase 路径依赖该算子 `_phase_plan` 的 taps/守卫语义，最小化会丢该经验的成立前提；共享探针 `repro/PATT-row-pingpong-pipeline.py` 承载其后置的行流水形态）
+- toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-17
+- target_doc: .agents/skills/tilelang-op-design/references/algorithm-candidates.md
+- delta: |
+    动作: update（ALG-pooling 追加「窗口池化 s_w==2 的 2 相抽取候选」段；既有 R1–R4 与退化特化段零删除）
+    定位锚: "---\nid: ALG-reduction"（在 ALG-pooling 段末尾、该分隔符之前插入）
+    新文本: |
+      **窗口池化 `s_w==2` 的 2 相抽取候选（2026-10-17 首证，`max_pool2d` Stage 4）**：窗口类的一般路径是「每输出位置 × 每 tap 一条 CH 宽窄 op」；当 `s_w == 2` 时可用**整行滑窗 max + 相位分离**把开销压成每 tap 一条宽 op：
+      ① **滑窗 max**：对输入行做 `k_w` 宽度、`d_w` 步长的滑动 max（宽 op，行长 = 输入行），得到「每个起始列窗口的 max」；② **2 相抽取**：按 `s_w=2` 把列分成偶/奇相位（`T.deinterleave(channel_nums=2)`，一次调用完成 stride-2 分离），使第 `t` 个 tap 的贡献 = 某相位 tile 的一个 `base` 偏移切片 + `vmax`；③ **taps 表**：`k_w=3, p_w=1, d_w=1` → `[(odd,0),(even,1),(odd,1)]`（相位, base），实现里写成编译期字面量逐条 `vmax`（`for` 在此处会退化为 TIR 循环）。
+      **成立前提（缺一即回退一般网格）**：`s_w == 2`；每个 tap 只落单一相位；`k_w` 有实现上限；右侧越界 tap 由守卫 `(out_w−1)·s_w+(k_w−1)·d_w−p_w ≤ w_in−1` 排除；相位 tile 行宽 `round_up((w_in+1)//2, 8)`、行数须 8 行对齐并留一整块 spare（行粒度陷阱见 queue VP-2026-0306）；deinterleave 必须直线代码（运行时分支内被丢弃，见 `TRAP-deinterleave-two-phase-only` case D）。
+      **实测**（910B3 / CANN 9.0.0，三 dtype 逐位 0）：resnet-stem `[32,64,112,112]` k3s2p1 1512.06→230.42 µs（−84.8%）、alexnet-ceil `[32,64,55,55]` k3s2p0 ceil 217.67→66.65（−69.4%）、vgg-block `[16,128,56,56]` k2s2p0 124.55→55.08（−55.8%）；叠加行级 ping-pong 后再 −7%~−25%（queue VP-2026-0303）。
+      **与 R3 否证的关系**：R3「窗口重叠数据的重复读」类**代数**化简仍不成立（可分离/前缀和差分均不降运算量）；本候选是**访存形态/算子宽度**层面的折叠（窄 op 森林 → 宽 op），不改变每输出元素必需的比较次数。provenance 允许失效（来源任务工作区未上库）。
+- status: pending
+- confirmations: 1/2
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与 `TRAP-window-decimation-primitives` ④（同任务 D 类已 Tier 0 合入的「可用原语」侧）互补：那条记原语可用性，本条记算法候选与成立前提。第二证候选：任一 `s_w==2` 的窗口类（avg/max pool2d，含 3d 的空间二维特化）复现本结构。
+
+## VP-2026-0305
+
+- type: P
+- title: 窗口/池化族 planner 的结构代价模型 `num_local(bh,ch)·rows(bh)·ch·(1+core_split_tail)` + 车道宽预筛 `ch·elem_bytes ≥ 128 B`——12 点栅格证伪「最大 ch 再最大 bh」
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，round 2）：`perf_opt/tuning_sweep.jsonl` 12 个 `(bh, ch)` 点的 msprof 数据（resnet f16 bh∈{1,2,4,8}×ch∈{32,64}、vgg f16 bh∈{1,2,4}、alexnet f16 bh∈{1,3,9}；每点逐位 exact）
+  - 证伪：`out_h=28` 上 `bh=8,ch=64` 直接 UB 拒绝（221 KB×1.7），最好点 `(4,64)` 230.42；`out_h=27` 上 `(9,64)` 96 units/40 核（末波 25% 空闲）61.12 µs vs `(3,64)` 288 units 54.70 µs（−10.7%）⇒ 旧规则「最大 bh」输 8–11%
+  - 规则效果：`plan_probe.py --auto` 后 9 例均值 −3.3%、最好 −10.1%（vgg f16 49.50 / alexnet f16 61.26 / alexnet f32 95.00），三例回退 ≤1.2%（其中两例是同 plan 的噪声）；规则不含 workload 标签，仍改善未参与调参的 3 例
+  - 车道宽：64 B 车道（ch=32 fp16）比 128 B 车道每元素慢 ≈11%（241.68 vs 230.42 µs 而元素工作量少 6%）⇒ 预筛 `ch·elem_bytes ≥ 128 B`
+- repro: repro-missing（`plan_probe.py` 依赖任务 kernel 的 `_phase_plan`；判据本身可用纯 Python 复刻，待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    动作: update（PL-1.4-tiling-heuristic 追加第九数据点 bullet）
+    定位锚: "repro：`repro/PL-1.4-min-single-wave-ch.py`。"
+    新文本（其后追加）: |
+      - **`BH` 维的代价模型与车道宽预筛（第九数据点，2026-10-17，窗口池化 phase 路径，纯 Vector 40 核 / UB 196608 B）**：`CH` 三判据（容量 / 单波 / 最小可行）之外，`BH` 需与 `CH` 联合定档——候选排序用结构式 `score = num_local(bh,ch) · rows(bh) · ch · (1 + core_split_tail)`，其中 `rows(bh) = (bh−1)·s_h + (k_h−1)·d_h + 1`、`core_split_tail = (num_kernels·num_local − num_logical)/num_logical`；**「最大 ch 再最大 bh」是错的**：`out_h=27` 时 `bh=9` 把 96 单元摊到 40 核（末波 25% 空闲）比 `bh=3`（288 单元、11% 尾）慢 8–11%，`out_h=28` 上最大 bh 还可能被 UB 直接否掉。**车道宽预筛**：`ch·elem_bytes < 128 B` 的候选只在 UB 排除所有宽车道后使用（64 B 车道实测每元素 ≈11% 慢）。九例验证：均值 −3.3% / 最好 −10.1%，规则不含 workload 标签却改善了未参与调参的三例。
+    动机: 既有第 5/6 数据点解 `CH` 的波次与最小可行性问题，但 `BH`（每单元输出行数）此前只有「`BH=1` 最优」的单点结论（1D/2D 语境互反）；本数据点给出 `BH` 与 `CH` 的**联合**代价式并把「尾波浪费」量化进排序键，同时补车道宽下界。
+- status: pending
+- confirmations: 1/2
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与 PL-1.4 第五/六数据点（CH 单波 / 最小可行）互补不重复（本条自变量是 `BH` 与车道宽）；与队列 VP-2026-0249（单波占用优先 CH 判据 v2）、VP-0299（尾块 padding lane）同族，合入时建议合并为 PL-1.4 的「联合定档」小节。
+
+## VP-2026-0306
+
+- type: D
+- title: VEC tile 行粒度陷阱——`et/ot` 行数须 8 行对齐**并额外留一整块 spare**；`q_pad == out_w`（零 slack）时 `slack=1` 仍写坏输出列 0..7
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize）：`perf_opt/dbg6.py`（monkeypatch `_phase_plan` 抬高 `pad_rows` 后逐列统计 mismatch）——`q_pad == out_w` 形态（`1,8,16,16` fp32 与 `1,64,112,112` fp16）上 **slack=0/1 时输出列 0..7 全错**（低相位槽位），**slack=7（`pad_rows = round_up(.., 8)`）与 slack=15 逐位精确**
+  - 采用规则（落地于 `perf_opt/_max_pool2d_kernel.py`）：`pad_rows = round_up(1 + q_pad + tail, 8) + 8`（先 8 行对齐，再加一整块 spare）；`q_pad = round_up((w_in+1)//2, 8)`（行宽 16 B 对齐）
+  - 同任务 §5.5 的独立正确性探针（`probe_outw_floor.py`）与三 dtype Boundary 套件在规则落地后全 PASS（`max_diff = 0.0`）
+- repro: repro-missing（`dbg6.py` 通过 importlib 载入任务 kernel，违反 KB-REPRO-DECOUPLE；最小化需自带一份 phase tile 骨架，待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025 + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    动作: add 条目 TRAP-vec-tile-row-granularity-spare-block（置于 TRAP-UB-dst-align 邻域并互链）
+    front-matter: id/kind=trap/family=[pooling, window, layout, general]/apis=[T.alloc_ub, T.transpose, T.vmax]/dtype=[fp16, bf16, fp32]/device=910B3/status=verified/origin_task=max_pool2d-_max_pool2d_kernel-20261017T043853Z/toolchain=…commit b3a7b21 + CANN 9.0.0 + Ascend910B3/repro=repro-missing
+    正文要点: |
+      **现象**：`T.alloc_ub((pad_rows, ch))` 的行数只满足「够用」而不对齐时，VEC tile 的尾部行被写坏——受影响的输出是**相位槽位的低 8 行**（本例输出列 0..7 全错），无报错无 NaN。
+      **判据（两种必要条件同时成立）**：① 行数按 **8 行**对齐（`round_up(rows, 8)`）；② 在行数之上再加**一整块 spare 8 行**——`q_pad == out_w`（零 slack）形态上 `slack=1` 仍错，`slack=7/15` 才逐位精确。
+      **量纲/代价**：spare 8 行 = `8 × ch × elem_bytes`（ch=64 fp16 → 1 KB/缓冲；两相位缓冲 ×2）。省这 1–2 KB 会换来静默错值，是负收益。
+      **与邻近条目的关系**：`TRAP-UB-dst-align` 是 dst 起点切片 + 32 B 倍宽度的对齐错误（fault/报错），本条是**行数粒度**导致的静默错值；行宽方向的对齐要求（`q_pad` 16 B）与之同族。
+      **通用形态**：任何「按行填充 / 相位分离 / 转置」的 UB tile（池化 phase 路径、行归约 staging、attention mask 行块）在分配行数时都适用本判据；UB 预算紧时应压缩 `ch`/`bh` 而不是压缩 spare 块。
+    证据分级: 负面形态由任务内 `dbg6.py` 实测（provenance，允许失效）；本条缺知识域 repro ⇒ **repro-missing**。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 按 merge-policy §1「缺 repro → 降级 Tier 1 入队（标 repro-missing）」；同族任务可用自带 phase 骨架的最小探针补 repro 后转 Tier 0。
+
+## VP-2026-0307
+
+- type: D
+- title: 写侧行突发有**固定 ≈56–112 B/通道行**的额外开销（有效突发 = 行字节 + ~112 B）——`u2g` 与 tiling/单元数无关（5 种 tiling 全等），窄行写放大 3×；且 per-row store 比 unit 级 store 放大 9×
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize）：`perf_opt/tuning_sweep.jsonl` 的 `u2g_sum_kb` 在 resnet-stem 5 种 tiling（bh=1/2/4/8 × ch=32/64）上**全为 25,088 KB**、vgg-block 3 种 tiling 全为 9,856 KB、alexnet-ceil 全为 9,720 KB ⇒ staging 路径不随 tiling 过写，超出部分是**每次行突发的固定成本**
+  - 突发对照（`opt_log.md#§5-2`）：56 B 行 → 168 B（3.0×）、108 B → 221 B、112 B → 214 B、224 B → 305 B，即固定附加 ≈102–118 B/突发；实测写放大 vgg 3.0× / alexnet 3.18× / resnet f16 1.91×
+  - 粒度反例：把 store 搬进 row body（per-row store）使 resnet f16 486 µs / `u2g` 5544 KB·blk⁻¹，恢复 unit 级 store 后 229.6 µs / 616 KB·blk⁻¹（≈9×）
+  - 推论（同任务实测否决）：resnet 的 limiter 是向量 pipe（vec 125.5 / mte3 25.7 µs），写侧修形不能动它；且 block-store 修形需额外 staging tile 至 ~123 KB（×1.7 = 210 KB > 192 KB）⇒ 该杠杆对 resnet 不可用，仅对窄行 shape 有潜力
+- repro: repro-missing（数据来自 msprof `u2g` 字段对账，无独立写侧突发探针；同族任务可写「行长扫描 + u2g 记账」探针补齐）
+- toolchain_stamp: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025 + torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    动作: update（CONST-dma-burst-rowstride-floor 追加「写侧对称面」bullet；read 侧正文零删除）
+    定位锚: "- **低端外推（2026-10-16 追加指针）**"（在该 bullet 之后追加）
+    新文本: |
+      - **写侧对称面（2026-10-17 追加，max_pool2d Stage 4 / 910B3）**：UB→GM 的**每次通道行突发**有固定附加 ≈**56–112 B**（有效突发 ≈ 行字节 + ~112 B）——行长 56 B → 168 B（3.0×）、108 B → 221 B、112 B → 214 B、224 B → 305 B；因此**窄行（≤112 B）写的放大率 2–3×**，与「写多少字节」无关而与「切了多少行」成正比。**判据**：msprof `ub_to_gm_kb`（或 `u2g` 求和）与真实输出字节之比随行宽缩小而上升、且**与 tiling（bh/ch）无关**（同 shape 的 5 种 tiling `u2g` 全等 = 25,088 KB）⇒ 属行突发成本而非 staging 过写。**粒度陷阱**：把 store 从 unit 级搬进 row 级会使同一 kernel 的 `u2g` 放大 ≈9×（616 → 5544 KB·blk⁻¹，229.6 → 486 µs）——写回粒度应保持外层（unit）级。
+      适用边界：本数据点只覆盖 56–224 B 行（fp16、ch 32/64）；更宽行的附加率未测，不外推。与读侧的「行长/行距地板」是同一条突发轴的两端。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 按 merge-policy §1 缺 repro 降级入队；与 `PL-1.19-scatter-col-write-amplification`（列切片写 42×）机制互补（那条是列不连续，本条是行突发固定成本）。
+
+## VP-2026-0308
+
+- type: R
+- title: optimize Stage 4 的 L1 门禁补两条——① 新派发路径的分支须立即跑 `--level all`；② **路径标签失配先按数值问题排查**（`expect_path=None` 重跑比 `max_diff`），禁止只改标签
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z：`perf_opt/opt_log.md#§6-What-cost-time-(a)`（L1 套件先断言**路径标签**再比数值，标签过期把真实数值 bug 读成「测试记账问题」——round 1–7 期间六行红里有一行是真正的**末列错值**）
+  - 同任务 `#§5-5`：`probe_outw_floor.py` 扫描 `w_in = 11/13/15/17/27`（k3s2p1）显示相位路径在该列需要右 padding 时丢 5–9/960 元素；修法 = 结构守卫 `(out_w−1)·s_w+(k_w−1)·d_w−p_w ≤ w_in−1` 挡回一般网格；修复后 Boundary 组由 MISMATCH 转 PASS（三 dtype `max_diff = 0.0`）
+  - 同任务 `#§5-6`：四条 L1 行对相位路径仍断言 `expect_path="general"`，以 `expect_path=None` 重跑（`max_diff = 0.0`）后才更新标签——证明「先数值、后标签」的可行处置
+  - 同任务 `#§6-What-cost-time-(b)`：`bench.py --check` 用 `randn` 数据看不到 padding/NaN 边界 ⇒ 引入新派发路径时 L0 全绿的判别力不足
+- repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 走 Phase 2 第 6 步，观察新派发路径分支是否被要求跑 `--level all`、以及路径标签失配时的处置序）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+b3a7b21f… + CANN 9.0.0 + Ascend910B3 / 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 2 第 6 步加两条子要求；只替换该行，其余零改动）
+    定位锚: "6. 每个实验分支跑 L0 精度回归。"
+    old 文本: "6. 每个实验分支跑 L0 精度回归。"
+    new 文本: "6. 每个实验分支跑 L0 精度回归。**新派发路径的额外门禁**：分支引入新的分派路径（新的编译期/运行时分支、新的结构变体）时，本分支须立即跑 `python {op}.py --level all`（不止 L0）——L1 套件逐行断言**路径标签**再比数值，标签过期会把真实数值 bug 读成「测试记账问题」。**路径标签失配的处置序**：先按**数值问题**排查（以 `expect_path=None` 重跑并比对 `max_diff`），确认逐位精确后才允许更新标签；禁止只改标签了事。`randn` 数据看不到 padding/NaN 边界，新路径须补一组边界/特殊值 case（同类先例：max_pool2d 相位路径的末列右 padding 缺陷，5–9/960 元素错，L0 全绿而花多轮才定位）。"
+    动机: 本任务一个新派发路径的末列越界缺陷被「标签过期」掩盖多轮（§6 自述），单条机械要求即可把定位成本从「多轮」压到「一次 `--level all`」。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与已合并的 VP-2026-0233（结构分支正确性门排在 msprof 采集之前 + runner 默认 `--check`）同族，但那条管「采数前的 L0」，本条管「新派发路径的全量套件 + 路径标签处置序」；与 VP-2026-0114（S4 产物契约）无关。
+
+## VP-2026-0309
+
+- type: R
+- title: `iteration-diagnosis.md` 增「结构重写后的 effectful-op 存活核对 + 写回粒度不变式」两机械步骤（IR 文本 grep / `ub_to_gm_kb` 对账）
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z：`perf_opt/opt_log.md#Round-3`（两条 falsification）——① 运行时 `if/else` 奇偶分支使 `T.deinterleave` 从生成的 hivm IR 消失（编译通过、运行无报错、输出全错；`probe_pipe.py` 实测）；② 把 store 搬进 row body 使 resnet f16 `u2g` 5544 vs 616 KB·blk⁻¹（≈9×）、486 vs 229.6 µs
+  - IR 文本通道与匹配格式：`traps-compiler.md TRAP-npuir-lowered-mlir-access`（`kernel.mlir_content`；`vreduce <mode>` 中间有空格）
+  - 写放大记账字段：`perf_opt/tuning_sweep.jsonl` 的 `u2g_sum_kb` / `read_dram_sum_kb`（同 shape 5 种 tiling 全等 = 25,088 KB，可用于「粒度是否被改坏」的机械对账）
+  - 代价：本任务两条都靠人工逐轮 profile 才归因（IR 侧无门禁、写放大侧无对账），而两项核对的机械成本均为秒级
+- repro: repro-missing（流程规则；复现条件 = 按现行 `iteration-diagnosis.md` Step 3/5 走一次结构重写，观察是否要求 IR 存活核对与写回粒度对账）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+b3a7b21f… + CANN 9.0.0 + Ascend910B3 / 2026-10-17
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    动作: update（在 `### 代码结构观察` 与 `### 已知迭代结论` 之间插入一个小节）
+    定位锚: "### 已知迭代结论"
+    old 文本: "### 已知迭代结论"
+    new 文本: |
+      ### 结构重写后的 effectful-op 存活核对
+
+      重写循环体/数据流（尤其引入新原语、或把语句搬进条件分支）后，除性能与精度外必须做两项机械核对：
+
+      1. **降级 IR 的 effectful op 存活**：取 `kernel.mlir_content`（文本通道，见 pattern-library `TRAP-npuir-lowered-mlir-access`），逐项确认改写前存在的 effectful op（`vdeinterleave` / `vreduce` / `copy` 等）改写后**仍然存在**——npuir lowering 会在运行时 `if/else` 分支内静默丢弃某些 op（`T.deinterleave` 实测：编译通过、运行无报错、输出全错，IR 中该 op 消失）。
+      2. **写回粒度不变式**：把语句从外层循环搬进内层循环前，先确认写回粒度不变——per-row store 在 max_pool2d resnet f16 上使 `ub_to_gm_kb` 由 616 → 5544 KB·blk⁻¹（≈9× 写放大、229.6 → 486 µs）。判据：`ub_to_gm_kb` 与改写前逐 workload 对账，出现整数倍放大即回退该搬移。
+
+      两项均为秒级核对（IR 文本 grep / profile 字段对账），成本远低于「错误档被当成更快 winner」。
+
+      ### 已知迭代结论
+    动机: 本任务两条结构错误都不是精度或编译错误，而是「op 静默消失」与「写回粒度被无意改坏」——现有 diagnosis 流程没有任何一步会拦住它们，只能靠事后 profile 归因。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与 `TRAP-npuir-lowered-mlir-access`（工具通道）互补：那条记「怎么读 IR」，本条要求「重写后必须读一次」；与 VP-2026-0233（采数前正确性门）分属不同检查点。
+
+## VP-2026-0310
+
+- type: R
+- title: optimize Phase 0 增「跨 session 续跑交接（`perf_opt/PROGRESS.md` 每步覆盖写）+ 结构性实验前冻结可交付版本」两条纪律
+- evidence:
+  - task max_pool2d-_max_pool2d_kernel-20261017T043853Z：`perf_opt/PROGRESS.md`（标题即「overwrite each verifiable step」，含 State / Done this session / Result 表 / Next 四段）+ `perf_records.jsonl` 逐例 append —— 39 次 `msprof op` 跨 9 个 session 重启**零丢失、零改写**（`opt_log.md#§6-What-worked-(a)`）
+  - 冻结纪律：本任务把 round-2 交付冻结为 `perf_opt/_max_pool2d_kernel_v2_frozen.py`（sha256 `7385d4a2…`）后才做 round-3 受控实验，最终交付 `perf_opt/_max_pool2d_kernel.py`（sha256 `738bf413…`）；round-3 期间两条 falsification 均有 frozen 版本可对照（`freeze_sha.txt`）
+  - 反例成本：同一算子的相邻任务出现「final 后不得不清理」的处置缺口（队列 VP-2026-0240 已记「append-only × 唯一 final 使 post-final 清理不可行」）；跨 session 场景下若无交接文件，重启后需重建本轮上下文
+- repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 在长任务里中断后重启，观察是否有交接文件约定）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+b3a7b21f… + CANN 9.0.0 + Ascend910B3 / 2026-10-17（Stage 4 elapsed 52 141 s）
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0 第 6 条之后追加第 7、8 条）
+    定位锚: "6. 记录可参考的结构性策略，但不要照搬；必须用当前算子的 profile 验证。"
+    old 文本: "6. 记录可参考的结构性策略，但不要照搬；必须用当前算子的 profile 验证。"
+    new 文本: |
+      6. 记录可参考的结构性策略，但不要照搬；必须用当前算子的 profile 验证。
+      7. **跨 session 续跑交接**：Stage 4 可能跨多次会话重启。开工先读 `perf_opt/PROGRESS.md`——它是**每完成一个可验证步骤就整文件覆盖写**的交接位（当前状态 / 本轮已做 / 结果表 / 下一步），配合 `perf_records.jsonl` 的逐例 append 实现零丢失续跑；不存在时在第一轮结束前建立。写入纪律：只覆盖写 `PROGRESS.md`，**不改写** `perf_records.jsonl` 既有行。
+      8. **先冻结可交付版本，再做受控实验**：结构性实验前把当前可交付 kernel 复制为 `perf_opt/{op}_v{N}_frozen.py`，在 `PROGRESS.md` / `opt_log.md` 记 sha256；实验失败或回退即恢复到 frozen。frozen 副本须在 `phase=final` 采集前删除，或在 `opt_log.md` 显式登记为非交付件（不与 Phase 3 的 final 冻结语义冲突）。
+    动机: 本任务 Stage 4 elapsed 52 141 s（≈14.5 h）跨 9 个 session，无损续跑完全依赖 `PROGRESS.md` 的覆盖写约定；该约定与「冻结后再实验」的纪律目前只存在于任务内实践，未写进 skill ⇒ 下一个长任务需重新发明。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
+- decided_by: -
+- decided_note: 与 VP-2026-0240（final 冻结/重采通道）互补：那条管 final 之后，本条管 final 之前的**实验基线冻结**；与 VP-2026-0114（S4 产物契约）无关。
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0227

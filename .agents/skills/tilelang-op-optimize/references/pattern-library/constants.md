@@ -337,8 +337,8 @@ apis: [T.copy, T.reduce_min]
 dtype: [fp16, fp32]
 device: 910B3
 status: verified
-origin_task: argmin-_argreduce_kernel-20261015T023310Z
-toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → aivector 40）/ 2026-10-15
+origin_task: argmin-_argreduce_kernel-20261015T023310Z / max_pool2d-_max_pool2d_kernel-20261017T043853Z（sum vs max 判别追加，Stage 4 optimize）
+toolchain: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → aivector 40）/ 2026-10-15；sum/max 判别数据 tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025 + CANN 9.0.0 + Ascend910B3 / 2026-10-17
 source: PL-1.20-nsplit-perrow-partial / CONST-copy-floor-method
 repro: repro/CONST-aiv-time-decomposition.py
 ---
@@ -348,6 +348,7 @@ repro: repro/CONST-aiv-time-decomposition.py
 - **拟合式（本机三处同形实测）**：`Task Duration ≈ max(mte2, vec) + scalar`——纯拷贝档 `aiv_time 13.10 = mte2 10.92 + scalar 1.59`；完整链式档 `29.05 = 18.86 + 9.73`（MTE2 10.33 已被 auto-multi-buffer 流水隐藏，不入 max）；「纯拷贝 + 1 次 fp16 全宽 reduce_min」档 `17.56 = 10.71 + 5.86`。
 - **ratio 的读法**：`aiv_vec_ratio` / `aiv_scalar_ratio` 是 **`aiv_time` 的分解分量**（同档实测 0.649 + 0.335 = 0.984 ≈ 1），不是 Task Duration 的占比；`aiv_mte2_ratio` 属另一条 pipe（0.356），它是「已用掉多少搬运窗口」而非「占了多少总时长」。把 ratio 当总时长占比会把「计算受限」误读为「搬运受限」。
 - **判据（本档的用途）**：当 `vec + scalar > mte2` 时该 workload 是**计算受限**——此时即使把搬运完全隐藏，下界仍由该 DMA 粒度的纯拷贝地板给出（见 CONST-copy-floor-dma-granularity），压时延的唯一有效方向是削减 vec/scalar 分量（pass 数、标量地址/边界计算），而不是继续优化搬运。
+- **sum vs max 判别（2026-10-17 追加，max_pool2d Stage 4）**：`dur ≈ max(mte2, vec) + scalar` 只在**已发生重叠**时成立；当实测 **`dur ≈ vec + mte2 + mte3`**（三 pipe 忙时之和 ≈ 总时延）时，这个「和」是**串行化签名而非 roofline 下界**——把它当下界读会得出「无可优化项」的错误结论，正确动作是评估软件流水（预取/双 scratch）。实证：resnet-stem f16 `231.5 ≈ 125.5 + 59.2 + 25.7 µs`（三 pipe 零重叠）；行级 ping-pong 预取后同 body 探针 201.0 → **156.6 µs**（vec 108.5 / mte2 98.9，MTE2 被向量工作覆盖），实装 6 例 **−7.0%~−25.0%**。机械判据：`|dur − (vec+mte2+mte3)| / dur < 0.10` ⇒ 串行化；`|dur − (max+scalar)| / dur < 0.10` ⇒ 已重叠。机制与代码形态另见 `repro/PATT-row-pingpong-pipeline.py` 与 queue **VP-2026-0303**。
 - **证伪更正（本轮纠正的误判模型）**：本轮一度用「UB 字节吞吐」模型解释链式代价并据此实现 fused 候选，实测证伪——把候选链缓冲（idx/sent/cand）由 fp32 改 fp16 仅 **−1.7%**（30.686 vs 31.229 µs），说明链代价**不是字节主导**，而是向量 pass 数与标量分量主导（与 `CONST-vector-launch-overhead` 的 ~0.5 µs/op 量级一致）。旧模型下「换更窄 dtype 就能大降」的推论不成立。
 - **证明**：`python repro/CONST-aiv-time-decomposition.py`（逐 op 类标定脚本 + 头部断言说明；msprof 重测按头部命令人工执行）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/{opt_log.md#Baseline-现象结论, logs/round1/q_*.log}`。
 
@@ -509,3 +510,33 @@ repro: repro/CONST-vcast-rint-downcast-bitexact.py
 - **族内位置**：与 `TRAP-vcast-same-dtype-rounds`（同 dtype 退化）互为正反面；`PL-1.17-subfp32-fp32-transit` 是**上抛** fp32 中转模式，本条是**下压**到存储 dtype 的逐位等价结论（repro 头部以其为「最近邻条目」并登记于本条）。
 - 溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/_flashattn_bwd_postprocess_kernel/{_flashattn_bwd_postprocess_kernel.py L0-12/L0-13 角点用例, verify_equiv.py 的 D-1 结果表, repro/CONST-vcast-rint-downcast-bitexact.py}`。
 - **证明**：`python repro/CONST-vcast-rint-downcast-bitexact.py`（断言：① `f32→f16` == `torch.to(float16)` 逐位；② `f32→bf16` == `torch.to(bfloat16)` 逐位（各在角点 + 混合域）；③ `f32→f32` 在 >半数非整数输入上 ≠ 源；④ `f16→f32`（控制组）逐位）。头部另记一条附属陷阱：独立探针/repro 在 `import tilelang` 前未设 `TILELANG_ASCEND_MODE` 时 `jit_npu` 走 Expert 选项，合法 Developer 形态 kernel 会在 bishengir-compile 报**误导性**的 `'hivm.hir.store' op only support store ub to gm currently!`（该附属陷阱无独立 repro，另立 Tier 1 条目跟进）。
+
+---
+
+id: CONST-device-peak-910B3
+kind: constant
+family: [pooling, elementwise, reduction, general, migration]
+apis: [T.copy, msprof]
+dtype: [fp16]
+device: 910B3
+status: verified
+origin_task: max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，`peak.py` / `run_peak2.py` / `peak_recheck.jsonl` / `logs/peak_*.log`）
+toolchain: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（npu-smi 26.1.1；aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-17
+source: CONST-fabric-bw（聚合口径）/ CONST-mte2-degradation（总流量退化曲线）/ CONST-copy-floor-dma-granularity（小流量档含 L2 成分）
+repro: repro/CONST-device-peak-910B3.py
+---
+
+### AIV 侧 GM 可达带宽三口径（910B3 / CANN 9.0.0）：纯连续读 ≈753–779 GB/s、纯写 ≈1060–1115 GB/s、读写混合聚合 ≈0.70–1.06 TB/s
+
+- **口径**：`msprof op --kernel-name=main --launch-count=20 --warm-up=5 --dump=off --aic-metrics=PipeUtilization,Memory` 的 **Task Duration(us) 中位**；单 kernel persistent 探针（40 个 AIV、每核一段连续大块，chunk = 120 KB 或 60 KB，`T.Pipelined` 深度见命令），**唯一变量 = 方向**（纯读保活 / 纯写 / 读写各半）。
+- **实测（同一任务内多 run 取中位）**：
+  - **纯连续读**：读 256 MiB + 单元素 GM 写保活 355.5–357.2 µs ⇒ **753.3 GB/s**；64 MiB 档 85.6–86.4 µs ⇒ **778.7 GB/s**（`peak_recheck.jsonl` a1/a2）。
+  - **纯写**：256 MiB / 247.1–249.0 µs ⇒ **1078–1087 GB/s**；同栅格 32 通道 × 8 行块写标定档 308 KB / 11.52 µs ⇒ **1115 GB/s**（`copy_floor_calibration.jsonl` `wr_c32_r8`）。
+  - **读写混合**：256 MiB 读 + 256 MiB 写 / 763.8–773.7 µs ⇒ **694–703 GB/s 聚合**；同任务不同 chunk 档散落在 0.68–1.07 TB/s 区间（任务 `opt_log.md#3B` 汇总口径 682–1065 GB/s）。
+- **推论（本条用途）**：任务书/设计常用的「`achieved_bw / 1.75 TB/s ≥ 70%`」= 1.225 TB/s 算法流量，**高于本机单向读上限（0.78 TB/s）约 57%**——属**口径不可达**而非结构未优化；改用实测混合上限（≈1.0 TB/s）评估时同一批算子可达 23%–49%。设计期 roofline 应写「实测三口径 + 引用的总流量档」，不写 1.75 TB/s 单值。
+- **与既有条目互链（口径分野，非矛盾）**：① `CONST-fabric-bw` 的「fabric 聚合 ≥1.73 TB/s」是聚合/fabric 口径，不等于 AIV 侧单向 GM 流量可达值；② `CONST-mte2-degradation` 的「256M 3:1 R/W ≈1.26 TB/s 地板」是 910B2C / 3:1 读写比 / 48 core 口径，本条是 910B3 / 1:1 与单向上限；③ `CONST-copy-floor-dma-granularity` 的「16.78 MB 读 1.06 TB/s」是**小流量档**（含 L2 驻留成分），与本条 64–256 MiB 档不矛盾（同一总流量退化轴）。
+- **适用域与边界**：AIV（Vector）侧 GM↔UB `T.copy` 流；**不覆盖** Cube/L1 端口（见 `CONST-L1-port-bw`）与 L2 驻留 workload（驻留档可显著更高，见 `CONST-mte2-degradation` 的 L2 口径）。数字随驱动/驻留状态漂移——只锁量级与相对关系（read < write、mixed < read 上限），绝对值仅作参考。
+- **量纲**：GB/s（聚合流量 ÷ Task Duration）。
+- **证明**：`python repro/CONST-device-peak-910B3.py --mode read1 --mb 256 --span 61440 --stages 3`（可运行部分 = 构建 + 跑通 + 打印读字节与输出形状；时延按头部 msprof 命令读取，断言为量级/相对关系）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool2d/max_pool2d_kernel/perf_opt/{peak.py, run_peak2.py, peak_recheck.jsonl, logs/peak_read_256mb_s1.log, logs/peak_read_64mb_s3.log, logs/peak_write_256mb_s1.log, logs/peak_rw_256mb_s2.log, profiles/peak2/}`、`opt_log.md#3B`。
+
+> 〔2026-10-17 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套）；repro 为 ED-C 机械转正（逐字节拷贝 `peak.py` + 头部登记块，代码零改动，登记后 `py_compile` PASS；103 行 / 4 918 B（其中 19 行 docstring 登记块）——行数超 ED-B 100 行预算，按 PL-1.10 先例不裁剪披露）。本任务 `[DESIGN_LIMIT]` **未触发**：该项是测量导出的硬件事实（非 2× 结构性机会），本条替代的是「目标线口径」而非性能结论。〕
