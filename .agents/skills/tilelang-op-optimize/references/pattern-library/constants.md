@@ -559,8 +559,8 @@ apis: [msprof, T.Kernel, T.copy]
 dtype: [fp16, bf16]
 device: 910B4
 status: verified
-origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）/ all-_logical_reduce_kernel-20261018T070754Z（第二工具链栅格档补齐：8/16/32 块 1.455/1.845/2.511–2.675 µs）
-toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40 / ub_cap 196608 B）；栅格档补齐 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）/ all-_logical_reduce_kernel-20261018T070754Z（第二工具链栅格档补齐：8/16/32 块 1.455/1.845/2.511–2.675 µs）/ any-_logical_reduce_kernel-20261018T094101Z（第三数据点：行归约 4k 形态 16 块 1.7713 µs，跨结构 −4.0%）
+toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40 / ub_cap 196608 B）；栅格档补齐 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18；第三数据点 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
 source: perf_opt/probe_floor.py + perf_opt/copy_floor_calibration.jsonl
 repro: repro/CONST-groupnorm-smallshape-memfloor-910B4.py
 ---
@@ -575,6 +575,7 @@ repro: repro/CONST-groupnorm-smallshape-memfloor-910B4.py
   - copy-floor（在其上 +2 个保活 v-op）= 4.55 / 3.97 / 3.27 µs ⇒ **2 个 pass 可被 DMA 吸收（+0.16–0.18 µs）**，但整行归约链不可（见 `CG-2026-0027`）。
 - **用法**：给「小形状 + 整行归约」类算子设 roofline/latency 目标时，先算 `目标线 vs max(空 kernel 地板, 纯 DMA 地板)`；目标线低于地板的下界即口径不可达（本例 4 档目标低于纯 DMA 地板 1.81–3.42x，3 档低于空 kernel 地板）。**不要**用大流量同族常数外推：同族 16.78 MB 档纯拷贝 1.06 TB/s（`CONST-copy-floor-dma-granularity`），本档只有 0.60–0.96 TB/s。
 - **第二工具链栅格档补齐（2026-10-18 追加；`4d2e413` / 910B4 / 40 AIV；同 persistent 形态 + 单元素保活写，`msprof op` `--launch-count=15 --warm-up=3`）**：**8 块 1.455 µs / 16 块 1.845 / 32 块 2.511–2.675**，补齐本条 1–2 块与 29–32 块之间的两档空档，并复现同一斜率——逐块代价 (1.845−1.455)/8 = **0.049 µs/块**（8→16 档）、(2.511…2.675−1.845)/16 = **0.042–0.052 µs/块**（16→32 档），与本条「≈0.045 µs/块」一致 ⇒ 该斜率跨工具链（`2afbf3b` → `4d2e413`）稳定。**应用正例**：同任务把 16 块的小 workload 改成 32 块（「填满核」候选）实测 **+0.55 µs（−18.5%）**，与地板预测 +0.67 µs（2.511−1.845）同量级 ⇒ 小 M 读主导形态下多开核的账面收益必须先扣该档差。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{copy_floor_calibration.jsonl（M32_N4096_bm{1,2,4} 的 `empty` 行）, probe_floor.py, logs/round1/}`；工具链 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106 + CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18。
+- **第三数据点（2026-10-18，行归约 4k 形态，`c316b0e` / 910B4）：地板由栅格主导、跨结构近似可平移**：`(32,4096)` bool→f32 行归约（`bm=2`、**16 blocks**、单元素保活写）空 kernel **1.7713 µs**（30 launch mean）——与同栅格档 16 块 **1.845 µs**（`4d2e413` / group_norm persistent 形态）差 **−4.0%**，也与「1.13 + 15×0.045 ≈ 1.81 µs」斜率外推一致 ⇒ 空 kernel 地板可跨结构、跨工具链按**目标栅格**近似平移（跨设备仍禁止复用）。**应用**：该 workload（GM 524 320 B、baseline 2.9833 µs）地板占 **59%**，1.7713 µs 对应带宽上限 **296 GB/s**，低于族验收线 560 GB/s（`CONST-device-peak-910B3` 第五数据点）⇒ 4k 档**结构性不可达**、只能按 Task Duration 判据评估（A/B −4.73%）；同 workload 的 `ind_vmin` 探针 3.1507 µs（`vec` 0.45）⇒ 向量/延迟受限而非带宽受限。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/any/any_kernel/perf_opt/{copy_floor_calibration.jsonl（4k_empty / 4k_ind_vmin 行）, probe_floor.py}`；工具链同上第三数据点戳。
 - **互链**：`CONST-msprof-task-floor-910B3`（3.37/4.25 µs，910B3 大 tile 形态；本条是 910B4 小形状多栅格扫描，两机常数不可互换）、`CONST-msprof-ratio-compute-roofline`（Ratio 目标口径）。
 - **证明**：`python repro/CONST-groupnorm-smallshape-memfloor-910B4.py --mode both --case image`（可运行部分 = 两个探针构建 + 数值精确性断言；时延按头部 msprof 命令读取）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{probe_floor.py, copy_floor_calibration.jsonl, profiles/round0/, profiles/floor_v2/}`。
 

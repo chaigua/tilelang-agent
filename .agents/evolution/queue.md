@@ -33,6 +33,8 @@ decided_by: evolver / human / -   # 裁决者
 
 ## Pending
 
+> **条目迁移（2026-10-18 蒸馏，`any`（`_logical_reduce_kernel`）Stage 4 optimize）**：**VP-2026-0323**（P：`BP_run_state_bimodality` 跨 session 复测判据）**第二证达标**（第二证来自 task `any-_logical_reduce_kernel-20261018T094101Z`——不同任务 / 不同算子（谓词 OR vs AND）/ 同族贴地板 workload；按该条目自定的第二证条件「两 session 各 ≥3 对并确认同向」，4k 交付版 −4.73%（4 对全同向）与前一 session 同码 −6.08%（3/3）同向）→ 合入 `bottleneck-patterns.md` **BP_run_state_bimodality**（触发信号 / 推荐动作 / 验证指标各追加跨 session 档，两证并列）；完整记录移至下方 `## Decided` 归档区。
+
 > **条目迁移（2026-10-18 蒸馏，max_pool1d_with_indices Stage 4 optimize）**：VP-2026-0299（D：`CH` 容量上限 < C ⇒ 尾块 padding lane + `num_logical` 翻倍）与 VP-2026-0300（D：窄向量 op 单价档）**第二证达标**，第二证同来自 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z`（不同任务 / 不同算子 / 新设备 910B4 + 工具链 e8b5d51），分别合入 `layout.md` **PL-1.4 第八数据点**（两证并列，含「Stage 3 复现冻结闭式 vs Stage 4 死 alloc 移除后重推」边界）与 `constants.md` **CONST-vector-launch-overhead**（窄 op 宽度分档 + 三杠杆用法，repro 机械转正）；VP-2026-0130（P：迭代效率两手法）第二证达标（同上任务）→ 合入 `iteration-diagnosis.md` 新增「迭代效率两手法」小节。三条完整记录移至下方 `## Decided` 归档区。
 
 > **条目迁移（2026-10-14 apply）**：VP-2026-0176/0177/0178/0179 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
@@ -6534,30 +6536,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与「同主题已有条目」的关系：判据落在既有 PL-1.25（update 而非新开条目）；数字已作为第五数据点入条目正文（ED-A 自包含），本条负责把「何时/怎么用」显性化——两层不重复。
 
-## VP-2026-0323
-
-- type: P
-- title: run-state 双态的裁决须**跨 session 复测**——单 session 内「3/3 同向」不构成充分证据（3d 上 session 1 −9.99% 3/3 → session 2 **+1.22% 3/3**，6 对符号 3:3、sign-test p=1.0）
-- evidence:
-  - task `all-_logical_reduce_kernel-20261018T070754Z`（Stage 4 optimize，910B4 / `4d2e413`）：`perf_opt/opt_log.md#§4.4`——A = Stage 3 baseline、B = f16 指示平面候选，同机同 run 交错 A/B/A/B。**session 1**（3d）：A 中位 15.5067 / B 13.9580 µs，逐对 Δ **−9.59% / −11.36% / −9.79%**（3/3 同向）；**session 2**（同 kernel 复测 3 对）：A 14.5927 / B 14.7713，逐对 Δ **+1.09% / +3.40% / +1.04%**（3/3 同向，方向相反）⇒ 6 对符号 **3:3**、sign-test p=1.0 ⇒ 不可判定。原始 profile：`perf_opt/profiles/ab/op6_3d-multidim-reduce-bool/{A,B}_run{1..3}` 与 `profiles/ab/final_3d/{A,B}_run{1..3}`
-  - **同码跨 session 漂移 5–8%**（同任务 §1.1，三档独立采样）：4k 2.9793 / 3.0387 / 2.9587 µs、32k 7.7587 / 8.1473 / 8.1220（**+5.0% / +4.7%**）、3d 14.3373 / 14.5373 / **15.5067**（**+8.1%**，单次 max 18.6 µs 双态尾）⇒ 第二 session 的 A 臂落在「快态」，B 臂随调度落在「慢态」，符号随之翻转
-  - **正对照（同任务的采纳项）**：4k 两 session 同向（session 1 A/B **−4.26%** 3/3；session 2 相邻对 baseline_recheck 3.0387 vs final 2.8453 = **−6.4%**）⇒ 跨 session 复测既能证伪假象、也能确认真收益，不是「一律判 inconclusive」
-  - 现行条目边界：`bottleneck-patterns.md BP_run_state_bimodality` 的「推荐动作/验证指标」只要求**同 run 内**≥3 次交错 + 配对次序稳定（「同一方向跨 run 成立」）——本任务是首个「**两 session 内部各自 3/3 同向、跨 session 符号相反**」的实证，正好落在该判据的盲区
-- repro: repro-missing（效应只在完整 kernel 规模 + msprof op 上显现；最小形态 = 同一对 kernel 文件在两个独立 session 各跑 3 对交错 A/B/A/B，输出两组中位与符号表）
-- toolchain_stamp: tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch_npu 2.9.0.post8 / 2026-10-18
-- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
-- delta: |
-    动作: update（`BP_run_state_bimodality` 的「触发信号」与「验证指标」各追加一条，正文其余不动）
-    追加要点:
-      ① 触发信号新增 **跨 session 档**：同一对实现**在同一 session 内**交错 A/B 得到「≥3 对、方向全一致」之后，若 |Δ| < 10% 且该 kernel 贴地板/小规模，仍须在**另一个独立 session** 复测 ≥3 对——实测 3d 上 session 1 −9.99%（3/3）与 session 2 +1.22%（3/3）符号相反（6 对 3:3、p=1.0）。即「session 内方向一致」是**必要不充分**条件（机制：每次 session 的进程/内存状态把 A、B 两臂同时推入快态或慢态，臂间差被态差淹没后符号可翻）。
-      ② 验证指标新增 **冲突处置**：两 session 符号冲突（sign-test 不显著）⇒ 记 `inconclusive`，**不得**记为 winner / 不得记回退；opt_log 须并列两组中位与逐对 Δ（本任务 §4.4 的表格形态）。两 session 同向才升级为「真实差异」，同向且 |Δ| ≥ 阈值才采纳。
-      ③ 边界：cross-session 复测不替代同 session 的交错协议（后者消除 run 内漂移），两者串联使用；同码跨 session 的本底漂移可直接量化为「同 sha 两 session 的基线差」（本例 5–8%），作为判定阈值的下界参考。
-- status: pending
-- confirmations: 1/2
-- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
-- decided_by: -
-- decided_note: 与 queue `VP-2026-0010`（T-2 交错 A/B 多 run 协议，已 merged）为**串联关系**：0010 管「同一 session 内怎么交错」，本条补「跨 session 还要再来一次」；与其 R 类另一半 `VP-2026-0324`（写进 iteration-diagnosis Step 6 的流程硬规则）拆开走各自 Tier。第二证路径：任一 optimize 任务在贴地板 workload 上做「两 session 各 ≥3 对」的 A/B 并复现符号翻转或确认同向即计 2/2。
-
 ## VP-2026-0324
 
 - type: R
@@ -6631,7 +6609,131 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 按 ED-A 降级入队（`repro-missing`，需 NPU 才能复现，无法在知识域内自包含为纯 torch 脚本）；第二证路径 = 任一同族（all/any/count_nonzero 或含 f16 归约的元素算子）任务在窄尾块上复现「f16 错 / f32 对」，或回填最小 repro 后按「有 repro 的 D 类」直接 Tier 0 合入。与 `CG-2026-0038` 同源（本条是陷阱知识，CG 是缺口本体与补齐跟踪）。
 
+## VP-2026-0327
+
+- type: D
+- title: 910B4 行归约族**整 kernel 纯读地板**与列 tile 宽度饱和档——3d 8.39 MB **12.48 µs / 672 GB/s**、32k 4.19 MB **6.94 µs / 604 GB/s**；tile 4096 **+11.8%/+6.8%**、16384 −1.0%/−1.5%（≥8192 饱和）；地板占 baseline **84.8%/89.8%** ⇒ 结构候选上限 15%/10%
+- evidence:
+  - task `any-_logical_reduce_kernel-20261018T094101Z`（Stage 4 optimize，910B4 / `c316b0e`）：`perf_opt/opt_log.md#§3` 探针表——`probe_floor.py` 按 baseline path-C 结构（40 核 persistent + `T.serial` 任务循环 + 列 tile）逐级裁剪出 `empty` / `read` / `ind_vmin` / `vmin_f16` 四条有效探针（`reduce` / `ind_red` 两模式在本工具链运行期 core dump，未参与决策，如实披露）；30 launch mean，`read` 第二 session 复现 0.4%（12.4767 → 12.532 µs）
+  - 数值（同文件 §3 表 + `perf_opt/copy_floor_calibration.jsonl`）：3d `(128,16384)` tn=8192 → 12.4767 µs = **672 GB/s**（16.8 GB/s/核 × 40）；32k `(32,32768)` tn=8192 → 6.9427 µs = **604 GB/s**（18.9 GB/s/核 × 32）；tile 扫描 3d `t=16384` 12.3513（**−1.0%**）/ `t=4096` 13.9433（**+11.8%**），32k `t=16384` 6.838（**−1.5%**）/ `t=4096` 7.4173（**+6.8%**）
+  - 判据（同文件 §3 判据 1）：地板 / baseline = 12.48/14.716 = **84.8%**、6.94/7.730 = **89.8%** ⇒ 3d/32k 全部结构候选的理论上限只有 15% / 10%，任何 <5% 差异必须走交错 A/B；4k 见 `CONST-groupnorm-smallshape-memfloor-910B4` 第三数据点（空 kernel 1.7713 µs ⇒ 上限 296 GB/s）
+  - 已证伪假设（negate 侧，同文件 §3）：**静态 copy extent** 不改善读路径——`real_m = T.min(...)` 换成静态行列范围后 3d read **14.944 vs 12.4767（+19.8%）**，与「动态 guard 打断 burst 读」的直觉相反
+- repro: repro-missing（ED-B：`perf_opt/probe_floor.py` 336 行 / 14 KB 超 repro 双预算，且运行时以 `importlib` 载入任务工作区的 `bench_driver.py` 口径 ⇒ 非知识域自包含、不转正。最小化路径 = 「persistent N 核 + `T.serial` 任务循环 + `(bm,tn)` 列 tile」骨架只留 GM→UB `T.copy` + 单元素保活写；分级断言只锁相对关系：`read(tn=4096) > read(tn=8192) × 1.05`、`read(tn=16384) ≥ read(tn=8192) × 0.95`、`floor/baseline ≥ 0.8`）
+- toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    动作: update `CONST-aiv-read-roof-and-tiny-dma-910B4`（追加「第三数据点：整 kernel 纯读地板 + 列 tile 宽度饱和档」，与既有「逐 tile 读单价」互为两个粒度口径，合入时互注口径差异）
+    追加要点:
+      ① **整 kernel 纯读地板**（persistent + `T.serial` + 列 tile，30 launch mean）：3d 8.39 MB / tn=8192 / 40 核 = 12.4767 µs（672 GB/s；16.8 GB/s/核），第二 session 12.532（0.4% 复现）；32k 4.19 MB / tn=8192 / 32 核 = 6.9427 µs（604 GB/s；18.9 GB/s/核）。
+      ② **列 tile 宽度饱和档**：tn=4096 比 8192 慢 +11.8%（3d）/ +6.8%（32k）；tn=16384 只快 1.0% / 1.5% ⇒ **≥8192 饱和、<8192 是劣化档**；加宽 tile 的收益只能来自「减少每元素归约 pass」，不能指望 DMA（与 `CONST-vector-launch-overhead` 第三数据点的 pass 分档互证）。
+      ③ **headroom 判据**：`floor / baseline` 比值决定结构候选上限（本任务 84.8% / 89.8% ⇒ 上限 15% / 10%）；≥0.85 档只做单点变体 + 交错 A/B（候选生成顺序见 queue `VP-2026-0328`）。
+      ④ **口径警示**：本条是**整 kernel 粒度**的纯读地板（含 launch/任务循环/写回 keep-alive），与第二条「`copyout − empty` 逐 tile 反解」不是同一量纲，不可互推；且逐 tile 读单价随「每 tile 行数 × 并发读者数」变化（第二条），故跨 `(bm,W,块数)` 引用前须重测。
+- status: pending
+- confirmations: 1/2
+- created_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: -
+- decided_note: 按 ED-A 降级入队（`repro-missing`：探针超预算且依赖任务工作区驱动）。第二证路径（E-3）：任一同族（all / count_nonzero / 行归约池化/norm）任务在**同一工具链**上用整 kernel read 探针复现「tn≥8192 饱和 + floor/baseline 比值」两关系，或回填最小 repro 后按「有 repro 的 D 类」直接 Tier 0 合入。与 `CONST-groupnorm-smallshape-memfloor-910B4`（空 kernel/纯 DMA 地板，块数轴）互为结构轴/栅格轴两半，合入时互链。
+
+## VP-2026-0328
+
+- type: P
+- title: BP_floor_gated_candidate_order——行归约/读主导算子的候选生成顺序按「地板/baseline」比值分档：≥0.85 只做单点 dtype/组织变体并全走 A/B；≤0.65 转向削 prologue/epilogue 与 pass 跳数，**不调并行度**
+- evidence:
+  - task `any-_logical_reduce_kernel-20261018T094101Z`：`perf_opt/opt_log.md#§3` 判据 1/2 + `#§8.2` 有效优化点汇总——先测 read/empty 地板（12.48 / 6.94 / 1.77 µs）后，6 条候选方向中 **4 条被探针提前否决**（静态 extent 实测 **+19.8%**、tile 加宽 tie、`bm=1` 铺满 32 核无收益 3.001 vs 2.986 µs、reduce pass 组织等价 14.716 vs 14.649 µs），预算集中到载体 dtype（唯一采纳 −4.73%）与归约组织，7 个分支内收束（4 轮 / `stop_reason=budget_exhausted`）
+  - 分档实测：3d/32k `floor/baseline` = **84.8% / 89.8%**（≥0.85 档 ⇒ 上限 15%/10%，四种结构变体全部 ±3% 内）；4k `floor/baseline` = **1.7713/2.9833 = 59.4%**（≤0.65 档 ⇒ 地板是启动/写回 1.77 µs + 约 1.2 µs 工作，削 bm/加核无效，可行方向只剩 prologue zero 平面填充量（= 读量）与 epilogue pass 跳数）
+  - 姊妹正证（不计第二证——同族不同任务的**方向**一致而非本条判据的独立复现）：`all-_logical_reduce_kernel-20261018T070754Z` 同样以 empty/copyout/read 探针前置否决「多开核」（实测 −18.5%）与「f16 归约时间减半」两个错误期望
+- repro: repro-missing（方法类：判据与分档动作自包含于 delta；效应载体 = 同一 workload 上「先探针后候选」与「直接出候选」的分支命中率对比，无法在知识域内自包含为脚本。第二证路径见下）
+- toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    add 新 BP 条目 BP_floor_gated_candidate_order（目录行置于 BP_ub_traffic_floor 之后；正文紧随该节，交叉引用 `BP_run_state_bimodality` 与 `CONST-aiv-read-roof-and-tiny-dma-910B4`）：
+    触发信号：纯 Vector 行归约 / 读主导 workload（无 matmul、GM→UB 单向为主）进入首轮候选生成之前；profile 尚未解释「时间花在哪」时。
+    动作（定标先行，再按比值分档）：
+      ① 用与目标结构同栅格 read/empty 双探针测地板（方法见 `CONST-copy-floor-dma-granularity` / `CONST-aiv-read-roof-and-tiny-dma-910B4`），并同时记录空 kernel 地板（块数轴，见 `CONST-groupnorm-smallshape-memfloor-910B4`）；
+      ② `floor / baseline ≥ 0.85` ⇒ 结构 headroom ≤15%：**只做单点变体**（载体 dtype、归约组织、相邻 pass 合并），每个变体必须走同 session 交错 A/B + 跨 session 复测（`BP_run_state_bimodality`）；不要花预算在 tile 宽度/并行度上（本任务四种结构变体全 tie 且 codegen 逐字节相同）；
+      ③ `floor / baseline ≤ 0.65` ⇒ 地板本身是启动/写回/延迟而非带宽：转向削 prologue（零平面填充量、初始化 pass）与 epilogue（cast 跳数、微缓冲 op），**不调并行度**（本任务 4k 加核 3.001 vs 2.986 µs、bm=1 无效）；
+      ④ 0.65–0.85 之间按「地板成分」再分：读地板主导走 ②、空 kernel 地板主导走 ③。
+    反证/边界：地板探针的自变量须与真实 kernel 的瓶颈项一致（`iteration-diagnosis.md` 的「单变量真实 kernel 对照」纪律）——纯 DMA 探针的结论直接外推可能反向（2026-10-15 池化实证）。地板显著低于 baseline 时先怀疑假地板（写侧生产者形态，`PL-1.6`）。
+    验证指标：候选命中率（被探针提前否决的方向数 / 总方向数）与本轮分支数；采纳项必须同时满足「同 session A/B 同向 + 跨 session 同向」或「codegen 改动可机械归因」。
+- status: pending
+- confirmations: 1/2
+- created_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: -
+- decided_note: 与既有条目分工：`BP_ub_traffic_floor` 讲「UB 流量/pass 数成为地板时的处置」，`BP_run_state_bimodality` 讲「小差异怎么裁决」，本条讲「**先定标、再按比值决定候选类别**」的顺序与分档；与 queue `VP-2026-0327`（D：本任务地板数字）为判据/数据两半，合入时互链。第二证路径：任一读主导算子（池化 / norm / 行归约）在首轮按该三档执行并记录「探针否决方向数 + 采纳项」即计 2/2。
+
+## VP-2026-0329
+
+- type: R
+- title: `ab_test.py` 的 arm 命令必须以 **bench entry** 开头（`python bench_driver.py --impl <kernel> ...`）——写成 kernel 文件本身会静默采到其 `--level L0` 全套 kernel，产出「结构完整但无意义」的 JSON（本次两 arm 均 2.58 µs、verdict=tie，看似完全合理）
+- evidence:
+  - task `any-_logical_reduce_kernel-20261018T094101Z`：`perf_opt/opt_log.md#§9.1` 第 2 条 + §4.5 首次 A/B 记录——`--a-cmd` 首个 token 写成 kernel 文件，msprof 采到该文件 `--level L0` 的一批 kernel；输出 `a_medians=[2.58, 2.58, 2.54]` / `b_medians=[2.56, 2.58, 2.62]`（真值应为 2.9 / 2.78），仍产出完整 JSON 与 `verdict=tie`；改正为 bench entry 后才得到 −4.14%（3/3 同向）
+  - 同类高危形态先例（不同机制、同属「误配置产生貌似可信数据」）：queue `VP-2026-0081`（无 `--kernel-name` 过滤把辅助 op 当目标，Ratio 0.15–0.65% 伪影）、`VP-2026-0317` ②（采数名与 `msprof_kernel_name` 不一致的欠归因）
+  - 现行文本缺口：`iteration-diagnosis.md` Step 6 的 T-2 bullet 只规定「≥3 次 run / 交替次序 / 合并中位」，**未约束 arm 命令形态**；`VP-2026-0113`（3-pair 功效判读）与 `VP-2026-0324`（跨 session 复测）都不覆盖「命令写错」这一层
+- repro: repro-missing（流程规则；复现条件 = 把 `--a-cmd` 写成 `python <kernel>.py --level L0` 跑一次 A/B，观察 `a_medians` 与 `perf_records.jsonl` 同 workload 的 Task Duration 相差 >2×，且 profile 目录内出现多个 kernel 名）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    动作: update（Step 6 评估规则 T-2 bullet 内追加一句）
+    定位锚: "协议在首次出现 <5% 差异时即前置使用，而非采纳后复核。"
+    new 文本（在该句之后追加）: |
+      **arm 命令形态是协议的一部分**：`--a-cmd` / `--b-cmd` 必须以 bench entry 开头（`python <bench_driver>.py --impl <kernel.py> --case <workload> ...`），**不得**直接指向 kernel 文件——后者会静默执行该文件自带的 `--level L0` 全套用例，msprof 采到一批同名/异名 kernel，仍能产出结构完整的 JSON（2026-10-18 `any` 实证：两 arm 均 2.58 µs、verdict=tie，看似合理；真值 2.9 / 2.78）。三条零成本自检：① arm 的 `--launches` 应等于 `warm-up + launch-count`；② `a_medians_us` / `b_medians_us` 的量级应与该 workload 在 `perf_records.jsonl` 的 Task Duration 同量级（偏离 >2× 即命令写错）；③ profile 目录内 `OpBasicInfo*.csv` 的 captured kernel 名应**恰为目标 kernel**（多于一个即误捕）。
+    动机: 「误配置产生貌似可信数据」比「明显报错」危险得多——本次若无 §4.5 交叉核对，tie 结论会直接葬送唯一有效候选（f16 载体 −4.1%）；三条自检均是采完即可机械核对，成本≈0。
+- status: pending
+- confirmations: -/-
+- created_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: -
+- decided_note: 与 `VP-2026-0113` / `VP-2026-0324` 同节但不同层（命令形态 / 统计功效 / 跨 session），三条互不覆盖；若同批 apply，本条追加在 T-2 bullet 内、另两条分别追加在该 bullet 尾与验证规则处，锚文本互不重叠。工具侧机械化（`ab_test.py` 内建 arm 合法性校验）为可选加强，未在本条范围（避免与 `VP-2026-0054` 的工具改动混批）。
+
+## VP-2026-0330
+
+- type: R
+- title: develop 产出的测试套件须把「**配置阶梯期望**」断言与精度断言分离并加 `CONFIG` 标记（`expect_tile_n` / `(num_full, tail)`）——Stage 4 改容量策略时会连续误报「精度失败」
+- evidence:
+  - task `any-_logical_reduce_kernel-20261018T094101Z`：`perf_opt/opt_log.md#§4.4` 表后注 + `#§9.1` 第 3 条——候选 OP2（列 tile 上限 8192→16384）在 **L0-3a/3d/3b 连续三次 FAIL**，traceback 均为 `expect_tile_n` / `(num_full, tail)` 与实现配置不符，**无任何数值不符**；同步这些期望后同候选 L0 全 PASS
+  - 缺口定位：develop SKILL.md Phase 4 只要求「跑 L0 → 扩展 L1/L2/Boundary → 收集 max_diff / 失败用例 shape」，未区分「配置期望」与「数值断言」两类测试项；四个出口判定中「精度未过 → `[PRECISION_FAIL]`」会把配置失配归入精度失败，误导 Stage 4 的 rollback 决策（本任务分支记 `config_no_gain` 而非 `precision_fail`，靠人工判读才未误杀）
+  - 同类结构证据（不重复其内容）：queue `VP-2026-0317` ③（`run_l0` 的 `ModuleNotFoundError` 被记成 `l0_fail`——同一「失败类别不可区分」病）；`VP-2026-0325`（dtype 变更类候选的 L2 必检——相反方向：该拦的没拦）
+- repro: repro-missing（流程规则；复现条件 = 取任一带 `expect_tile_n` 类断言的 Stage 3 产物，改列 tile 上限后跑 `--level L0`，观察失败 traceback 指向配置期望而非数值比较）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-develop/SKILL.md
+- delta: |
+    动作: update（Phase 4 第 2 条之后插入第 2.1 条）
+    定位锚: "2. L0 通过后扩展 L1/L2/Boundary 并跑全量 `--level all`。"
+    new 文本（紧随该条之后）: |
+      2.1 **配置期望断言须与精度断言分离**：测试套件里「按冻结设计选出的分块参数」类断言（`expect_tile_n`、`(num_full, tail)`、路径选择、`block_m` 档位）统一命名 `expect_*` 并加 `CONFIG` 标记/前缀，与数值比较断言分节、分函数放置；日志里 CONFIG 类失败打印 `[CONFIG] expected … got …`。理由：Stage 4 改动容量策略（tile 上限、元素预算）时这类断言必然失效，若与精度断言混在一起会被判成 `[PRECISION_FAIL]` 并触发错误的回滚决策（2026-10-18 `any` 实证：tile 上限 8192→16384 的候选连续三次 L0 FAIL 全是配置期望不符、零数值差异；同步期望后全 PASS）。数值断言仍按原精度标准，不得因分离而放宽。
+    动机: 配置阶梯是**设计参数**、随 Stage 4 合法变更；精度是**语义契约**、任何阶段都不可变。两者混在同一门禁里会让「合法的配置改动」表现为「精度失败」，代价是误杀候选 + 误记 `precision_fail`（并可能污染 `stage3_failure_breakdown`）。
+- status: pending
+- confirmations: -/-
+- created_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: -
+- decided_note: 与 `VP-2026-0325`（L2 窄宽度必检）在同一条 Stage 4 精度门禁链上互补：0325 补「该跑而没跑」，本条补「跑了但失败类别记错」；apply 时建议同批。
+
 ## Decided（merged / rejected / expired / conflict 归档）
+
+## VP-2026-0323
+
+- type: P
+- title: run-state 双态的裁决须**跨 session 复测**——单 session 内「3/3 同向」不构成充分证据（3d 上 session 1 −9.99% 3/3 → session 2 **+1.22% 3/3**，6 对符号 3:3、sign-test p=1.0）
+- evidence:
+  - task `all-_logical_reduce_kernel-20261018T070754Z`（Stage 4 optimize，910B4 / `4d2e413`）：`perf_opt/opt_log.md#§4.4`——A = Stage 3 baseline、B = f16 指示平面候选，同机同 run 交错 A/B/A/B。**session 1**（3d）：A 中位 15.5067 / B 13.9580 µs，逐对 Δ **−9.59% / −11.36% / −9.79%**（3/3 同向）；**session 2**（同 kernel 复测 3 对）：A 14.5927 / B 14.7713，逐对 Δ **+1.09% / +3.40% / +1.04%**（3/3 同向，方向相反）⇒ 6 对符号 **3:3**、sign-test p=1.0 ⇒ 不可判定。原始 profile：`perf_opt/profiles/ab/op6_3d-multidim-reduce-bool/{A,B}_run{1..3}` 与 `profiles/ab/final_3d/{A,B}_run{1..3}`
+  - **同码跨 session 漂移 5–8%**（同任务 §1.1，三档独立采样）：4k 2.9793 / 3.0387 / 2.9587 µs、32k 7.7587 / 8.1473 / 8.1220（**+5.0% / +4.7%**）、3d 14.3373 / 14.5373 / **15.5067**（**+8.1%**，单次 max 18.6 µs 双态尾）⇒ 第二 session 的 A 臂落在「快态」，B 臂随调度落在「慢态」，符号随之翻转
+  - **正对照（同任务的采纳项）**：4k 两 session 同向（session 1 A/B **−4.26%** 3/3；session 2 相邻对 baseline_recheck 3.0387 vs final 2.8453 = **−6.4%**）⇒ 跨 session 复测既能证伪假象、也能确认真收益，不是「一律判 inconclusive」
+  - 现行条目边界：`bottleneck-patterns.md BP_run_state_bimodality` 的「推荐动作/验证指标」只要求**同 run 内**≥3 次交错 + 配对次序稳定（「同一方向跨 run 成立」）——本任务是首个「**两 session 内部各自 3/3 同向、跨 session 符号相反**」的实证，正好落在该判据的盲区
+  - 〔2026-10-18 第二证（不同任务 / 不同算子 / 同族贴地板 workload），task `any-_logical_reduce_kernel-20261018T094101Z`：`perf_opt/opt_log.md#§7.4`——4k `(32,4096)` 交付版（resident `IND_DTYPE=f16`）vs baseline：同 session 交错 **−4.73%（4 对全同向）**、前一 session 同码 3 对 **−6.08%（3/3 同向）** ⇒ 两 session 同向（确认真收益，非 inconclusive）；同任务 32k/3d 为 tie 且 `codegen_compare.py` 判生成代码与 baseline **逐字节相同**（4318 B / 4976 B）⇒ 表观 −6.67% 归 run-state，符合本条「不得记回退」判据；同码跨 session 基线差 32k 7.7300→8.1547（+5.5%）亦落在 5–8% 带内〕
+- repro: repro-missing（效应只在完整 kernel 规模 + msprof op 上显现；最小形态 = 同一对 kernel 文件在两个独立 session 各跑 3 对交错 A/B/A/B，输出两组中位与符号表）
+- toolchain_stamp: tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch_npu 2.9.0.post8 / 2026-10-18；第二证 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（`BP_run_state_bimodality` 的「触发信号」与「验证指标」各追加一条，正文其余不动）
+    追加要点:
+      ① 触发信号新增 **跨 session 档**：同一对实现**在同一 session 内**交错 A/B 得到「≥3 对、方向全一致」之后，若 |Δ| < 10% 且该 kernel 贴地板/小规模，仍须在**另一个独立 session** 复测 ≥3 对——实测 3d 上 session 1 −9.99%（3/3）与 session 2 +1.22%（3/3）符号相反（6 对 3:3、p=1.0）。即「session 内方向一致」是**必要不充分**条件（机制：每次 session 的进程/内存状态把 A、B 两臂同时推入快态或慢态，臂间差被态差淹没后符号可翻）。
+      ② 验证指标新增 **冲突处置**：两 session 符号冲突（sign-test 不显著）⇒ 记 `inconclusive`，**不得**记为 winner / 不得记回退；opt_log 须并列两组中位与逐对 Δ（本任务 §4.4 的表格形态）。两 session 同向才升级为「真实差异」，同向且 |Δ| ≥ 阈值才采纳。
+      ③ 边界：cross-session 复测不替代同 session 的交错协议（后者消除 run 内漂移），两者串联使用；同码跨 session 的本底漂移可直接量化为「同 sha 两 session 的基线差」（本例 5–8%），作为判定阈值的下界参考。
+- status: merged
+- confirmations: 2/2
+- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
+- confirmed_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: evolver
+- decided_note: 2026-10-18 蒸馏合入 `bottleneck-patterns.md` **BP_run_state_bimodality**（合入锚点：溯源行追加「跨 session 档第二证」；「触发信号」追加跨 session 档 bullet；「验证指标」追加跨 session 冲突处置 bullet——三条均为追加，原「同 run 内 ≥3 次交错」语义不动）。第二证按条目自定条件「两 session 各 ≥3 对并确认同向」计 2/2：4k −4.73%（4/4）与 −6.08%（3/3）同向、同算子同码。与 `VP-2026-0324`（流程侧硬规则，仍 pending 待审批）保持知识侧/流程侧两半分工：本条已可检索，流程侧生效仍待 apply。
 
 ## VP-2026-0227
 

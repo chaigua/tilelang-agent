@@ -384,13 +384,14 @@
 
 ## BP_run_state_bimodality：同配置跨 run 快/慢双态，小差异裁决需交错多 run 协议
 
-> 溯源：mish optimize 2026-08（首证，`examples/TileOPs/tileops/kernels/elementwise/mish/mish_kernel/perf_opt/opt_log.md`）+ lerp_tensor optimize 2026-09-07（第二证，`examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/opt_log.md#iteration-4`；origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z；tilelang 0.1.2+ed787bb / Ascend910B2C / CANN 8.5.0）。
+> 溯源：mish optimize 2026-08（首证，`examples/TileOPs/tileops/kernels/elementwise/mish/mish_kernel/perf_opt/opt_log.md`）+ lerp_tensor optimize 2026-09-07（第二证，`examples/TileOPs/tileops/kernels/elementwise/lerp_tensor/lerp_tensor_kernel/perf_opt/opt_log.md#iteration-4`；origin_task: lerp_tensor-_make_lerp_tensor_kernel-20260907T025419Z；tilelang 0.1.2+ed787bb / Ascend910B2C / CANN 8.5.0）。**跨 session 档第二证（2026-10-18，910B4 / `c316b0e`）**：`all-_logical_reduce_kernel-20261018T070754Z`（3d f16 候选 session 1 −9.99% 3/3 → session 2 +1.22% 3/3，6 对 3:3、p=1.0）与 `any-_logical_reduce_kernel-20261018T094101Z`（4k 贴地板 workload 两 session 同向：−4.73% 4/4 与 −6.08% 3/3；同码跨 session 本底漂移 5–8%，32k 7.73→8.15）——两会话复测既证伪假象也确认真收益，不是「一律判 inconclusive」。
 
 触发信号：
 
 - 同一 kernel、同一配置，跨独立 `msprof op` run 的 Task Duration 差 ±3–5%（lerp_tensor 1M fp16：7.30–7.66us；mish：run 间 ±2–3.5%），且差异与配置无关（疑似 per-process 快/慢态，HBM 物理页/DDR 通道交织状态）。
 - 小 kernel（Task Duration <20us）或逼近带宽/搬运地板的 workload，候选间差异落在噪声阈值（3%）附近。
 - 复测翻转：首轮判回退（+4.4%）复测变 tie；或单轮增益（-5.2%）复测收缩（-3.1%）。
+- **跨 session 档（2026-10-18 新增）**：同一对实现在**同一 session 内**交错 A/B 得到「≥3 对、方向全一致」之后，若 |Δ| < 10% 且 workload 贴地板/属小规模，仍须在**另一个独立 session** 复测 ≥3 对——机制是每个 session 的进程/内存状态把 A、B 两臂**同时**推入快态或慢态，臂间差被态差淹没后**符号可翻转**（实测：3d 上 session 1 −9.99% 3/3 → session 2 +1.22% 3/3，6 对 3:3、sign-test p=1.0 ⇒ 「session 内方向一致」是**必要不充分**条件）。
 
 常见反证/不确定点：
 
@@ -406,3 +407,4 @@
 
 - opt_log 记录各 run 的次序与中位数。
 - A/B 配对结论次序一致（如两次 A 均慢于两次 B）才判定差异真实。
+- **跨 session 冲突处置（2026-10-18 新增）**：两 session 符号冲突（sign-test 不显著，如 6 对 3:3 / p=1.0）⇒ 记 **`inconclusive`**，**不得**记为 winner、也**不得**记回退；opt_log 须并列两组中位与逐对 Δ（形态见 `any` / `all` 两任务的 §7.4 / §4.4 表格）。两 session **同向**才升级为「真实差异」，同向且 |Δ| 过阈值才采纳。边界：跨 session 复测**不替代**同 session 交错协议（后者消除 run 内漂移），两者串联使用；同码跨 session 本底漂移可直接量化为「同 sha 两 session 的基线差」（实测 5–8%），作为判定阈值的下界参考。
