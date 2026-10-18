@@ -6707,6 +6707,40 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 `VP-2026-0325`（L2 窄宽度必检）在同一条 Stage 4 精度门禁链上互补：0325 补「该跑而没跑」，本条补「跑了但失败类别记错」；apply 时建议同批。
 
+## VP-2026-0331
+
+- type: R
+- title: 复盘「语义方向性断言」的核验纪律——**grep 词不命中 ≠ 断言不存在**（同义拼接形态）；`examples/{op}/**/RETROSPECTIVE.md` 须 op 级 + 函数级子目录**全读**；发现与 kernel/DESIGN 冲突时以 kernel 为准、报告披露并出**工件纠错单**（evolver 无 `examples/` 写权限）
+- evidence:
+  - 事实（**已用 Read 逐行确认**）：task `any-_logical_reduce_kernel-20261018T094101Z` 蒸馏时，`examples/any/_logical_reduce_kernel/RETROSPECTIVE.md` **L69**（Stage 2 retrospective 的 `### Transferable Lessons` 第 1 条）原文为「…本单元 `any` = bool（载体 int8）+ `reduce_max`，与姊妹 `count_nonzero`（int64 + `reduce_sum`）、`all`（int8 + `reduce_min`）三者不可互抄。」同文件 L19（四项反转 `reduce_max→reduce_min`）、L98（`any` 方向链 `reduce_min → 1−min`）、L17/L63（`reduce_min` 链 UB 单价）与 `examples/TileOPs/.../any_kernel/_logical_reduce_kernel.py` 的 `T.reduce_min`、`DESIGN.md#§11`（any = `1−min` / `vmin` / 单位元 1.0）**方向相反**
+  - **语境核对（不判为纯错误）**：该句主语是「同族共享工厂的 kind 契约」（即 GPU **源工厂**的 `kernel_map`）——源算法恰是 `[x≠0]` 指示量 + `reduce_max`（any）/ `reduce_min`（all，见 `examples/all/_logical_reduce_kernel/DESIGN.md#§173`、`any/DESIGN.md#§1.6.0`）⇒ 该行在**源语境成立**、在**NPU 重设计语境反向**，缺「源/重设计」限定词即为**歧义句**；风险 = 后续同族任务照抄「`any` = `reduce_max`」进 DESIGN（正是本任务 brief 的读法）
+  - **首次核验失准的机制（本条的直接教训）**：evolver 仅 `grep` 了 `examples/any/RETROSPECTIVE.md`（**op 级**、仅含 Stage 5）与 `reduce_max` 关键词，未读**函数级子目录** `examples/any/_logical_reduce_kernel/RETROSPECTIVE.md` 的 60–75 行；且该断言以「bool（载体 int8）+ `reduce_max`」的拼接形态出现、无独立关键词短语 ⇒ 误判「brief 断言未复现」并放弃了提案生成（`grep` 的「0 命中」被当作「不存在」的证据）
+  - 现行文本缺口：`distillation-rules.md` §2.1 只写「`RETROSPECTIVE.md` 各 Stage 章节」为来源，未规定**核验粒度**（op 级/函数级多份的遍历）与「否定一个断言前的最小证据标准」；§4 防过拟合红线第 5 条只讲「矛盾先核对」，未覆盖「同义改写导致 grep 漏检」
+- repro: repro-missing（流程规则；复现条件 = 对一个含 kind 契约句的复盘执行 `grep -n "reduce_max" <op级 RETROSPECTIVE>` 得到 0 命中，再 `Read` 函数级子目录 `RETROSPECTIVE.md` 的 Transferable Lessons 段即可见拼接形态断言；对照 kernel 的 `T.reduce_min` 与 DESIGN §11）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-skill-evolution/references/distillation-rules.md
+- delta: |
+    动作: update（§2.1 `RETROSPECTIVE.md` 映射表后追加一段「核验粒度与否定证据标准」；§4 红线第 5 条追加一句同义改写提醒）
+    定位锚: "| Transferable Lessons 小节 | 逐条判定：含数字/实证 → D；含可复用手法 → P；仅本任务有效（如某函数的 UB 预算笔误）→ 丢弃 | D/P |"
+    new 文本（紧随该表之后）: |
+      **语义方向性断言的核验粒度（2026-10-18 新增）**：类断言（kind → 归约算子 / 补式方向 / 跨 tile 合并算子 / 累加器单位元 / 输出载体 dtype）须满足三条：
+      ① **核验范围 = `examples/{op}/**/RETROSPECTIVE.md` 全部**——op 级与函数级子目录（如 `examples/any/RETROSPECTIVE.md` 与 `examples/any/_logical_reduce_kernel/RETROSPECTIVE.md`）各一份，**Stage 1/2 的 Transferable Lessons 常在函数级那份**；只读其中一份不构成核验。
+      ② **不得以 grep 关键词不命中作为「断言不存在」的证据**——同一断言常以同义拼接形态出现（实测：`reduce_max` 以「bool（载体 int8）+ `reduce_max`」出现在 kind 契约句，无独立短语）。否定类结论（「brief 的该行不存在 / 不构成冲突」）须给出**逐行引用**（文件 + 行号 + 原文片段）。
+      ③ **同族 `any`/`all` 类单元的源方向与重设计方向相反**（源：`any` = `[x≠0]` + `reduce_max` / `all` = `[x≠0]` + `reduce_min`；NPU 补式重设计：`any` = `reduce_min` + `1−min` / `all` = `reduce_max` + `1−max`）——断言缺「源/重设计」限定词即为歧义句，处置 = **以 kernel + DESIGN + 逐位实测为准 → 报告披露 → 入队工件纠错单**（evolver 不改 `examples/`；纠错单写明文件/行号/原文/建议替换文本，由人工或后续同族任务执行）。
+      配套：同类歧义的知识侧收口形态见 `pattern-library/layout.md PL-1.25` 第七数据点 ③（「源算法 vs NPU 重设计」方向分野）。
+    追加（§4 防过拟合红线第 5 条）: 同义改写/拼接形态会使关键词检索漏检，核对时须按「语义单元」通读相关小节，不以单关键词命中率判断有无。
+- status: pending
+- confirmations: -/-
+- created_by: task any-_logical_reduce_kernel-20261018T094101Z 2026-10-18
+- decided_by: -
+- decided_note: |
+  附**工件纠错单**（evolver 无 `examples/` 写权限，distill/apply 两模式均不得写任务工件；由人工或后续同族 `any` 任务顺手修正）：
+  - 文件：`examples/any/_logical_reduce_kernel/RETROSPECTIVE.md` **L69**（`### Transferable Lessons` 第 1 条）
+  - 原文：`本单元 \`any\` = bool（载体 int8）+ \`reduce_max\`，与姊妹 \`count_nonzero\`（int64 + \`reduce_sum\`）、\`all\`（int8 + \`reduce_min\`）三者不可互抄。`
+  - 建议替换：`源工厂 \`any\` = bool（载体 int8）+ \`reduce_max\`、\`all\` = int8 + \`reduce_min\`（GPU 源语义）；本单元 NPU 重设计把两者对调——\`any\` = \`reduce_min\` + 1−min、\`all\` = \`reduce_max\` + 1−max（四项随 OR/AND 对偶全反转），照抄源侧算子即语义翻错。`
+  - 依据：`_logical_reduce_kernel.py` 的 `T.reduce_min`（L303/L369/L444/L456）、`DESIGN.md#§1.6.0/§11/§4.3`、`--level all` 101 次逐位 0 差异
+  与本轮 `VP-2026-0330`（配置期望 vs 精度断言）同属「同一文本承载两类语义」族，但作用面不同（本条 = 复盘材料的事实核验纪律，0330 = 测试门禁的断言分类）；apply 时互链。
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0323
