@@ -1107,6 +1107,7 @@ decided_by: evolver / human / -   # 裁决者
 - evidence:
   - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.2 Step 0 地板标定（`F_empty(40)` = 4.81 / 5.31 / 4.80 µs 两次独立复测；`F_empty(24)` = 3.64；`F_empty(28)` = 3.35；smoke 2-block = 3.63）+ §13.15 BP_003；探针 `perf_opt/probe_floor.py --kind empty`
   - 同族对照：`CONST-msprof-task-floor-910B3` 已记 fp8_quant 空 kernel 3.37 µs（8k×64 形）并注「与 adaptive_avg_pool2d Stage 4 的 ~3.6 µs 固定地板先例同量级、互为独立数据点」——本条补「随 Block Dim 增长」这一自变量
+  - 〔2026-10-18 **跨设备数据点**（不同任务 / 不同算子 / 910B4，**不计独立确认**，维持 1/2）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：910B4 上同 persistent 结构扫 **b1/b2/b29/b32/b40 = 1.13 / 1.42 / 2.32 / 2.46 / 2.89–2.91 µs**（`profiles/round0`、`profiles/floor_v2`，已落 `constants.md CONST-groupnorm-smallshape-memfloor-910B4` 含 repro）——**方向一致**（随块数不降），但绝对量级低 1.7–2.7×；且 910B3 侧「2→24 block 几乎持平（3.63→3.64）」的平段在 910B4 上**未复现**（1→2→29 单调上升）⇒ 两机的「固定项 + 每块代价」配比不同，单点常数不可互换（与 `constants.md` 两条 `CONST-msprof-task-floor-*` 各自的设备绑定一致）。溯源（允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{copy_floor_calibration.jsonl, perf_feedback.md#实测}`。
 - repro: repro-missing（知识域最小 repro 待同族任务回填——最小形态 = 同一空转 kernel 扫 Block Dim ∈ {2,24,40}，读 msprof Task Duration，断言随块数单调不降且 ≈3.6→4.8 µs 量级；既有 `repro/CONST-msprof-task-floor-910B3.py` 的 `--mode empty` 固定 40 block，未覆盖 Block Dim 自变量）
 - toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
@@ -4656,6 +4657,7 @@ decided_by: evolver / human / -   # 裁决者
   - 数据侧已自包含：constants.md CONST-capacity-910B2C（容量三硬上限 + 膨胀系数结构依赖）；本条补 layout.md 的**阶梯标定口径**落点（跨 dtype 复用同一足迹模型）
   - 交叉引用：layout.md PL-1.4-tiling-heuristic（池化族容量驱动 CH——本条是其「归约族 block_m 阶梯」对偶，建议同域互链）；queue VP-2026-0122（窄 N 膨胀 ~4× 数据点）
   - 〔2026-10-15 蒸馏补充〕argmin Stage 4 的 P 类提案原文出自 `opt_log.md` §Skill Retrospective 的 P 行；evolver 复核 `-D 事实侧`（足迹 16 B/elem + 1.47×）已并入 CONST-copy-floor-dma-granularity 的边界段，本条只承载「阶梯标定口径」方法侧
+  - 〔2026-10-18 第二数据点（不同任务 / 不同算子 / 910B4）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：同一归约结构（fp16 stage + 2 个 fp32 平面 + 2–5 个 `(bm,1)` + 2 次 `T.reduce_sum`）的**真实足迹随栅格变化**——bm=4、mb on：40 块栅格 196672 B（12.004 B/elem）、32 块栅格 **229408 B（14.002 B/elem）**，两档都超 196608 B；同 bm=4 改 mb off ⇒ **≤12.0 B/elem 可编译**（即阶梯上界由「开关 × 栅格」共同决定，不是 `(dtype, bm)` 的二元函数）；去掉 2 个 `(bm,1)` 暂存不降单价。⇒ 阶梯标定的自变量清单须含**栅格**与**multi-buffer 开关**；数据侧已落 `constants.md CONST-ub-price-grid-dependent`（含编译探针 repro）。溯源（允许失效）：`perf_opt/{probe_ub.py, copy_floor_calibration.jsonl（ub-* 行）, logs/round3/}`。
 - repro: repro-missing（效应只在完整 kernel 规模显现；ED-B delta 骨架待同族任务回填——最小形态 = 同一 kernel 的 `_select_config` 阶梯在「代理预算」与「编译报错口径足迹」两套标定下的档位对照）
 - toolchain_stamp: tilelang 0.1.2+417dae9908ad2ea5ffb74294a7075b6cb64b4f2b（dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 / 40 Vector / ub_cap 196608 B 实查）/ 2026-10-15
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
@@ -4950,6 +4952,7 @@ decided_by: evolver / human / -   # 裁决者
   - task adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z：`perf_opt/opt_log.md` §13.15 R4 + BP_003——40-block 向量 kernel 空转 Task Duration **4.81 µs**（占优化后总时延 ~30%），若不在 Step 0 标定会把「不可压缩的固定开销」误当作「实现低效」；smoke 2-block kernel = 3.63 µs、24 block = 3.64 µs（`profiles/probe/round3/floor_empty_*` 三档）
   - 数据侧已另立 VP-2026-0247（D，`CONST-msprof-task-floor-910B3` update）；本提案只承载流程侧（按 merge-policy §1「同时含数据与流程 → 拆两条」）
   - 相邻条目：queue VP-2026-0236（元素吞吐阶段达标性前置标定 → `BP_ub_traffic_floor`）、VP-2026-0243（copy-floor 标定须把写侧生产者形态当自变量）——本条补「空转/固定开销」这一 Step 0 必做项，三者互补不重复
+  - 〔2026-10-18 第二数据点（不同任务/不同算子/910B4；**栅格自变量 + 两侧各一档**）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：同 persistent 结构实测 **b1 1.13 / b2 1.42 / b29 2.32 / b32 2.46 / b40 2.89–2.91 µs**（`perf_opt/copy_floor_calibration.jsonl` 的 `empty` 行，`constants.md CONST-groupnorm-smallshape-memfloor-910B4` + repro）——比 910B3 同口径（2 block 3.63 / 24 block 3.64 / 40 block 4.81）低 1.7–2.7× ⇒ **绝对量级不可跨设备复用**；方向一致（随块数不降）。同时给出「扫档方式」的实证价值：部署栅格是 29（image）与 32（wider/tail），两侧各取一档后三种读数用途完全不同——**只测 b40（2.89）会把 image 的空转地板高估 0.57 µs**（该档目标 2.430 与 b29 地板 2.32 仅差 0.11 µs，足以改变「是否低于地板」的判定），**只测 b2（1.42）则漏掉「栅格本身是参数自由度」**（该任务 R2 的均衡栅格 40→29 核即由此得利）。⇒ 建议 delta 的配套句写成「地板探针 = 部署栅格 ± 两侧各一档」，数据侧见 `CONST-groupnorm-smallshape-memfloor-910B4`。
 - repro: repro-missing（流程规则；复现条件 = 读 `tilelang-op-optimize/SKILL.md` Phase 0「首轮必查项」小节，确认「空转/固定开销标定」是否在列；数据侧见 `constants.md CONST-msprof-task-floor-910B3`）
 - toolchain_stamp: tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
 - target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
@@ -6000,6 +6003,7 @@ decided_by: evolver / human / -   # 裁决者
   - task max_pool1d-_max_pool1d_kernel-20261016T090104Z：`perf_opt/opt_log.md` §7.1 流程问题 1 + §2.2（调度 prompt 给的口径是「带宽 roofline（`achieved_bw ÷ 1.75 TB/s`）」，按官方 report 的 `compute_from_csvs` 实测复现后发现 `Ratio = (total_fops/TaskDuration)/computility`——sincnet/ecg 在该模型中**计算受限**、只有 textcnn 是带宽受限支）+ §6.2（结果：**时延降 37.6% 只换来 Ratio +1.05pt**）
   - 知识侧已生效：queue **VP-2026-0227** 已 2/2 合入 `pattern-library/constants.md CONST-msprof-ratio-compute-roofline`（含反解公式、两证数字与可达性筛查算式）——本条只承担「**优化侧的读取时点**」（Phase 0 必查项），不重复数据
   - 相关：queue VP-2026-0081（Ratio 采数管线：`--aic-metrics=Roofline` + `--kernel-name` 过滤）
+  - 〔2026-10-18 第三数据点（不同任务/不同算子/910B4；**分母侧**：设备/run 绑定）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：同一 kernel 同一 workload 在 910B3 迁移 report（10.7802 µs / Ratio 13.665% / `Bandwidth(TB/s)` 1.75）与 910B4 optimize report（11.16 µs / 23.491% / 0.80）之间 Ratio 差 **+72%** 而时延只差 +3.5%；由 `performance_tops ÷ (Ratio/100)` 反解分母 = 2.4946，**逐位等于 `AI(3.1182) × bw(0.8)`**，而 `computility_tops` 字段为 4.069（≠ 分母）⇒ 分母 = `min(AI×bw, computility)` 且 910B4 落在**带宽受限支**、910B3（`AI×1.75 = 5.46 > computility ≈ 4.44`）落在计算受限支；两 run `total_fops` 反解同为 ≈6.54 M ⇒ `C = Ratio×duration` 是设备/run 绑定量（147.31 → 262.16 %·µs，1.78×）。**对 delta 的措辞要求**（apply 时并入）：目标口径核定除「反解公式 + 标注分子口径」外，还须「目标线的换算常数 `C` 取自**同设备同 run** 的 report 基线；跨设备基线只可用于量级对照」。本条同时是「数量级失准型」误用实例：跨设备 C 使 70% 目标线严格 1.78×、`[DESIGN_LIMIT]` 缺口由 1.17–1.92× 夸大为 1.81–3.42×、低于空 kernel 地板档数由 1/4 记为 3/4（结论方向不变）。溯源：`examples/TileOPs/reports/tileops/{20261018_034706_363942,20261018_034255_241985}_GroupNormFwdOp/run.json` + `perf_opt/perf_feedback.md` + `_group_norm_kernel_DESIGN.md#§11`（均允许失效）；机制条目见 queue **VP-2026-0312**。
 - repro: repro-missing（流程规则；复现条件 = 给定一条 Ratio 类目标，按现行 SKILL 走 Phase 0 观察是否要求执行端先复现 `compute_from_csvs` 反解公式并标注分子口径）
 - toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c3c39ba / CANN 9.0.0 / Ascend910B3 / 2026-10-16
 - target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
@@ -6026,6 +6030,7 @@ decided_by: evolver / human / -   # 裁决者
   - 反例形态（「不可达内容被排进迭代」）：三个 tune workload 全部进入 Phase 2 排序与迭代（§1.2），其中一个的口径不可达只能事后判死
   - 已生效的判据来源：`_shared/standards/perf-feedback.md` §1「机械前置判据（先行，零成本）」（VP-2026-0238 **已于 2026-10-15 apply**）+ `constants.md CONST-msprof-task-floor-910B3`（910B3 空 kernel 3.37 / 必需流量 4.25 µs）
   - 交叉引用：queue VP-2026-0236（elements-throughput 阶段的达标性前置标定 → `bottleneck-patterns.md BP_ub_traffic_floor`，P 类 1/2）——那条管**单价标定**，本条管 **Phase 1 的一次比较**；VP-2026-0250（Phase 0 空转/固定开销标定必做项）
+  - 〔2026-10-18 第三数据点（不同任务/不同算子/910B4；**比较对象须同设备**）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：本任务确实在 Phase 1 之前做了「目标线 vs 地板」比较（`opt_log.md#§2.3` 归因表 4/4 档），但**目标线来自跨设备 C**（910B3 report：2.104/2.430/1.571/0.904 µs），而同设备 C 给出 3.745/3.745/2.838/1.611 µs ⇒ 比较结果被放大：缺口 1.81–3.42× → **1.17–1.92×**、「目标低于空 kernel 地板」档数 3/4 → **1/4**（同设备口径下仅 tail 1.611 < 2.46）。地板侧数据本身可靠（同栅格实测：纯 DMA 4.39/4.39/3.81/3.09 µs、空 kernel 2.32/2.32/2.46/2.46 µs，`constants.md CONST-groupnorm-smallshape-memfloor-910B4`）⇒ 判据本身正确，**唯一失准项是喂给它的目标线**。**对 delta 的措辞要求**（apply 时并入）：该 bullet 的「目标线」须注明来源——来自 report 基线换算时必须用**同设备同 run** 的 `C`，否则先重算再比较（机制见 queue VP-2026-0312、读取时点见 VP-2026-0301）。
 - repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 走 Phase 1，观察 baseline 采集后是否要求做「目标线 vs 空 kernel 地板 / 必需流量地板」比较并记录判定）
 - toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c3c39ba / CANN 9.0.0 / Ascend910B3（地板常数同为 910B3）/ 2026-10-16
 - target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
@@ -6256,6 +6261,75 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task max_pool2d-_max_pool2d_kernel-20261017T043853Z 2026-10-17
 - decided_by: -
 - decided_note: 与 VP-2026-0240（final 冻结/重采通道）互补：那条管 final 之后，本条管 final 之前的**实验基线冻结**；与 VP-2026-0114（S4 产物契约）无关。
+
+## VP-2026-0312
+
+- type: D
+- title: report roofline `Ratio` 的分母 = `min(AI × 上报 gm_bw, computility)`，两项均**设备/run 绑定** ⇒ `C = Ratio × duration` 不是 case 常数：同一 kernel 同一 workload 在 910B3→910B4 上时延 +3.5% 而 Ratio 13.665%→23.491%（C 147.31→262.16 %·µs = 1.78×）
+- evidence:
+  - task `TileOPs-GroupNormFwdOp-20261018T021206Z`（GroupNormFwdOp Stage 4，910B4）：`examples/TileOPs/reports/tileops/20261018_034706_363942_GroupNormFwdOp/run.json`（部署态基线）与 `…/20261018_034255_241985_GroupNormFwdOp/run.json`（perf_opt）——四档 case 的 `roofline_utilization_percent` / `performance_tops` / `arithmetic_intensity_ops_per_byte` / `bandwidth_tb_s` / `computility_tops` 逐字段可复核
+  - **反解一致性（本机机械核对）**：四档 `performance_tops ÷ (Ratio/100)` 分别 = 2.4946 / 2.8945 / 2.4877 / 2.5263 TOps/s，**逐位等于 `AI × bandwidth_tb_s(0.8)`**；而 run.json 的 `computility_tops` 字段为 4.069 / 4.090 / 4.119 / 4.125 ⇒ 分母取的是 `min(AI×bw, computility) = AI×0.8`（**带宽受限支**）。910B3 侧（迁移段 report，见 `CASE-norm-groupnorm-migration` 与 DESIGN §11）：`AI×1.75 = 5.46 > computility`，反解 peak = `fops/duration/Ratio` ≈ 4.44 TOps/s（与 computility 同量级，**计算受限支**）；两 run 反解 `total_fops` 均 ≈6.54 M（同 kernel 同 workload ⇒ 自洽）
+  - 字段来源：`tileops/benchmark/msprof_roofline.py::parse_bin_file`（`bw` / `AI` / `performance` / `computility` / `ratio` 全部取自 profiler 的 `visualize_data.bin`，`SOC_CONFIG` 的 1.8 TB/s 只用于 CSV 复算通道），`benchmark_base.py` 把 `GM Read + Write` 条目的 `bw` 直接落 `Bandwidth(TB/s)`
+  - 影响面（本任务实测）：设计 §11 以 910B3 的 C（147.31/170.08/109.98/63.30 %·µs）反推 70% 目标 2.104/2.430/1.571/0.904 µs，而同设备 C（262.16/262.16/198.67/112.78）给出 3.745/3.745/2.838/1.611 µs——缺口由 1.81–3.42× 降为 1.17–1.92×、「目标低于空 kernel 地板」档数由 3/4 降为 1/4（结论「结构性不可达」仍成立）
+  - **与调度 brief 的差异（如实披露，不计入证据强度）**：brief 记「910B4 computility ≈2.44–2.49」——该值实为 `AI×0.8`；run.json 的 `computility_tops` 为 4.07–4.18。机制修正不改变「跨设备不可比」结论，但改变判读：910B4 上 Ratio 退化等价于「L2 read-miss 字节率 ÷ 0.8 TB/s」
+- repro: repro-missing（最小形态 = 读同一 workload 在两台设备的两份 `run.json`，断言 `performance_tops/(ratio/100) ≈ AI × bandwidth_tb_s` 且该值随设备变化而 `total_fops` 不变；脚本待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294（commit 2afbf3b）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18；对照侧 910B3（迁移段 report，2026-10-16）
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    动作: update `CONST-msprof-ratio-compute-roofline`（「口径纪律」段之后追加「设备/run 绑定」段；不改既有两证数字）
+    正文要点：**分母是两项的 min，且两项都随设备/run 变化**——`roofline_peak = min(AI × bw_reported, computility)`，`bw_reported` 与 `computility` 均从 profiler 的 `visualize_data.bin` 读取（`parse_bin_file`），故同一 kernel 同一 workload 换设备后可能**切换绑定支**：910B3（`bw` 1.75、`AI×1.75 = 5.46 > computility ≈4.44`）落在**计算受限支**、910B4（`bw` 0.80、`AI×0.80 = 2.494 < computility 4.07`）落在**带宽受限支**；两 run 的 `total_fops` 反解同为 ≈6.54 M，而 `Ratio` 13.665% → 23.491%（时延仅 +3.5%）。⇒ `C = Ratio × duration` 是**设备/run 绑定量**（本例 147.31 → 262.16 %·µs，1.78×），由 report 基线反推目标线时须用**同设备同 run** 的 C；带宽受限支下 `Ratio` 等价于「L2 read-miss 字节率 ÷ bw_reported」，计算受限支下才等价于「fops 率 ÷ computility」。核对动作（零成本）：由 `performance_tops ÷ (Ratio/100)` 反解分母，与 `AI × bandwidth_tb_s` 比对即可定位当前 run 的绑定支。
+    动机: 设计期/优化期普遍用「report 基线 Ratio × duration = C，再按 C/目标 反推目标时延」；当基线取自另一台设备的 report 时，该换算会把目标线严格 1.78×（本例），使 `[DESIGN_LIMIT]` 的不可达裕度与「低于地板」的档数同时被夸大，而结论方向不变 ⇒ 属「口径正确但数量级失准」的高隐蔽错误。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-GroupNormFwdOp-20261018T021206Z 2026-10-18
+- decided_by: -
+- decided_note: 数据侧 Tier 0 已落 `cases.md CASE-norm-groupnorm-migration` Stage 4 续档（实例数字与 recompute 结果）；本条承担 constants 条目的机制固化。按 ED-A 缺知识域 repro ⇒ 降级 Tier 1 标 `repro-missing`（repro 只需读两份 run.json，可由同族 optimize 任务顺手补）。与 VP-2026-0227（已合入同条目的两证：Ratio 不与 latency 成反比）互补：那条管**分子**、本条管**分母**；目标口径的读取时点见 VP-2026-0301、地板比较见 VP-2026-0302。
+
+## VP-2026-0313
+
+- type: P
+- title: `PL-1.10-loads-first-decoupling` 对**单输入整行归一化**不适用——判据：`mte2_ratio` 0.17–0.25 且 `chain`（+2 保活 v-op）仅 +0.16–0.18 µs ⇒ 瓶颈在 vec 链 + scalar，不在「装载与计算串行」
+- evidence:
+  - task `TileOPs-GroupNormFwdOp-20261018T021206Z`：`perf_opt/opt_log.md#§2.3`（`PL-1.10` 适用性判定：本算子 x 单次装载 + 单次写出，无第二输入可前置；`mte2_ratio = mte2/dur = 0.24`，四档 0.17–0.25 ≪ 0.95）；`perf_opt/copy_floor_calibration.jsonl` 的 `dma_rw` vs `chain` 对照行（4.39→4.55 / 3.81→3.97 / 3.09→3.27 µs），即 2 个保活 v-op 被 DMA 吸收
+  - 反面对照（模式成立的条件）：`elementwise.md PL-1.10` 原始两证均为**多输入**算子（每输入独立 staging 后由前置装载消除零重叠）
+  - pipe 分解口径：`constants.md CONST-aiv-time-decomposition`（`Task ≈ max(mte2, vec) + scalar` 在本族实测近串行相加：baseline image-g32/fp16 vec 4.70 + mte2 2.75 + mte3 1.17 + scalar 3.67 = 12.29 vs wall 11.33）
+- repro: repro-missing（最小形态 = 同一行归一化 kernel 的 `dma_rw` / `chain` 两探针 + 基线 pipe 分解，断言 `mte2_ratio < 0.3` 时增加 2 个保活 v-op 不改变 Task 量级；效应载体 = `repro/CONST-groupnorm-smallshape-memfloor-910B4.py` 的 chain 变体，待同族任务补）
+- toolchain_stamp: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294（commit 2afbf3b）+ CANN 9.0.0 + Ascend910B4（AIV=40）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/elementwise.md
+- delta: |
+    动作: update `PL-1.10-loads-first-decoupling`（正文末追加「适用域边界：单输入算子」段）
+    正文要点：本模式的前提是**≥2 个输入**且共用一个 staging 复用链（per-input staging + 前置装载消除 MTE2/VEC 零重叠）。**单输入的整行/整平面归约算子（GroupNorm / LayerNorm / RMSNorm / 行 softmax）不适用**——x 一次装载、一次写出，没有第二输入可前置；实测 `mte2_ratio` 仅 0.17–0.25（远低于饱和档 0.95）且 `chain`（在纯 DMA 地板上加 2 个保活 v-op）只 +0.16–0.18 µs ⇒ 2 个 pass 已被 DMA 吸收，瓶颈在 vec 链 + scalar 暴露（pipe 分解 vec 4.70 + mte2 2.75 + mte3 1.17 + scalar 3.67 ≈ wall 11.33 µs）。该形态的杠杆是**减少核内轮数 / 缩短 vec 链**（`PL-1.26`）而非装载解耦。
+    动机: 该模式在 pattern-library 中为 verified 且每轮必读，易被无条件套用到单输入归约算子上（本任务首轮即做了显式适用性判定后才放弃，未浪费分支）；把边界写进条目可省去每任务一次重复判定。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-GroupNormFwdOp-20261018T021206Z 2026-10-18
+- decided_by: -
+- decided_note: 属「适用域收窄」型 update（同 PL-1.13 / TRAP-parallel2d 先例）。Tier 1 首次证据（1/2）；缺知识域 repro 标 `repro-missing`。第二证候选 = 任一单输入行归一化/行归约 optimize 任务复现 `mte2_ratio < 0.3` 判据。
+
+## VP-2026-0314
+
+- type: R
+- title: optimize SKILL Phase 0 步骤 4「实验裁决执行」补「切换类备选须在**其表征自由度**上裁决」——同参数切换的 A/B 不得单独判负（本案同 bm 关 multi-buffer 输 3.4%，而关 mb 换 bm=4 赢 16.1%）
+- evidence:
+  - task `TileOPs-GroupNormFwdOp-20261018T021206Z`：`perf_opt/opt_log.md` §4（`ab_round2_mboff`：mb on vs off 同 bm=3，A 9.16/9.58/9.34 vs B 9.54/9.60/9.52 ⇒ `b_rel_change=+3.4%`，A 胜 3/3）与 §5（`ab_round3_mboff_bm4`：mb off 换取 bm=4/`R` 3→2，A 9.18/9.23/9.18 vs B 7.68/7.72/7.70 ⇒ **−16.12%**，3/3 同向）
+  - 误判路径：若按 §4 的同 bm 裁决收束，则「关 multi-buffer」被判为净亏 3.4%，而该开关的真实自由度是让 `block_m` 从 3 抬到 4（UB 单价 14.002 → ≤12.0 B/elem，见 `constants.md CONST-ub-price-grid-dependent`）
+  - 同一任务内第二个同型实例（方向相反）：均衡栅格的单次读数 `nk40→nk29` 看似 −3.6%，A/B 只有 −0.9% ⇒ 单次读数高估约 4×（`opt_log.md` §4）
+  - 现行 skill 文本（`SKILL.md` Phase 0 第 4 条「实验裁决执行」④）只要求「按计划判定阈值裁决」，未界定裁决所依赖的参数应固定在哪个自由度上
+- repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 执行一次「主选 + 备选（开关类）」裁决，观察是否要求先在备选所能改变的结构参数上重建主选基线）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 0 第 4 条「首轮必查项」末尾追加一条 bullet，与「实验裁决执行」并列）
+    定位锚: "新实测常数追加回 pattern-library/constants.md（含 repro，ED-C），见 Phase 4。"
+    new 文本: |
+      新实测常数追加回 pattern-library/constants.md（含 repro，ED-C），见 Phase 4。
+      - **切换类备选须在其表征自由度上裁决（2026-10-18 group_norm Stage 4 实证）**：当备选是「开关 / 模式选择」（auto multi-buffer on-off、`T.Pipelined` 深度、ping-pong、分核策略）时，先在**该开关所能改变的结构参数**（如 `block_m` / CH / stage 数）上重建主选基线，再做同口径 A/B——只固定原参数做同参数切换，会把备选的收益判成损失。实测：同 bm=3 关 multi-buffer **+3.4%**（A/B 3/3），而关 mb 换取 bm=3→4（核内轮数 3→2）为 **−16.1%**（A/B 3/3）；若按同参数 A/B 收束，16% 的收益会被判为 −3%。裁决记录须写出「备选的完整自由度」与「主选在该自由度上的最优档」。
+    动机: DESIGN §1.6.3 的主选/备选裁决按「同参数切换」执行，本任务 R2 以 +3.4% 判负后，R3 发现备选的真身是「关 mb 换更大 bm」并赢 16.1%——同一开关的两种裁决给出相反符号，说明现行裁决口径缺一句「在表征自由度上评估」。
+- status: pending
+- confirmations: -/-
+- created_by: task TileOPs-GroupNormFwdOp-20261018T021206Z 2026-10-18
+- decided_by: -
+- decided_note: 与 VP-2026-0301（目标口径核定）、VP-2026-0302（目标线 vs 地板）互补：三条分别管「量什么」「可达吗」「怎么裁决」。数据侧已 Tier 0 落 `elementwise.md PL-1.26`（模式本体，含 repro），本条只承担 Phase 0 的裁决口径。与 VP-2026-0251（地板自变量外推前须做真实 kernel 单变量对照）互补：那条管**地板外推**、本条管**备选裁决**。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 

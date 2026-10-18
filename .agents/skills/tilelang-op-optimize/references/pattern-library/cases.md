@@ -560,12 +560,12 @@ pool 家族**第六个**迁移算子、**双输出（value + int64 indices）1D 
 id: CASE-norm-groupnorm-migration
 kind: case
 family: [norm, reduction]
-mode: [developer]
+mode: [developer, optimize]
 dtype: [fp32, fp16, bf16]
-device: 910B3
+device: [910B3, 910B4]
 status: verified
-origin_task: group_norm-group_norm-20261015T152158Z（op 级）/ group_norm-_group_norm_kernel-20261015T152755Z（函数级；Stage 1/2/3 各 1 attempt、Stage 5 attempts 2）
-toolchain: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15～16；torch 2.9.0 + torch_npu 2.9.0.post8
+origin_task: group_norm-group_norm-20261015T152158Z（op 级）/ group_norm-_group_norm_kernel-20261015T152755Z（函数级；Stage 1/2/3 各 1 attempt、Stage 5 attempts 2）/ TileOPs-GroupNormFwdOp-20261018T021206Z（Stage 4 optimize，910B4）
+toolchain: tilelang 0.1.2+9307929320d + CANN 9.0.0 + Ascend910B3 / 2026-10-15～16；torch 2.9.0 + torch_npu 2.9.0.post8；Stage 4 tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294（commit 2afbf3b）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / ub_cap 196608 B）/ 2026-10-18
 repro: none
 ---
 
@@ -574,6 +574,16 @@ repro: none
 **durable 载体**：fp16 分层 affine 二次舍入陷阱自包含于 traps-runtime.md TRAP-fp16-op-affine-double-rounding（含知识域 repro）；row-reduction 迁移基准形态见 algorithm-candidates.md ALG-layernorm R4；矩式方差定量边界见 ALG-layernorm R1（本任务为第二证）；UB 膨胀平台值第三结构数据点见 traps-compiler.md TRAP-UB-multibuffer-inflation 与 queue VP-2026-0254；rsqrt 近似指令绕法见 traps-runtime.md TRAP-vrsqrt-plain-precision。
 
 norm 族 **GroupNorm 迁移档案**（同族追加于 ada_layer_norm 之后；Developer 单函数、Stage 1/2/3 各 1 attempt 零返工）。要点：① **affine 分层**——op 层经 `kernel(x_2d)` 只传 x，per-channel `(C,)` weight/bias 留在 op 层施加；kernel 的 `(D_padded,)` 行广播 affine 形参保留但恒为单位元（D-1 机器验证 max ulp = 0），单元测试的 affine 模式作为 kernel 参数自造（`_run_case(affine="op"/"unit")` + `_affine_for(dtype)`）；② **Stage 3 全绿 → Stage 5 fp16 marginal 超差**：kernel 级 fp16 门禁用单位 affine 遮蔽了 op 路径真实 per-channel fp16 affine 的二次舍入（7/21 例失败、每例 1–3 元素、max ~1.7e-3 vs 1e-3），逐位比较确证 kernel 无缺陷（0/4096）→ 用户显式授权 ops 层**单点**修复（fp32 affine + 单次 `.to(dtype)`，备份 `history_version/group_norm.py_s5_attempt2.bak`、diff 仅该一处）后 19/0/2（见 traps-runtime.md 同名条目、queue VP-2026-0256/0257）；③ **UB 平台值第三结构数据点**——fp32 直连双缓冲（`stage`+`x_f32`+`sq_f32`+5×(bm,1)）`bm=2, D=4096` 编译运行通过 ⇒ 该结构 ≤24 B/elem，证伪「fp32 直连恒为 26 B/elem」在该结构的普适性（与原始溢出报文 `245760 B = 20×3×4096` 的 20 B/elem 同向）；④ **矩式方差灾难性抵消第二证**（group_norm 形态：大均值 fp16 相对误差 6.018e3、违反 1536 元素；D=2 padding 抵消角点基线 0.995 vs 精确式 0.0094，见 ALG-layernorm R1）；⑤ **msprof bench 4 例**（`n=8,c=128,g=32,spatial=[32,32]` fp16 10.7802µs / bf16 11.0602µs；`n=4,c=256,g=32,spatial=[28,28]` fp16 8.1802µs；`n=4,c=128,g=16,spatial=[30,30]` fp16 6.0201µs；roofline util 10.5–15.4%，带宽 1.75 TB/s——与 constants.md CONST-fabric-bw「聚合 ≥1.73 TB/s」同量级、独立数据点）；⑥ **设计侧复用形态**：wrapper 重导出 `ALIGNMENT = 1` 使 host `F.pad` 分支与 `y[:, :D]` 截断分支均不触发（256 对齐属 CUDA SMEM 后端实现细节、NPU 无对应约束），`T.vsqrt`+`T.vdiv` 组合替代 `T.vrsqrt`，oracle conditioning 审计把「精确常量行（var=0）」与「大均值小方差」降为 Boundary（`F.group_norm` 在该位形自身返回 -2.459e-5 而精确值为 0）。适用触发条件：groupnorm/layernorm 类**分层 affine** 迁移（kernel 只出归一化张量、affine 留 op 层）；fp16 集成期 marginal 精度失败的分层定位；norm 族 UB 预算与矩式/两遍方差取舍设计参考。
+
+**Stage 4 续档（optimize，910B4 / 2afbf3b，task `TileOPs-GroupNormFwdOp-20261018T021206Z`，终态 DONE + `[DESIGN_LIMIT]` 附录补记）**——同一 kernel 从「能跑」到「小形状最优」的四轮闭环，以及**目标线口径**的一处实测更正：
+
+- **终值（`msprof op` median/20，同一最终候选 sha `69d82981…415`；baseline = 部署态 bm=1 / 40 核）**：image-g32 fp16 **11.33 → 7.71 µs（−32.0%）**、同档 bf16 **11.53 → 7.85（−31.9%）**、wider-channel-g32 fp16 **8.54 → 6.44（−24.6%）**、tail-spatial-g16 fp16 **5.96 → 4.99（−16.3%）**；`--level all` L0 17/17 + L1 全绿，smoke 3 dtype 仅精度（两 dtype 逐位 0）。9 个实验分支 / 预算 16，`stop_reason=blocked`（剩余缺口全部落在实测地板之外）。
+- **三条杠杆（按贡献，均为交错 A/B 3 对裁决）**：① `block_m` 由**实测 UB 单价表**驱动（本结构 fp16/bf16 12.00 B/elem、fp32 10.00 B/elem，⇒ D=4096 得 bm=3、D=6272/7200 得 bm=2，D≤1152 截顶 8）：image −15.8% / wider −12.8% / tail −15.8%（单次口径，均 >5% 故直接采纳）；② 均衡栅格 `num_kernels = ceil(num_logical / R)`（image 40→29 核、wider 40→32）：wider **−13.7%**，image 单次 −3.6% 而 A/B 仅 **−0.9%**（3/3 同向，按小步正收益采纳——同档小 kernel 单 run 高估约 4× 的实例）；③ **关 multi-buffer 换 bm=4**（image：`R = ceil(ceil(M/bm)/nk)` 3→2）：**9.18 → 7.70 µs（−16.1%，A/B 3/3，pair_diffs −1.50/−1.51/−1.48）**；而同 bm=3 关 mb 反 **+3.4%**（A/B 3/3）——开关本身不是收益项，`bm` 才是其表征自由度（模式侧见 `elementwise.md PL-1.26-rounds-first-then-multibuffer` + repro）。
+- **`[DESIGN_LIMIT]` 归因与「Ratio 目标线」的实测更正**：设计 §11 用**迁移段 910B3 report** 的 `C = Ratio×duration`（147.31 / 170.08 / 109.98 / 63.30 %·µs）反推 70% 目标 = 2.104 / 2.430 / 1.571 / 0.904 µs；本机（910B4）同 harness 的 report 基线为 11.16 / 11.40 / 8.60 / 5.76 µs、Ratio 23.49 / 23.00 / 23.10 / 19.58% ⇒ **同设备 C = 262.16 / 262.16 / 198.67 / 112.78**，同设备 70% 目标 = **3.745 / 3.745 / 2.838 / 1.611 µs**。对照实测同栅格纯 DMA 地板（4.39 / 4.39 / 3.81 / 3.09 µs）⇒ 缺口 **1.17 / 1.17 / 1.34 / 1.92×**（结论「结构性不可达」仍成立），而跨设备 C 会把缺口夸大为 1.81–3.42×、并把「目标低于空 kernel 地板」的档数从 **1/4**（仅 tail：1.611 < 2.46）记成 3/4。⇒ `C` 归属**设备/run**，非 case 常数。
+- **跨设备机制（本任务直接对照，同一 kernel 同一 workload）**：910B3 10.7802 µs / Ratio 13.665% / `Bandwidth(TB/s)` 1.75 对 910B4 11.16 µs / 23.491% / 0.80——时延仅 +3.5% 而 Ratio +72%。report 的 roofline 字段全部取自 `visualize_data.bin`（`tileops/benchmark/msprof_roofline.py::parse_bin_file`），分母 = `min(AI × bw, computility)`：910B3 侧 `AI×1.75 = 5.46 > computility ≈ 4.44`（**计算受限支**，反解 peak 4.44 与 computility 自洽），910B4 侧 `AI×0.8 = 2.494 < computility 4.07`（**带宽受限支**）——两支的绑定项不同，故 `Ratio` 的含义与换算常数同时改变（带宽受限支下 `Ratio = L2 read-miss 字节率 / 0.8 TB/s`）。本条只承载实例数字；机制固化与「同设备反解」口径见 queue `VP-2026-0312`，目标口径读取时点见 `VP-2026-0301`。
+- **参照锚定**：厂商融合 `GroupNormSilu`（同 shape，含 per-channel affine）14.04 / 11.30 / 11.60 µs ⇒ 本方最终 7.72 / 6.45 / 4.99 µs（image-g32 档 1.82× faster、tail 档 2.3×）；同族 `ada_layer_norm` Stage 4（33.5 MB / 40.52 µs = 827 GB/s）两档线性反解得边际带宽 ≈935 GB/s、固定成本 ≈4.7 µs——与本机「固定开销 + 归约暴露」结构相符。
+- **durable 载体**：本机地板见 `constants.md CONST-groupnorm-smallshape-memfloor-910B4`（空 kernel 1.13/1.42/2.32/2.46/2.89 µs；纯 DMA 4.39/3.81/3.09 µs；含 repro）；UB 单价的栅格依赖见 `CONST-ub-price-grid-dependent`（bm=4 在 40 块栅格 12.004、32 块栅格 14.002 B/elem，mb off 后 ≤12.0 可编译；含编译探针 repro）；轮数优先模式见 `PL-1.26`（含 delta 骨架 repro）。
+
 ---
 id: CASE-quant-fp8-quant-migration
 kind: case

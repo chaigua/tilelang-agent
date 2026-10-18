@@ -542,3 +542,59 @@ repro: repro/CONST-device-peak-910B3.py
 - **证明**：`python repro/CONST-device-peak-910B3.py --mode read1 --mb 256 --span 61440 --stages 3`（可运行部分 = 构建 + 跑通 + 打印读字节与输出形状；时延按头部 msprof 命令读取，断言为量级/相对关系）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool2d/max_pool2d_kernel/perf_opt/{peak.py, run_peak2.py, peak_recheck.jsonl, logs/peak_read_256mb_s1.log, logs/peak_read_64mb_s3.log, logs/peak_write_256mb_s1.log, logs/peak_rw_256mb_s2.log, profiles/peak2/}`、`opt_log.md#3B`。
 
 > 〔2026-10-17 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套）；repro 为 ED-C 机械转正（逐字节拷贝 `peak.py` + 头部登记块，代码零改动，登记后 `py_compile` PASS；103 行 / 4 918 B（其中 19 行 docstring 登记块）——行数超 ED-B 100 行预算，按 PL-1.10 先例不裁剪披露）。本任务 `[DESIGN_LIMIT]` **未触发**：该项是测量导出的硬件事实（非 2× 结构性机会），本条替代的是「目标线口径」而非性能结论。〕
+
+---
+
+id: CONST-groupnorm-smallshape-memfloor-910B4
+kind: constant
+family: [norm, reduction, elementwise]
+apis: [msprof, T.Kernel, T.copy]
+dtype: [fp16, bf16]
+device: 910B4
+status: verified
+origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）
+toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40 / ub_cap 196608 B）
+source: perf_opt/probe_floor.py + perf_opt/copy_floor_calibration.jsonl
+repro: repro/CONST-groupnorm-smallshape-memfloor-910B4.py
+---
+
+### 小形状（1.8–4.2 MB）空 kernel 与纯 DMA 地板（910B4 / 40 Vector 核）
+
+- **空 kernel 地板随栅格增长**（同 `T.Kernel(n)` persistent 形态、单元素保活写，`msprof op` median of 20）：**1 block 1.13 µs / 2 blocks 1.42 / 29 blocks 2.32 / 32 blocks 2.46 / 40 blocks 2.89–2.91**。即「固定发射/调度开销」= 1.1 µs 量级 + 每块约 0.045 µs 的栅格代价；给目标线做筛查时**必须用目标栅格的那一档**（用 b2 会低估、用 b40 会高估）。
+- **纯 DMA 地板随流量档骤降**（同结构、同栅格、读+写全量、无计算）：
+  - 4.10 MB / 29 blocks（bm=3 行块）= **4.39 µs（956 GB/s）**；同栅格 40 blocks/bm=1 = 6.14 µs（684 GB/s）
+  - 3.14 MB / 32 blocks（bm=2）= **3.81 µs（844 GB/s）**
+  - 1.81 MB / 32 blocks（bm=2）= **3.09 µs（598 GB/s）**
+  - copy-floor（在其上 +2 个保活 v-op）= 4.55 / 3.97 / 3.27 µs ⇒ **2 个 pass 可被 DMA 吸收（+0.16–0.18 µs）**，但整行归约链不可（见 `CG-2026-0027`）。
+- **用法**：给「小形状 + 整行归约」类算子设 roofline/latency 目标时，先算 `目标线 vs max(空 kernel 地板, 纯 DMA 地板)`；目标线低于地板的下界即口径不可达（本例 4 档目标低于纯 DMA 地板 1.81–3.42x，3 档低于空 kernel 地板）。**不要**用大流量同族常数外推：同族 16.78 MB 档纯拷贝 1.06 TB/s（`CONST-copy-floor-dma-granularity`），本档只有 0.60–0.96 TB/s。
+- **互链**：`CONST-msprof-task-floor-910B3`（3.37/4.25 µs，910B3 大 tile 形态；本条是 910B4 小形状多栅格扫描，两机常数不可互换）、`CONST-msprof-ratio-compute-roofline`（Ratio 目标口径）。
+- **证明**：`python repro/CONST-groupnorm-smallshape-memfloor-910B4.py --mode both --case image`（可运行部分 = 两个探针构建 + 数值精确性断言；时延按头部 msprof 命令读取）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{probe_floor.py, copy_floor_calibration.jsonl, profiles/round0/, profiles/floor_v2/}`。
+
+---
+
+id: CONST-ub-price-grid-dependent
+kind: constant
+family: [norm, reduction, elementwise]
+apis: [alloc_shared, reduce_sum, npuir.enable_auto_multi_buffer]
+dtype: [fp16, bf16, fp32]
+device: 910B4
+status: verified
+origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）
+toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（ub_cap 196608 B）
+source: perf_opt/probe_ub.py（编译期 `ub overflow ... requires N bits while M bits available` 反解）
+repro: repro/CONST-ub-price-grid-dependent.py
+---
+
+### 同一缓冲结构的 UB 单价随 block_m 与「persistent 栅格」变化（不可线性外推）
+
+- **结构**：fp16 `stage(bm,D)` + 2 个 fp32 平面 `(bm,D)` + 2–5 个 `(bm,1)` 统计暂存 + 2 次 `T.reduce_sum`（GroupNorm/LayerNorm 族的标准驻留形态）。
+- **实测单价（B/元素，用编译期溢出报文反解）**：
+  - fp16/bf16 D=4096/6272/7200、**bm=3**（部署档，mb on）→ **12.000–12.002 B/elem**；fp32 D=4096 → **10.001–10.002**
+  - fp16 D=4096、**bm=4**、mb **on**、**32-block 栅格** → **14.002 B/elem（229408 B）⇒ 不存在**
+  - fp16 D=4096、**bm=4**、mb **on**、**40-block 栅格** → **12.002–12.004 B/elem（196640–196672 B）⇒ 仍超 64 B，不存在**
+  - fp16 D=4096、**bm=4**、mb **off** → **COMPILES（≤12.0 B/elem）⇒ 存在（本轮 16.1% 收益的来源）**
+  - fp16 D=6272、bm=3、mb off → 12.002 B/elem（225824 B）⇒ 不存在（wider 保持 bm=2）
+- **两条反直觉结论**：① 同一结构同一 bm，**仅换栅格**（32 vs 40 blocks）就使单价 12.0 → 14.0 B/elem（+2.0 B/elem，多出一层 fp16 平面）；② 去掉 2 个 `(bm,1)` 暂存（原地统计变体）**并不降低** bm=4 的 14.0 B/elem —— 编译器的缓冲复用/多层判定不是「缓冲个数 × 元素数」的线性函数。
+- **用法**：判「bm 能不能再大」必须**在目标 (dtype 路径 × bm × 栅格 × 缓冲形态) 上直接用编译探针读报文**；任何跨 shape/跨栅格/跨工具链的线性外推（含 DESIGN 期用同族前作 20 B/elem 做预算）都可能错 1.7x 以上。DESIGN §4.5 的 20 B/elem 在本 kernel 上高估 67%。
+- **互链**：`TRAP-UB-multibuffer-inflation`（多缓冲记账膨胀的原始陷阱；本条补「栅格」这一维与「mb off 换 bm」的自由度）、`CONST-reduce-ub-per-element`（归约链形态分档 32/48/64 B/元素）。
+- **证明**：`python repro/CONST-ub-price-grid-dependent.py`（编译探针：断言 `mb on + bm=4` 必须报 overflow、`mb off + bm=4` 必须编译；字节数与 B/elem 仅打印）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{probe_ub.py, copy_floor_calibration.jsonl（ub-* 行）, logs/round3/}`。

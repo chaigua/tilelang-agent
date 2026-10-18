@@ -136,3 +136,29 @@ repro: repro/repro_nsplit_pattern.py
 - **tn 规则（扫描实测 tn∈{1280,2048,2560,5120} → 8.58µs@2560 最优）：最大单波 nchunk ≤ cores**（tn 升序 256 倍数扫首个除数）；nchunk>cores（双波 2:1）与 nchunk≪cores（核饥饿）均劣。
 - 实测：lm-head fp16 25.90→11.78µs（2.20×）、bf16 30.61→11.75µs（2.60×）；工厂契约保持单 callable（组合层 torch.empty workspace + 双发射）。
 - **跨设备/跨工具链复现（第二实例，2026-10-15，argmin 共享 ArgreduceKernel 的 Stage 4）**：910B3（aicore 20 / 40 Vector）+ CANN 9.0.0 + tilelang 417dae9 上，`(4,102400)` **双 dtype** 均得 **tn=2560 / nchunk=40（零尾）**——tn 规则逐条复现（tn 升序 256 倍数扫首个 `N % tn == 0` 且 `nchunk = N/tn ≤ min(vector_cores, N//256, MERGE_ELEMS/M)`）；端到端 **fp16 11.898 µs（26.247 → 0.453×）/ bf16 11.914 µs（31.370 → 0.380×）**，与 argmax 在 910B2C/CANN 8.5.0 的锚点（0.461× / 0.386×）同量级——**结构可迁移、参数按本机 40 核重导后恰好同值**。裁决谓词本轮补全为 `M ≤ 16 且 M < cores 且 N_padded ≥ 32768`。该形态的 msprof 口径须记**两段 Task Duration 之和**（partial + merge，分别按 op 名过滤捕获）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel/perf_opt/opt_log.md#Iteration-4`。
+
+---
+
+id: PL-1.26-rounds-first-then-multibuffer
+kind: pattern
+family: [norm, reduction, elementwise]
+apis: [T.serial, reduce_sum, npuir.enable_auto_multi_buffer]
+dtype: [fp16, bf16, fp32]
+device: 910B4
+status: verified
+origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）
+toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40）
+source: perf_opt/opt_log.md §4/§5 + ab_round3_mboff_bm4（interleaved A/B）
+repro: repro/PL-1.26-rounds-first-then-multibuffer.py
+---
+
+### 先最小化「核内轮数 R」，再决定 multi-buffer 开关（开关不是优化点，是达到 bm 的手段）
+
+适用：persistent 行归约族（GroupNorm / LayerNorm / RMSNorm / 行 softmax），小形状、每核 2–8 轮、`mte2_ratio < 0.3`（vec + scalar 暴露而非搬运受限）。
+
+**优化见解摘要**：每轮成本 = 一次装载 + 整条 vec 链 + 一次归约的暴露量（实测每任务 scalar ≈0.7 µs、整链 ≈1.5 µs 每轮，而 DMA 只 1.6–1.8 µs 全程），所以 `R = ceil(ceil(M/bm) / nk)` 是**一阶项**；`block_m` 的可行域由 UB 单价决定，而单价随 (dtype 路径 × bm × 栅格) 变化（见 `CONST-ub-price-grid-dependent`）。auto multi-buffer 在**同 bm** 下关闭是净亏（+3.4%，A/B 3/3），但关闭可以把 fp16 D=4096 的 bm 从 3 抬到 4（R 3→2），同一 kernel 因此 **−16.1%**（9.18→7.70 µs，A/B 3/3）。故正确顺序是：① 在 UB 预算内枚举 (bm, nk) 求最小 R 与均衡栅格 `nk = ceil(num_logical / R)`；② 再选使该 bm 合法的 multi-buffer 模式；③ **绝不在固定 bm 上裁决切换类备选**（否则会把 16% 的收益判成 −3%）。
+
+**反例边界**：若 bm 已是 UB 上限（关闭开关也换不来更大 bm），则开关没有收益空间——同类实测在 D=6272 / D=7200 上成立（mb off 仍只能 bm=2），此时保持 mb on。
+
+- **实测（image-g32/fp16，M=256，D=4096，40 Vector 核）**：慢 bm=3/nk=40/R=3 → 9.18 µs；快 bm=4/nk=32/R=2 → **7.70 µs（−16.1%）**；同 bm=3 仅关 mb → 9.38 µs（+1.9% 单次 / A/B +3.4%）。
+- **证明**：`python repro/PL-1.26-rounds-first-then-multibuffer.py`（delta 形态：轮数算术 `rounds()/balanced_grid()` + 慢/快两骨架 + 优化见解摘要；`py_compile` 通过；完整规模效应见任务 `ab_round3_mboff_bm4` 与 `profiles/final_v4/`）。
