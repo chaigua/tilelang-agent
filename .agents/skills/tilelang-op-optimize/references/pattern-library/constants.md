@@ -388,8 +388,8 @@ apis: [T.reduce_max, T.reduce_sum, T.reduce_min, T.vcmp, T.vmul, T.vcast]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：reduce_min 链同价 + 独立重标定 E_cap）
-toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：reduce_min 链同价 + 独立重标定 E_cap）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（第五数据点：`(W,bm)` 档位差 12.03 vs 8.00 B/元素）
+toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第五数据点 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（部分重验：仅 `W=8192/bm=2` 与 `W=23552/bm=1` 两档）
 repro: repro/TRAP-reduce-ub-per-element.py
 ---
 
@@ -424,6 +424,7 @@ repro: repro/TRAP-reduce-ub-per-element.py
   - **正交维度：归约轴对齐带（2026-10-16，`multi_head_attention` bwd preprocess）**：本条的单价分带自变量是**链形态/dtype**；与 dtype 正交的第二个自变量——**归约轴长度是否为向量宽整数倍**——实测再分两带（对齐 `D % 8 == 0` ≈ 10–12 B/元素 vs 非对齐 **96 B/元素**）。该细分因独立 repro 与独立测量维度单列为 `CONST-reduce-ub-price-axis-alignment`（非重复立项），设计期 UB 预算须同时按 dtype 与对齐性两维取值。
   - **单价口径 = 通过点反解上界（非严格线性常数）**：同一 dtype 在**通过点**（`196608 / 通过元素数`）与**溢出点**（`requires bits / 元素数`）反解可给出不同值——实测 fp16 `bm=1/tn=32768` 溢出仅超 UB 96 B（`requires 1573632 bits` = 196704 B）⇒ 溢出点反解 6.00，而同 32768 元素在 `bm≥2` 档通过点反解 8.00（bf16 两档一致 12.00）。引用该常数做**线外推**前先做两类反解的一致性核对；容量判据以**通过点**（每个配置有直接编译通过点）为准——探针 ladder 的逐 `(dtype,bm,tn)` 通过比「单价 × 元素数」纸面推算可靠。
 
+  - **第五数据点（910B4 / 2026-10-18：单价还随 `(W, bm)` 变化，不只随 dtype）**：同一条 `vcmp(eq) → vcast(i1→f32) → reduce_sum(dim=1)` 链在 **fp16** 上两个档位给出不同单价——`W=8192, bm=2`（16384 元素/块）编译失败 `ub overflow, requires 1577216 bits while 1572864 bits available` ⇒ **197152 B ÷ 16384 = 12.03 B/元素**（仅溢出 544 B）；同任务的 `W=23552, bm=1` 单 tile 通过点 188416 B ⇒ **8.00 B/元素**（与上表 fp16 档一致）。即 **fp16 也能落到 12.0 B/元素档**（与 bf16 档数值同量级但机制不同：这不是 dtype 上抛 f32，而是 `(W,bm)` 组合的记账差）⇒ 按 8 B/元素做线性外推在 `W=8192/bm=2` 档**低估 1.5×**、会漏判 overflow；容量判据必须在目标 `(W, bm)` 上直接探针（与 `CONST-ub-price-grid-dependent` 的栅格维度、本条上文「通过点 vs 溢出点」两条同源）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel/perf_opt/{logs/round1/*op3*.log, op_cost_calibration.jsonl}`；工具链见 front-matter 第五数据点。
   - **dtype 分档的机制**：bf16 上 `vcmp` 的操作数被 lowering 上抛 f32（IR 可见 `vcast bf16→f32` 作用于两操作数，多 2 个 f32 平面 ⇒ 单价 ×1.5）；「含 `vcmp` 的归约链」的容量估算依赖对目标 dtype 的逐档实测（compile-only 探针约 3 s/配置）——按「单价与 dtype 无关」外推（沿 8 B/元素对 bf16 记账）在负载上直接 UB 溢出。
   - **实测通过点**（compile-only 探针反解 + 运行期闭合）：fp16 24576 / fp32 16384 / bf16 16384 元素；竞态安全档 `E_cap = 8192`（按最坏 dtype 12 B 记账）。**最紧档位运行期通过**：bf16 `(256,4096)`、`bm=2` ⇒ 8192 元素 × 12 B = 96 KB = UB/2（恰触双缓冲余量上限）在设备上逐位精确、无需降阶或切列分块路径。
   - **设计期后果（实录）**：把上表 3-D 整平面单价（最高档 ≈128 B/元素）代入 2-D 行形态会高估容量需求 **16×**，使可行负载被误判为不可实现（或过度引入列分块/转置等结构性开销）；反之按 8 B/元素对 bf16 记账则低估 1.5×。⇒ 容量判据按 `bm·N ≤ E_cap`（**元素数**）记账，且**引用本表任一单价前先核对形态适用域与 dtype 档**。
@@ -519,11 +520,11 @@ id: CONST-device-peak-910B3
 kind: constant
 family: [pooling, elementwise, reduction, general, migration]
 apis: [T.copy, msprof]
-dtype: [fp16]
-device: 910B3
+dtype: [fp16, bf16]
+device: 910B3, 910B4
 status: verified
-origin_task: max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，`peak.py` / `run_peak2.py` / `peak_recheck.jsonl` / `logs/peak_*.log`）
-toolchain: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（npu-smi 26.1.1；aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-17
+origin_task: max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 optimize，`peak.py` / `run_peak2.py` / `peak_recheck.jsonl` / `logs/peak_*.log`）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（第四数据点：910B4 自报屋顶 + 纯 Vector 行归约族 4/4 用例的目标不可达闭合）
+toolchain: tilelang 0.1.2+b3a7b21fa006c1ef94b7c786d81158e16426a025（commit b3a7b21）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（npu-smi 26.1.1；aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-17；第四数据点 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）/ 2026-10-18（仅第四数据点的数字）
 source: CONST-fabric-bw（聚合口径）/ CONST-mte2-degradation（总流量退化曲线）/ CONST-copy-floor-dma-granularity（小流量档含 L2 成分）
 repro: repro/CONST-device-peak-910B3.py
 ---
@@ -538,6 +539,7 @@ repro: repro/CONST-device-peak-910B3.py
 - **推论（本条用途）**：任务书/设计常用的「`achieved_bw / 1.75 TB/s ≥ 70%`」= 1.225 TB/s 算法流量，**高于本机单向读上限（0.78 TB/s）约 57%**——属**口径不可达**而非结构未优化；改用实测混合上限（≈1.0 TB/s）评估时同一批算子可达 23%–49%。设计期 roofline 应写「实测三口径 + 引用的总流量档」，不写 1.75 TB/s 单值。
 - **与既有条目互链（口径分野，非矛盾）**：① `CONST-fabric-bw` 的「fabric 聚合 ≥1.73 TB/s」是聚合/fabric 口径，不等于 AIV 侧单向 GM 流量可达值；② `CONST-mte2-degradation` 的「256M 3:1 R/W ≈1.26 TB/s 地板」是 910B2C / 3:1 读写比 / 48 core 口径，本条是 910B3 / 1:1 与单向上限；③ `CONST-copy-floor-dma-granularity` 的「16.78 MB 读 1.06 TB/s」是**小流量档**（含 L2 驻留成分），与本条 64–256 MiB 档不矛盾（同一总流量退化轴）。
 - **适用域与边界**：AIV（Vector）侧 GM↔UB `T.copy` 流；**不覆盖** Cube/L1 端口（见 `CONST-L1-port-bw`）与 L2 驻留 workload（驻留档可显著更高，见 `CONST-mte2-degradation` 的 L2 口径）。数字随驱动/驻留状态漂移——只锁量级与相对关系（read < write、mixed < read 上限），绝对值仅作参考。
+- **第四数据点（910B4 / 2026-10-18，纯 Vector 行归约族；与 70% 目标线的口径差 2.19×）**：本机 msprof 自报 GM 屋顶 = **0.80 TB/s**（`visualize_data.bin` 的 `GM/L2 : GM Read + Write` 条目，4 个 workload 的 baseline/final 全一致；同一份 report 在 910B3 档该字段为 1.75），AIV 单向读 22.4 GB/s/核 × 40 ≈ **0.90 TB/s**（16 KB tile 探针，8/16/32 KB 三档 26.0/22.4/21.5 GB/s/核）⇒ 落在本条三口径带内。**`achieved_bw / 1.75 TB/s ≥ 70%`（=1.225 TB/s）在该形态 4/4 用例上结构性不可达**，逐例的机械判据是「目标线 vs 本机地板」（不是「调优空间还剩多少」）：hidden fp16/bf16 目标 13.71 µs 既低于屋顶地板 20.99 µs 也低于 read-only 地板 23.83 µs（实测 27.59 / 31.17 µs = 屋顶的 76.1% / 67.4%）；seq fp16 目标 0.86 µs **低于空 kernel 地板 2.44 µs**（2.8×）；3d fp16 目标 3.42 µs 低于实测 copy 地板 7.42 µs（2.2×，128 行 / 40 核 = 3.2 波）。换算到自报 0.8 口径后 4 例 Ratio = **34.68–73.43%**（验收 report `examples/TileOPs/reports/tileops/20261018_053642_635995_CountNonzeroFwdOp/`，`Bandwidth` 列 0.8000 逐例一致）。**族内适用**：`count_nonzero` / `all` / `any` 及「纯 Vector + 行归约 + 大 N 读主导」族（同一 AIV 单引擎数据流 GM→UB→向量→UB→GM，结构差异只在补式方向与合并算子）。**不适用 Cube / 矩阵乘算子**——L1 端口带宽本身更高（148–154 GB/s/核，见 `CONST-L1-port-bw`）但只有 Cube 通路能用，纯搬运仍走 AIV MTE2，故把无 matmul 的归约算子放进 Cube 换不来该口径的提升。
 - **量纲**：GB/s（聚合流量 ÷ Task Duration）。
 - **证明**：`python repro/CONST-device-peak-910B3.py --mode read1 --mb 256 --span 61440 --stages 3`（可运行部分 = 构建 + 跑通 + 打印读字节与输出形状；时延按头部 msprof 命令读取，断言为量级/相对关系）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool2d/max_pool2d_kernel/perf_opt/{peak.py, run_peak2.py, peak_recheck.jsonl, logs/peak_read_256mb_s1.log, logs/peak_read_64mb_s3.log, logs/peak_write_256mb_s1.log, logs/peak_rw_256mb_s2.log, profiles/peak2/}`、`opt_log.md#3B`。
 
@@ -598,3 +600,53 @@ repro: repro/CONST-ub-price-grid-dependent.py
 - **用法**：判「bm 能不能再大」必须**在目标 (dtype 路径 × bm × 栅格 × 缓冲形态) 上直接用编译探针读报文**；任何跨 shape/跨栅格/跨工具链的线性外推（含 DESIGN 期用同族前作 20 B/elem 做预算）都可能错 1.7x 以上。DESIGN §4.5 的 20 B/elem 在本 kernel 上高估 67%。
 - **互链**：`TRAP-UB-multibuffer-inflation`（多缓冲记账膨胀的原始陷阱；本条补「栅格」这一维与「mb off 换 bm」的自由度）、`CONST-reduce-ub-per-element`（归约链形态分档 32/48/64 B/元素）。
 - **证明**：`python repro/CONST-ub-price-grid-dependent.py`（编译探针：断言 `mb on + bm=4` 必须报 overflow、`mb off + bm=4` 必须编译；字节数与 B/elem 仅打印）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{probe_ub.py, copy_floor_calibration.jsonl（ub-* 行）, logs/round3/}`。
+
+---
+id: CONST-aiv-read-roof-and-tiny-dma-910B4
+kind: constant
+family: [reduction, pooling, elementwise, migration]
+apis: [T.copy, T.reduce_sum, msprof]
+dtype: [fp16, bf16, fp32]
+device: 910B4
+status: verified
+origin_task: count_nonzero-_logical_reduce_kernel-20261018（Stage 4 optimize，scenario=optimize）
+toolchain: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（dev root build；tilelang/ 源树 commit 417dae9）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）/ 2026-10-18
+source: perf_opt/{probe_floor.py, copy_floor_calibration.jsonl, op_cost_calibration.jsonl, roofline_from_profile.py}
+repro: repro-missing
+---
+
+### AIV 侧 GM 屋顶 0.8 TB/s + 逐任务小 DMA 单价 0.17 µs/op（910B4 / CANN 9.0.0）
+
+- **屋顶口径（决定性）**：`visualize_data.bin` 的 `GM/L2 : GM Read + Write` 条目在本机报
+  **`bw = 0.8 TB/s`**（同一份 report 在 910B3 档环境报 1.75 TB/s；两机同一字段相差 2.19×）。
+  `Ratio` 实测恒等于 `achieved_bw / 0.8`（例：`(32,16384)` fp16 1.049 MB / 4.61 µs =
+  0.227 TB/s ⇒ 28.4% ≈ 报告的 28.62%），故**引用 1.75 TB/s 作分母的 70% 目标（=1.225 TB/s）
+  在本机是口径不可达**（超过本机屋顶 1.53×）。
+- **AIV 读单价（per-core，`copyout - empty` 反解，hidden `(2048,4096)` fp16）**：
+  8 KB tile → 26.0 GB/s/核；16 KB → 22.4；32 KB → 21.5（40 核聚合 0.86–1.04 TB/s）。
+  **tile 越大单价越低效**——读侧是带宽受限，不是「每 op 固定开销」受限。
+- **逐任务输出小 DMA（8–32 B `(block_m,)` int64）**：**0.16–0.20 µs/op**
+  （`empty` 探针斜率：52/26/13 任务 → 12.741/6.672/4.495 µs，基座 ≈2.4 µs）。
+  **但它与 vec/mte2 部分重叠**：把它合成一次大 DMA 后 `mte3` 从 11.54 → 0.28 µs，
+  总 `Task Duration` 不变（26.96 vs 26.64）；在向量已饱和的 bf16 上反而 **−10%**
+  （新增 1 个 UB→UB 拷贝压在向量 pipe 上）。
+- **向量 pass 单价（指示链）**：`vcmp(eq)→vcast(i1→f32)→reduce_sum(dim=1)` 在
+  `(2,4096)` tile 上 ≈ **0.158 µs/pass**（0.019 ns/元素），低于
+  `CONST-vector-launch-overhead` 的 0.23–0.3 µs/pass 低档。
+- **判据**：「删掉小 DMA / 增加 block 尺寸」类优化**必须先看 pipe ratio 是否已达 0.5 以上**；
+  被盖住的小 DMA 删除零收益，而块变大在读侧可能**变差**。带宽受限 workload 的唯一有效方向
+  是减少 GM 流量或提高重叠，不是减少 op 条数。
+- **口径更正（2026-10-18 蒸馏核对）：`0.158 µs/pass` 是吞吐口径，不是发射单价**——该值
+  = `aiv_vec_time 12.33 µs ÷ (26 任务 × 3 pass)`，每个 pass 覆盖 8192 元素 ⇒ **0.019 ns/元素**，
+  是整 kernel 链在流水下的向量吞吐；与本库 `CONST-vector-launch-overhead` 的 12–23 ns/op
+  （64–1024 lane 孤立 depend 链、发射主导）**不同量纲**，不可互推。源任务把它与
+  「0.23–0.3 µs/pass 低档」相比属跨量纲比较，引用时不得据此下调发射单价常数。
+  同源的屋顶与读单价数字已并入 `CONST-device-peak-910B3` 第四数据点（同一 `visualize_data.bin`
+  口径），本条只对「本机 0.8 口径独立复核」与「小 DMA 单价 + 被 vec/mte2 覆盖」两轴负责。
+- **互链**：`CONST-device-peak-910B3`（910B3 单向读 753–779 GB/s，同量级；本条补 910B4 的
+  msprof 屋顶值与「小 DMA 单价 + 被重叠」两个反直觉量）、`CONST-msprof-task-floor-910B3`
+  （空 kernel 地板；本形态单任务实测 2.44 µs 更低）、`CONST-fabric-bw`（fabric 聚合口径，
+  **不等于** AIV 可达读带宽——本条是它被误用的直接反例）。
+- **证明**：`repro-missing`（待补：从 `perf_opt/probe_floor.py` 裁出 empty/copyout × bm 三档，
+  断言 bm=4 < bm=2 < bm=1 的总时延序与 16 KB 单价区间）。溯源（任务工作区，允许失效）：
+  `examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel/perf_opt/`。

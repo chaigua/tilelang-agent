@@ -6031,6 +6031,7 @@ decided_by: evolver / human / -   # 裁决者
   - 已生效的判据来源：`_shared/standards/perf-feedback.md` §1「机械前置判据（先行，零成本）」（VP-2026-0238 **已于 2026-10-15 apply**）+ `constants.md CONST-msprof-task-floor-910B3`（910B3 空 kernel 3.37 / 必需流量 4.25 µs）
   - 交叉引用：queue VP-2026-0236（elements-throughput 阶段的达标性前置标定 → `bottleneck-patterns.md BP_ub_traffic_floor`，P 类 1/2）——那条管**单价标定**，本条管 **Phase 1 的一次比较**；VP-2026-0250（Phase 0 空转/固定开销标定必做项）
   - 〔2026-10-18 第三数据点（不同任务/不同算子/910B4；**比较对象须同设备**）〕task `TileOPs-GroupNormFwdOp-20261018T021206Z`：本任务确实在 Phase 1 之前做了「目标线 vs 地板」比较（`opt_log.md#§2.3` 归因表 4/4 档），但**目标线来自跨设备 C**（910B3 report：2.104/2.430/1.571/0.904 µs），而同设备 C 给出 3.745/3.745/2.838/1.611 µs ⇒ 比较结果被放大：缺口 1.81–3.42× → **1.17–1.92×**、「目标低于空 kernel 地板」档数 3/4 → **1/4**（同设备口径下仅 tail 1.611 < 2.46）。地板侧数据本身可靠（同栅格实测：纯 DMA 4.39/4.39/3.81/3.09 µs、空 kernel 2.32/2.32/2.46/2.46 µs，`constants.md CONST-groupnorm-smallshape-memfloor-910B4`）⇒ 判据本身正确，**唯一失准项是喂给它的目标线**。**对 delta 的措辞要求**（apply 时并入）：该 bullet 的「目标线」须注明来源——来自 report 基线换算时必须用**同设备同 run** 的 `C`，否则先重算再比较（机制见 queue VP-2026-0312、读取时点见 VP-2026-0301）。
+  - 〔2026-10-18 第四数据点（不同任务/不同算子/纯 Vector 归约族；**带宽屋顶形态**）〕task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：本任务在 `opt_log.md#§6.2` 用同一判据逐用例比较——hidden fp16 目标 13.71 µs vs 屋顶地板 20.99 / read-only 23.83 µs、seq 0.86 vs **空 kernel 2.44 µs**、3d 3.42 vs copy 地板 7.42 µs ⇒ 4/4 结构性不可达，与实测终值（27.59/31.17/3.91/8.93 µs）方向一致。**新增判据形态 = 带宽口径的目标线须先除本机自报 `bw`**：`visualize_data.bin` 的 GM 屋顶 0.8 TB/s（逐 run 亦见 report `Bandwidth` 列）⇒ 70% 线 1.225 TB/s 超屋顶 **1.53×**，该比较是纯算术、零成本、不依赖 kernel 结构。**对 delta 的措辞要求**（apply 时并入）：在「空 kernel 地板 / 必需流量地板」之外补**「带宽屋顶地板」**——目标为带宽口径（`achieved_bw ÷ bw_ref`）时，先取**同设备同 run** 的 `bw_ref`（report `Bandwidth` 列 / `visualize_data.bin`）把目标线换算成 µs，再与两条地板比较；`bw_ref` 缺失或跨设备时先重算（机制见 VP-2026-0312）。溯源：`perf_opt/perf_feedback.md` + `perf_opt/opt_log.md#§6.2` + 验收 report `20261018_053642_635995`（均允许失效）。
 - repro: repro-missing（流程规则；复现条件 = 按现行 SKILL 走 Phase 1，观察 baseline 采集后是否要求做「目标线 vs 空 kernel 地板 / 必需流量地板」比较并记录判定）
 - toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c3c39ba / CANN 9.0.0 / Ascend910B3（地板常数同为 910B3）/ 2026-10-16
 - target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
@@ -6272,6 +6273,7 @@ decided_by: evolver / human / -   # 裁决者
   - 字段来源：`tileops/benchmark/msprof_roofline.py::parse_bin_file`（`bw` / `AI` / `performance` / `computility` / `ratio` 全部取自 profiler 的 `visualize_data.bin`，`SOC_CONFIG` 的 1.8 TB/s 只用于 CSV 复算通道），`benchmark_base.py` 把 `GM Read + Write` 条目的 `bw` 直接落 `Bandwidth(TB/s)`
   - 影响面（本任务实测）：设计 §11 以 910B3 的 C（147.31/170.08/109.98/63.30 %·µs）反推 70% 目标 2.104/2.430/1.571/0.904 µs，而同设备 C（262.16/262.16/198.67/112.78）给出 3.745/3.745/2.838/1.611 µs——缺口由 1.81–3.42× 降为 1.17–1.92×、「目标低于空 kernel 地板」档数由 3/4 降为 1/4（结论「结构性不可达」仍成立）
   - **与调度 brief 的差异（如实披露，不计入证据强度）**：brief 记「910B4 computility ≈2.44–2.49」——该值实为 `AI×0.8`；run.json 的 `computility_tops` 为 4.07–4.18。机制修正不改变「跨设备不可比」结论，但改变判读：910B4 上 Ratio 退化等价于「L2 read-miss 字节率 ÷ 0.8 TB/s」
+  - 〔2026-10-18 第二数据点（不同任务/不同算子族；含「`Ratio` 恒等于 `achieved_bw / bw_reported`」的 4/4 逐例验证）〕task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：同一算子同一 workload 的迁移段 report（910B3 / `Bandwidth` 1.75 / hidden fp16 22.7405 µs / Ratio 42.16%）与 optimize 验收 report（910B4 / `Bandwidth` **0.8000** / 28.56 µs / Ratio **73.43%**）⇒ `C = Ratio × duration` 由 **958.7 → 2097 %·µs（2.19× = 1.75/0.80）**，而时延只 +25.6%；4/4 用例逐例核对 `achieved_bytes / (duration × bw_reported)` 与 report Ratio 一致（73.43 / 68.94 / 34.68 / 57.36%）。⇒ **带宽受限支**（本算子 AI 极小 ⇒ `AI×bw < computility`）下 `C = total_bytes / bw_reported × 100` **与 kernel 实现无关**，70% 目标线（µs）= `total_bytes / (0.7 × bw_ref)`——目标线在整个任务内只是「流量 ÷ 设备带宽」的常数，「达标」等价于「持续跑到 0.7 × `bw_ref`」。跨设备误用的量级随之可算：拿 910B3 的 1.75 反推 910B4 的目标线会**低估 2.19×**（与 group_norm 的 1.78× 同向、同量级）。溯源：`examples/TileOPs/reports/tileops/{20261016_015623_851978,20261018_053642_635995}_CountNonzeroFwdOp/{report.md,benchmark.json}`（允许失效）。
 - repro: repro-missing（最小形态 = 读同一 workload 在两台设备的两份 `run.json`，断言 `performance_tops/(ratio/100) ≈ AI × bandwidth_tb_s` 且该值随设备变化而 `total_fops` 不变；脚本待同族任务补）
 - toolchain_stamp: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294（commit 2afbf3b）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18；对照侧 910B3（迁移段 report，2026-10-16）
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
@@ -6330,6 +6332,73 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task TileOPs-GroupNormFwdOp-20261018T021206Z 2026-10-18
 - decided_by: -
 - decided_note: 与 VP-2026-0301（目标口径核定）、VP-2026-0302（目标线 vs 地板）互补：三条分别管「量什么」「可达吗」「怎么裁决」。数据侧已 Tier 0 落 `elementwise.md PL-1.26`（模式本体，含 repro），本条只承担 Phase 0 的裁决口径。与 VP-2026-0251（地板自变量外推前须做真实 kernel 单变量对照）互补：那条管**地板外推**、本条管**备选裁决**。
+
+## VP-2026-0315
+
+- type: P
+- title: 「被覆盖 pipe 上的 op 削减零收益」判据——删除前后必须同时看 pipe ratio 与总 Task（mte3 11.54→0.28 µs 而 Task 不变；在已饱和的向量 pipe 上新增 UB→UB 拷贝反致 −10%）
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`（Stage 4 optimize）：`perf_opt/opt_log.md#Iteration-1`——批量输出候选（每核 `out_all` 暂存 + 末尾一次 `T.copy`）把 `mte3` 从 **11.54 → 0.28 µs**、GM 写 3.2 → 0.49 KB/核，而 `Task Duration` **不变**（26.96 vs 26.64 µs）；hidden fp16 记 `config_no_gain`、seq/3d tie/回退，**bf16 上 −10%**（新增的 UB→UB 拷贝压在已饱和的向量 pipe，vec ratio 0.68）。同任务 `opt_log.md#§3` 的反解：逐任务输出小 DMA 单价 0.16–0.20 µs/op（`empty` 探针 52/26/13 任务 → 12.741/6.672/4.495 µs，基座 ≈2.4 µs）
+  - 判据形态（本任务的读法）：① 先读 `PipeUtilization` 的 vec/mte2/mte3 ratio——三者之和 ≈ `aiv_time` 说明**零重叠**，此时削减任一 pipe 的 op 才可能有效；② 若某 pipe 的忙时已被另两者覆盖（本例 `vec+mte2 ≈ aiv_time`），删它的 op **只改变该 pipe 的忙时不改变 Task**；③ 反例指纹 = 「pipe 指标大幅改善 + 总时延不动 / 反而变慢」——不要以 pipe 指标改善作为采纳依据
+  - 数据侧已 Tier 0 落 `constants.md CONST-aiv-read-roof-and-tiny-dma-910B4`（单价 + 被覆盖事实，`repro-missing`）；本条只承担方法侧（何时该删、如何读指标）
+  - 交叉引用：`bottleneck-patterns.md BP_pipeline_overlap`（搬运与计算未重叠的正向解法）/ `constants.md CONST-aiv-time-decomposition`（`Task ≈ max(mte2,vec)+scalar` 的 sum vs max 判别）——本条是其反面向：**已重叠时不要拆 op**
+- repro: repro-missing（方法条目；复现条件 = 在 vec/mte2 已重叠的 kernel 上把某条被覆盖的 pipe 的 op 合成/删除，比较 Task 与三条 pipe 忙时的变化）
+- toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（`BP_redundant_work_or_roundtrip` 的「验证指标」段之后追加）
+    定位锚: 该 BP 小节末（apply 时按当时文件锁定精确锚）
+    new 文本（要点）: **「削减 op」的必要前提是目标 pipe 未被覆盖**——先取 `PipeUtilization` 的 vec/mte2/mte3 ratio：若三者忙时之和 ≈ `aiv_time`（零重叠），削减对应 pipe 的 op 才可能降 Task；若目标 pipe 的忙时已被另两者覆盖（如 `vec+mte2 ≈ aiv_time` 而 mte3 只是搭在空档里），删除其 op **只降该 pipe 忙时、Task 不变**，且若替代路径新增搬运落在已饱和的 pipe 上会**反致回退**。实测（count_nonzero Stage 4）：批量输出使 mte3 11.54→0.28 µs 而 Task 26.96 vs 26.64 µs（不变）、bf16 −10%；判别指标 = 「pipe 指标大幅改善 + Task 不动」⇒ 判 `config_no_gain`，不以 pipe 指标改善作为采纳依据。
+    动机: 本任务首轮按「mte3 11.54 µs 看似瓶颈」排序候选，实测零收益且在一个 dtype 上回退；地板探针（empty/copyout 反解）本可在排序前给出「写 pipe 被覆盖」的结论——把该判据写进 BP 可省一轮 msprof。
+- status: pending
+- confirmations: 1/2
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18
+- decided_by: -
+- decided_note: 与 `BP_pipeline_overlap`（未重叠→做流水）互为反面；与 `BP_redundant_work_or_roundtrip` 既有内容（重复计算/GM 往返）不重复——本条管「被覆盖 pipe 上的削减」。第二证候选：任一 optimize 任务在 `vec+mte2 ≈ aiv_time` 形态上删除/合并 mte3 侧 op，复现「Task 不变」即可（E-3 快速通道：同形态 repro 重跑）。
+
+## VP-2026-0316
+
+- type: R
+- title: 澄清「设计期预注册的备选翻转阈值」的作用域——它约束 DESIGN 修订（主选是否翻转），**不构成 Stage 4 否决条件**：实测 0.844–0.873× 未达 0.8× 阈值、纯收益无回退仍应采纳
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：`_logical_reduce_kernel_DESIGN.md#§1.6.4` 预注册「备选 R′ < 0.8× 主选才翻转」；Stage 4 实测 R′ 比值 **0.844×（seq）/ 0.873×（3d）**、绝对收益 −11.3%/−12.8% 且零回退，按「实测更快即 winner」采纳（`perf_opt/opt_log.md#§5`、`DESIGN.md#附录A.2`）。`opt_log.md#Skill-Retrospective` 明确记为「阈值与 Stage 4 winner 规则冲突」，并要求 skill 明确作用域
+  - 相反方向的同族先例（说明现行文本被两种读法消费）：task `argmax-_argreduce_kernel-20260924T031005Z` 的预注册备选 A/B 为 **0.461×/0.386×**（远优于 0.8×）并采纳——两次任务的裁决都「采纳」，但对阈值的**解释不同**（一次是「优于阈值」，一次是「未达阈值仍采纳」），说明缺的不是判据而是作用域声明
+  - 现行 `SKILL.md` 的 winner 规则（「实测更优且无回退即 winner」）与 DESIGN 模板里的翻转阈值各说一半，二者相遇时无优先级声明
+- repro: repro-missing（流程规则；复现条件 = 设计期写定翻转阈值（如 0.8×）后 Stage 4 实测落在阈值与 1.0 之间（如 0.87×），观察现行 SKILL 是否给出「采纳/放弃」的确定裁决与记录要求）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 2 winner 裁决段追加一条子句）
+    定位锚: "实测更优且无回退即 winner"（该行所在段落，apply 时按当时文件锁定精确锚）
+    new 文本（要点）: **设计期阈值的作域边界**——DESIGN 中预注册的「备选 < X× 主选才翻转」只约束**设计期主选裁决与 DESIGN 修订**；Stage 4 已实测「更优且无回退」的候选按 winner 规则采纳，不受该阈值否决，但须在 `opt_log.md` 记录「实测比值 / 阈值 / 采纳理由」三件；若阈值本应作为停止条件（如收益不足不投入实现成本），应由任务书或 DESIGN 显式写成「最小收益门槛」而不是「翻转比阈值」。
+    动机: 同一形态在两任务上被两种读法消费（0.461× 采纳 / 0.873× 亦采纳），说明阈值缺作用域声明；本任务若不采纳会白丢 12% 实测收益，若一律无条件采纳则 DESIGN 预注册失去意义——须把「裁决」与「投入门槛」两种语义分开。
+- status: pending
+- confirmations: -/-
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18
+- decided_by: -
+- decided_note: 与 VP-2026-0314（切换类备选须在表征自由度上裁决）互补：那条管「在哪个自由度上 A/B」，本条管「阈值在哪个阶段有效」；若两者同批 apply，建议置于同一 Phase 0/2 小节以便一次读全。设计侧模板（DESIGN §1.6.4 的阈值措辞）如获批应同步加一句「仅约束设计期」，否则同一歧义会从设计侧复现。
+
+## VP-2026-0317
+
+- type: R
+- title: optimize 参考模板（autotune T-4 / 采数命令）两处修正——① `run_experiments.py` 把 baseline 放进 EXPERIMENTS 使 `--all` 重复采基线（本次产出 2 组 baseline 行）；② `--kernel-name` 与 `msprof_kernel_name` 可能不一致，采数后须核对 captured op 名
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：`perf_opt/perf_records.jsonl` **22 行**中 `phase=baseline` 4 行 + `candidate_id=baseline` 4 行（同一 baseline 被 `--phase baseline` 与 `--all` 各采一次，2 组各 4 workload）；`opt_log.md#Skill-Retrospective`「需要修正的 skill 指引」首条即此
+  - 同任务 `opt_log.md#§0.2`：模板 `KERNEL_NAME="main"` 生效（`prim_func.name == "main"`），但 kernel 工厂变体的 `msprof_kernel_name` 属性为 `count_nonzero_resident` 类名；report 的 `Kernel` 列显示 `main`。⇒ 在「属性名与 prim_func 名不一致」的算子上，采数名以哪个为准**不可由模板默认值保证**，须核对 profile 目录内 `OpBasicInfo*.csv` 的 captured 名
+  - 交叉引用（不重复其内容）：queue **VP-2026-0232**（多 `@T.prim_func` 采数名派生歧义的判读与 wrapper 声明契约）/ **VP-2026-0157**（已 merged，`report --op` per-op rollup 口径）——本条只补**模板侧的核对动作**，不改契约
+- repro: repro-missing（流程规则；复现条件 = 用现行模板跑一次 `--phase baseline` 再 `--all`，统计 `perf_records.jsonl` 的 baseline 行数；并核对 profile 的 captured op 名与 `prim_func.name` 是否一致）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/autotune.md
+- delta: |
+    动作: update（T-4「实验批处理 runner」小节追加两条机械要求）
+    定位锚: "run_experiments.py"（该小节内首次出现处，apply 时按当时文件锁定精确锚）
+    new 文本（要点）: ① **baseline 与候选列表分离**：`EXPERIMENTS` 只装候选，baseline 由独立的 `--phase baseline` 采一次；`--all` 不得重复采 baseline（重复行会让「每 workload 一条 final / 一次 baseline」的对账口径失效，并使同一 baseline 出现两份可能不同 run-state 的数字）。② **采数名核对**：`--kernel-name` 的默认值（`prim_func.name`，常见 `main`）不保证等于 Op 层 `msprof_kernel_name` 属性；采数后必须回读 profile 的 `OpBasicInfo*.csv` 确认 captured 名与目标 kernel 一致，不一致时以实测 captured 名为准并在 `opt_log.md` 记一行——不要凭默认值推断归因。
+    动机: 本次重复采集 baseline 产生两组各 4 行的基线（后续对账需人工判哪组为准），而采数名问题在属性名≠`main` 的工厂变体上属潜在欠归因风险；两条都是模板级一行修正。
+- status: pending
+- confirmations: -/-
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18
+- decided_by: -
+- decided_note: 与 VP-2026-0232（采数名契约）分工：那条管「多 prim_func 时如何声明」，本条管「模板默认值不可信时如何核对」；与 VP-2026-0240（final 冻结/重采通道）不重叠（本条管 baseline 行数）。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 

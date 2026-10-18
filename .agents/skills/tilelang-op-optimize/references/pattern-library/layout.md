@@ -242,8 +242,8 @@ apis: [T.vcmp, T.vcast, T.reduce_sum, T.reduce_max, T.reduce_min, T.vsub, T.vmax
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（首证，计数类）/ all-_logical_reduce_kernel-20261016T024920Z（第二证，谓词 AND 类：合并算子方向 + `T.vmax` no-alias 链 + dtype 分档）/ any-_logical_reduce_kernel-20261016T062400Z（第三形态，谓词 OR 类：`T.vmin` 合并 + 单位元 1.0 + 四项反转）
-toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第二证 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第三形态 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（首证，计数类）/ all-_logical_reduce_kernel-20261016T024920Z（第二证，谓词 AND 类：合并算子方向 + `T.vmax` no-alias 链 + dtype 分档）/ any-_logical_reduce_kernel-20261016T062400Z（第三形态，谓词 OR 类：`T.vmin` 合并 + 单位元 1.0 + 四项反转）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（第四形态，Stage 4：超预算单 tile 驻留 R′）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第二证 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第三形态 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四形态 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（仅第四形态重验——`--level all` L0 21 + L1 24 + L2 + Boundary 全过、`torch.equal` 逐位、集成 37/37；前三条形态的历史数字未在新戳重测）
 repro: repro-missing
 ---
 
@@ -262,4 +262,21 @@ repro: repro-missing
 - **实测（第二证，all，逐位精确 + 集成态）**：路径 R（`N=8192`）与路径 C（`N=16384`，补列置 AND 中性 1.0）结果 `torch.equal`；整除/非整除分派实测一致（`N=16384 → tn=8192/num_full=2/tail=0`、`N=9000 → tail=808`、`N=10000 → tail=1808`、`N=8448 → tn=2816/tail=0`、`N=8193 → tail=1`）；`bm·W ≤ E_cap` 最紧档位 bf16 `(256,4096)`、`bm=2`（96 KB = UB/2）设备运行通过且逐位精确；集成 report 正确性 42/42、benchmark 6/6、msprof 3 例有效（roofline 10.48%–43.98%，带宽 1.75 TB/s）。
 - **实测（第三形态，any，逐位精确 + 集成态）**：路径 R 与路径 C（补列置 **OR 中性 0.0**）在「同一有效数据 + 补中性元素」下逐位一致（`torch.equal`）；`tn` 整除档（`num_full=2/4`）与非整除静态尾块档（`tail=808 / 1808`、`tn=2816` 整除因子档）全部 `torch.equal`；函数级 `--level all` 记 101 次精确比对 0 差异（13 行角点含 `NaN+零`=True / `all-NaN`=True / 全零=False / `±0` / 亚正规 / `±inf`）；集成 report 正确性 42/42（`avg max abs error = 0.00e+00`，bool 输出逐位）、benchmark 6/6、msprof 3 例有效（roofline 10.94%–43.18%、带宽 1.75 TB/s）。第三形态与第二形态的差异仅在**补式方向与合并算子对偶翻转**（`1−min` + `T.vmin` no-alias 三件套 + 单位元 1.0），双路径结构与元素预算判据同构。
 - **调用方分块参数须在 kernel 侧做元素预算复核**：迁移期 wrapper 的 `default_config` 可能是 GPU 期 SMEM 启发式（`(256,4096)` 下给 `bm=8` ⇒ 32768 元素 > 24576 硬上限），kernel 侧按 `bm·W ≤ E_cap` 回落到阶梯值即可（`block_m` 只决定行分块，不影响结果），无需改写 wrapper 即可零 report 失败。
+- **实测（第四形态，Stage 4：超预算单 tile 驻留 R′，2026-10-18）**：`E_CAP < N ≤ UB 元素上限`
+  时把 `bm` 固定 1、**取消 tile 循环与跨 tile 微元累加**（单缓冲，auto-multi-buffer 必然放弃），
+  实测优于列分块主选：`(32,16384)` fp16 `4.61 → 3.89 µs`（−15.6%）、`(128,16384)` fp16
+  `10.26 → 8.96 µs`（−12.7%），逐位精确；**单消费者形态无竞态**（30 发射 × 多 run 恒定，
+  与同族多消费者竞态样本形态不同）。翻转比 0.87×，未达设计期 0.8× 阈值但仍采纳
+  （Stage 4 规则：实测更快且无回退即 winner）。R′ 的容量判据按 dtype 分档：
+  fp16/fp32 `N ≤ 23552`（实测通过点 188416 B）、bf16 `N ≤ 15701`（12 B/元素，8 KB reserve）。
+  配套常数见 `CONST-aiv-read-roof-and-tiny-dma-910B4`。该数据点的工具链戳 =
+  `tilelang 0.1.2+c316b0e（源树 417dae9）+ CANN 9.0.0 + 910B4`（本条目 front-matter 的
+  旧戳未重验，故整条仍标 stale；本条第四形态仅对该新戳负责）。
+- **第四形态的实现证据与第二证路径（2026-10-18 蒸馏补记）**：该形态的代码证据为 `repro-missing`
+  （ED-B：R′ 分支的慢→快 delta 骨架待同族任务补——判据形态 = `_select_config` 在
+  `E_CAP < N ≤ _ub_elems(dtype)` 时返回 `block_m=1`，工厂层走无 tile 循环的单 tile 变体；
+  机制归因 = 省 1 个 tile pass 与跨 tile 微元累加，且单缓冲不触发 `TRAP-UB-multibuffer-inflation`
+  的 ×1.7 膨胀）。第二证路径（E-3 快速通道）：任一 `E_CAP < N ≤ _ub_elems` 的 logical-reduce /
+  行归约任务重跑同结构，逐位精确且单 run 时延 ≤ 0.9× 列分块即计第二证；第二证须来自不同任务
+  （不同算子或不同 dtype 契约）。
 - **溯源（任务工作区，允许失效）**：首证 `examples/count_nonzero/_logical_reduce_kernel/{DESIGN.md#§5.4/§5.6, _logical_reduce_kernel.py#_build_resident/_build_tiled/_build_tiled_tail}`；第二证 `examples/all/_logical_reduce_kernel/{DESIGN.md#4.5/§8.2, _logical_reduce_kernel.py#_resolve_block_m/run_L0 L0-3a..e/run_L1 L1-1/L1-7a..c/L1-9}`。代码骨架待最小化（ED-B delta 形态），两证任务均标 `repro-missing`。

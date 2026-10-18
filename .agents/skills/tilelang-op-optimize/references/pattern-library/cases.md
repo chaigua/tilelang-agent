@@ -655,11 +655,11 @@ quantization 族**首个** TileOPs 迁移算子 / **首个字节载体（fp8）�
 id: CASE-reduction-countnonzero-migration
 kind: case
 family: [reduction]
-mode: [developer]
+mode: [developer, optimize]
 dtype: [fp16, bf16, fp32]
 status: verified
-origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（函数级）/ count_nonzero-count_nonzero-20261016T004109Z（op 级，Stage 5 集成）
-toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（函数级）/ count_nonzero-count_nonzero-20261016T004109Z（op 级，Stage 5 集成）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（Stage 4 optimize 续档）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16；Stage 4 续档 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
 repro: none
 ---
 
@@ -674,6 +674,15 @@ reduction 家族**首个 logical_reduce / 计数类** TileOPs 迁移（`CountNon
 - **实测**：函数级 L0/L1/L2/Boundary 全过（`torch.equal`、int64 精确）；集成 report `status=passed`——正确性 **37/37**、benchmark **7/7**（4 例 msprof 有效）：`sparsity-hidden [2048,4096]` fp16 22.7405 µs（roofline 42.16%）/ bf16 29.2006 µs、`sparsity-seq [32,16384]` fp16 4.5001 µs（路径 C）、`3d-multidim-reduce [4,128,4096]` fp16 9.6602 µs；带宽口径 1.75 TB/s。
 - **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束），但其**能力动机**（大 N 可处理）由 NPU 自身 UB 元素预算驱动的列分块承接——源工厂不迁移 ≠ 其能力动机不迁移。
 - **durable 载体**：两条 trap 条目（`TRAP-primfunc-compile-time-if-buffer-def` 含 repro / `TRAP-vcmp-ne-ordered-nan` 计数类延伸）；元素预算单价与适用域限定见 constants.md `CONST-reduce-ub-per-element`（追加数据点入队 VP-2026-0263）；行归约「布尔指示平面→补式」形态集入队 VP-2026-0265。本任务 `RETROSPECTIVE.md`（op 级/函数级）/ `SESSION_TIMING_ANALYSIS.md` / 集成侧 `integration_log.md` 为 provenance（任务工作区，未上库，允许失效）。
+
+### CASE-reduction-countnonzero-migration — Stage 4 续档（2026-10-18，910B4 / optimize）
+
+- **task / 终态**：`count_nonzero-_logical_reduce_kernel-20261018T043104Z`，`DONE`——单 dispatch 单 attempt complete 5 031 s、`failures=[]`、`retry_count=0`、3 轮 / `perf_iteration.last_improvement=12.8`、stop = success + **`[DESIGN_LIMIT]`**（路由「附录补记」，`DESIGN.md` 附录 A）。用户目标是 `Ratio = achieved_bw/1.75 TB/s ≥ 70%`（4 例）。
+- **有效结构点（唯一 winner）**：R′ = `E_CAP < N ≤ _ub_elems(dtype)` 时 `bm=1` 单 tile 驻留（去 tile 循环与跨 tile 微元累加、必然放弃 auto-multi-buffer）——`sparsity-seq` 4.408→**3.908 µs（−11.3%）**、`3d-multidim` 10.234→**8.925 µs（−12.8%）**；hidden 两 dtype 判 **tie**（kernel 与 baseline 逐字节等价，交错 A/B/A/B 中位 26.62 vs 26.86、sign-test `p=1.00`、方向不一致）；smoke 三 dtype 精度 pass。翻转比 0.844/0.873 **未达**设计期 0.8× 阈值仍采纳（纯收益、无回退，Stage 4 winner 规则）。形态已并入 layout.md `PL-1.25` **第四形态**。
+- **未采纳 / 证伪（避免重复劳动）**：① **批量输出**（每核末尾一次大 DMA）——`mte3` 11.54→0.28 µs、GM 写 3.2→0.49 KB/核 而 **Task 不变**（写 pipe 本被 vec/mte2 盖住），且在向量已饱和的 bf16 上 **−10%**；② **`T.Pipelined(num_stages=2)`**——`aiv_time`/`vec`/`mte2` 与 baseline 逐项相同（同 auto-multi-buffer 机制，CG-2026-0027 第三任务）；③ **`E_CAP=16384`**——UB overflow（`requires 1572864 bits` 档，见 constants.md 第五数据点）。
+- **口径与天花板（`[DESIGN_LIMIT]` 依据）**：本机 msprof 自报 GM 屋顶 **0.8 TB/s**（验收 report `Bandwidth` 列逐例 0.8000）⇒ 4 例 Ratio **34.68–73.43%**（hidden fp16 73.43% / bf16 68.94% / seq 34.68% / 3d 57.36%）；`/1.75` 口径的 70% 线 = 1.225 TB/s **超本机屋顶 1.53×**，4/4 结构性不可达（seq 目标 0.86 µs < 空 kernel 地板 2.44 µs；3d 3.42 µs < copy 地板 7.42 µs；hidden 13.71 µs < read-only 地板 23.83 µs）。常数值落 constants.md `CONST-device-peak-910B3` 第四数据点 / `CONST-reduce-ub-per-element` 第五数据点 / `CONST-aiv-read-roof-and-tiny-dma-910B4`。
+- **集成 / 回归**：端到端 report `examples/TileOPs/reports/tileops/20261018_053642_635995_CountNonzeroFwdOp/`——correctness 100%（37/37）、`avg max abs error 0.00e+00`、4 例 msprof 有效（invalid 0）、latency 28.56/30.42/3.78/9.14 µs；函数级 `perf_opt/_logical_reduce_kernel.py --level all` 的 L0 21 + L1 24 + L2 + Boundary 全过（`torch.equal`，含 NaN 语义三 dtype）。
+- **适用触发条件**：同族 logical-reduce / 行归约的 Stage 4 调优（尤其「带宽口径目标明显超平台屋顶」的立项）；R′ 判据可直接复用。**读前须知**：本续档的 UB 单价（12.03 B/元素 @ `W=8192/bm=2`）与 0.8 口径均绑定 910B4 + `c316b0e`，与前作迁移段（910B3 + `b39cc306`）的 Ratio / 带宽列不可直接对比。
 
 ---
 id: CASE-reduction-all-migration
