@@ -33,6 +33,8 @@ decided_by: evolver / human / -   # 裁决者
 
 ## Pending
 
+> **条目迁移（2026-10-18 蒸馏，max_pool1d_with_indices Stage 4 optimize）**：VP-2026-0299（D：`CH` 容量上限 < C ⇒ 尾块 padding lane + `num_logical` 翻倍）与 VP-2026-0300（D：窄向量 op 单价档）**第二证达标**，第二证同来自 task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z`（不同任务 / 不同算子 / 新设备 910B4 + 工具链 e8b5d51），分别合入 `layout.md` **PL-1.4 第八数据点**（两证并列，含「Stage 3 复现冻结闭式 vs Stage 4 死 alloc 移除后重推」边界）与 `constants.md` **CONST-vector-launch-overhead**（窄 op 宽度分档 + 三杠杆用法，repro 机械转正）；VP-2026-0130（P：迭代效率两手法）第二证达标（同上任务）→ 合入 `iteration-diagnosis.md` 新增「迭代效率两手法」小节。三条完整记录移至下方 `## Decided` 归档区。
+
 > **条目迁移（2026-10-14 apply）**：VP-2026-0176/0177/0178/0179 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
 
 > **条目迁移（2026-10-14 apply 批次 2）**：VP-2026-0150 / 0047 / 0020 / 0054 / 0116 经用户批准（E-3 审批简报，2026-10-14）于 `mode=apply` 落盘（E-4 预验证 PASS），完整记录移至下方 `## Decided` 归档区。
@@ -806,22 +808,6 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0044（row-reduction 基准形态，已合入）互补：0044 覆盖 N 可驻留的常规形态，本条覆盖小 N 大 M 与 N 超驻留两端的阶梯/分派规则。
 
-## VP-2026-0130
-- type: P
-- title: 调优迭代效率两手法——① 归因「二选一」嫌疑列表当轮用变体对照消歧（不留到后续轮——argmax 标量化归因跨轮证伪实证）② 高成本负载先微基准定标（copy-only 行宽-效率曲线 W≥32 渐近）再上真 shape 采数
-- evidence:
-  - task argmax-_argreduce_kernel-20260924T031005Z Stage 4：opt_log Iteration 4（session-1 对 baseline 标量化留两个嫌疑〔(bm,1) 列广播操作数 / varange 生成失败〕未闭合，round 4 r4a 操作数变体对照一次证伪两者——真触发器是 2D T.Parallel(bm,N) 融合循环本身；证伪更正留痕 canonical §2-3）；Iteration 2（probe_gran copy-only 微基准定标行宽曲线：W=4→9.74µs / W=8→6.28 / W=16→5.56 / W=32→4.52µs，W≥32 达渐近线——r2a 窄行宽视图设计直接建立在该曲线上，避免真 shape 1632µs 负载多轮高成本采数）；SESSION_TIMING_ANALYSIS §3（诊断消歧并行化建议 + 3d baseline 采数最贵）
-- repro: none（方法类：判据与实例自包含于 delta；效应载体 = traps-compiler.md TRAP-parallel2d-bm-ge2-scalarize 证伪更正段）
-- toolchain_stamp: tilelang 0.1.2 dev root build 2026-09-24 + CANN 8.5.0 + Ascend910B2C / 2026-09-24~28
-- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
-- delta: |
-    add「迭代效率两手法」小节：① **嫌疑列表当轮消歧**——Phase 1 诊断产出「二选一」式归因嫌疑时，当轮即对每个嫌疑派一个操作数/形态变体实验分支做对照（各 ~1 分支成本），不跨轮次延迟：argmax 实证（session-1 两嫌疑留到 round 4 才由 r4a 变体对照双双证伪——若 round 1 当轮消歧，链式形态可提前 3 轮锁定；证伪更正按 canonical §2-3 留痕：误判根因 + 合法形态 + 新数据）；② **高成本负载微基准定标先行**——baseline 采数最贵的 workload（多 wave/读膨胀/诊断链长）先用更小的快速回归 shape 或 copy-only 微基准定标关键常数（行宽-效率曲线、膨胀系数），再上真 shape——argmax 3d 负载的窄行宽视图设计直接建立在 probe_gran W 曲线（W≥32 渐近 4.52µs/4MB）上，避免 1632µs 级负载的多轮盲扫。
-- status: pending
-- confirmations: 1/2
-- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
-- decided_by: -
-- decided_note: ①的实证即 TRAP-parallel2d-bm-ge2-scalarize 的证伪更正链（Stage 4 已回写知识侧），本条是其流程侧（当轮消歧纪律）的条目化。
-
 ## VP-2026-0142
 - type: D
 - title: avg-pool 倒数乘（`sum/d` → `sum·fl(1/d)`，倒数 fp32 计算一次）的容差内等价实测数据与判据分档（≤1 ulp of target dtype）
@@ -1175,47 +1161,33 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 价值点 VP-I（源工件 P，慢→快关键更改含三元判据）。按 Tier 1：首次证据（1/2），缺知识域 repro 标 `repro-missing`。第二证候选 = 任一多单元 persistent 纯 Vector 算子做 CH 单波分档的任务（不同任务/不同算子）。
 
-## VP-2026-0299
-
-- type: D
-- title: 窗口/归约类纯 Vector 算子的 `CH` 容量上限低于 C 时，通道尾块的窗口 op 仍按 CH 全宽执行——尾块 padding lane 是纯开销且 `num_logical` 翻倍（`_CH_MAX` 64→128：sincnet 301.936→187.964 µs / −37.7%、ecg −26.9%，逐位精确）
-- evidence:
-  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（`C=80`、`CH=64` ⇒ `num_cblk=2`、第 2 块 `real_c=16` 但窗口 op 仍按 CH=64 跑 ⇒ **37.5% 的 lane 是 padding**、`num_logical` 翻倍）与 §3.2 R1a 行；§4 Round 1 候选表（`chfull`：sincnet **187.964 µs** / textcnn 12.740 / ecg **113.002 µs**，L0 pass）+ Round 2/3 合并与 final 记录（188.454 / 113.182 / 11.620 µs，`max_diff=0.000e+00`）
-  - `perf_opt/perf_records.jsonl` round 1 `chfull` 三行（`artifact_sha256 c30d7ecb71736efc325fefb10ab1b3400809f626c60e56cc86fe81670434fcaa`）与 round 3 final 三行（`f8ae961c…`）
-  - 正面对照（正确性侧「尾块不写回即无害」）：queue VP-2026-0145 ②（通道块尾动态切片）——该纪律保证正确性，但**不消除 padding lane 的性能代价**，两条互补不矛盾
-  - 边界/延伸：queue VP-2026-0249（CH 判据 v2，单波集合内按核占用→尾块浪费排序）——本任务属 `units = 3392 ≫ vector_cores = 40` 的**多波 regime**（单波集合为空），尾块浪费判据仍成立（已按边界证据追加至 0249 证据链）
-- repro: repro-missing（最小形态 = 同一 1D 窗口 kernel 上 `_CH_MAX ∈ {64, ≥C}` 两档各采一次 msprof op 并比对 `num_logical` 与 Task；效应只在完整 kernel 规模显现，知识域脚本待同族任务回填）
-- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
-- delta: |
-    update `PL-1.4-tiling-heuristic`（在「最小可行 CH（第六数据点）」段之后追加「第八数据点」段）：
-    **第八数据点（2026-10-16，纯 Vector 1D 窗口池化 general 路径；toolchain c3c39ba / CANN 9.0.0 / Ascend910B3）**：当 `CH` 被**容量上限**（而非容量不等式）钉在 `C` 之下且 `ceil(C/CH) > 1` 时，通道尾块同时付两份代价——① 窗口/归约 op 仍按 **CH 全宽**执行（尾块只把 `real_c = min(CH, C−cb·CH)` 段写回，padding lane 照样占向量位）：`C=80, CH=64` ⇒ 第 2 块 `real_c=16`、**37.5% 的 lane 是 padding**；② 单元数随 `ceil(C/CH)` 翻倍（`num_logical = N·ceil(L_out/BL)·ceil(C/CH)`：3392 → 2080）。把上限抬到 ≥ C 使 `CH = min(C, cap) = 80`（**容量不等式不变**、`BL` 由同一不等式自动收缩 26→21）后：sincnet 301.936 → **187.964 µs（−37.7%）**、ecg（`C=128`）154.653 → **113.002 µs（−26.9%）**，`aiv_vec` 205.5 → 113.4 µs，**L0/L1 三 dtype 逐位精确**（`max_diff=0.000e+00`）。适用域：`units ≫ vector_cores` 的**多波 regime**（此时「单波判据/最小可行 CH」（第五/六数据点）的单波集合为空、判据不适用，但**排序键「尾块浪费最少」仍成立**）；与第七数据点的双输出形态互不冲突。数据（任务工作区，允许失效）：`perf_opt/{perf_records.jsonl round 1 chfull 三行（sha c30d7ecb…）+ round 3 final、opt_log.md#§3.1/#§4, _max_pool1d_kernel_round1_chfull.py}`。
-- status: pending
-- confirmations: 1/2
-- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
-- decided_by: -
-- decided_note: 价值点 VP-P1（源工件标 D）。含实测数字与倍率 ⇒ D；无知识域 repro（效应只在完整 kernel 规模显现）⇒ 按 merge-policy §1 降级 Tier 1 并标 `repro-missing`。第二证候选 = 任一「通道分块上限低于 C 且 `ceil(C/CH)>1`」的窗口/归约类纯 Vector 调优任务（不同任务/不同算子）——重点看 `num_logical` 是否翻倍与 padding lane 是否被计入。
-
-## VP-2026-0300
-
-- type: D
-- title: 窄向量 op（CH 宽）的发射/地址代价实测 ≈**14.4 ns/op/核**（910B3）——`CONST-vector-launch-overhead` 的「~0.5 µs/op」是**宽块**档，不可外推到 CH 宽的窄 op（设计期据此估算失准 13.6×）
-- evidence:
-  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（结构 = `T.serial(k) × T.serial(BL)` 内每 `(kw, owl)` 一条 `vmax` + 一条 NaN 掩码 `vmul`，即每逻辑单元 `2·k·BL + 12` 条 **CH 宽**向量 op；sincnet `2·3·26 = 156` 条窄 op + 12 条宽 op/单元、全 kernel **570K 条窄 op**；`aiv_vec` 205.498 µs ⇒ 570K / 40 核 ÷ 205 µs ≈ **14.4 ns/窄 op/核**）与 §2.3（`DESIGN.md §1.6.0` 估算下界 22.2 µs vs 实测 baseline 301.936 µs = **13.6×** 失准，且该节自标「发射项口径 = 未文档化假设」）
-  - `perf_opt/perf_feedback.md`「实测与假设矛盾」段（发射项实测确为主导项：`aiv_vec` 占 `aiv_time` 73%；`BL` 变化不改变窗口 op 总数 ⇒ 非 tiling 参数可解）
-  - 机制同族第二实例（不同算子/不同工具链）：`TRAP-vexp2-not-exact-pow2` 代价边注（`T.vshl` 在 UB 上被标量化 ≈ 20 ns/元素）；本条的「每 op 固定发射代价随宽度缩放」是另一维度
-- repro: repro-missing（最小形态 = 同一 UB tile 上扫 op 宽度 `{1,8,32,64,128,256}` 各跑 N 条同构向量 op 取斜率，断言 `ns/op` 随宽度单调下降且在 CH≈64 档落 ≈10–20 ns；需 msprof）
-- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40）/ 2026-10-16
-- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
-- delta: |
-    update `CONST-vector-launch-overhead`（正文与 front-matter 各一处）：正文追加「**窄 op 档（2026-10-16 实测）**：每 op 代价随**操作数宽度**缩放——`.5 µs/op` 仅在宽块（bn≈512 级）成立，**CH 宽（≤128 元素）的窄向量 op 实测 ≈14.4 ns/op/核**（1D 窗口池化：570K 条 CH=64 宽 op / 40 核 ÷ 205 µs `aiv_vec`）；把宽块单价外推到窄 op 会使设计期『发射项』估算失准一个量级以上（同任务 `DESIGN.md §1.6.0` 估算 22.2 µs vs 实测 301.936 µs = 13.6×，且失准主项即该发射项）。用法：向量链时延下界须按**宽度分档**取单价（宽块 ≈0.5 µs/op、CH 宽 ≈14.4 ns/op）后再乘 op 数，并注意 `2·k·BL` 条窄 op 的总数只与 `CH` 分块有关、与 `BL` 无关。」；front-matter 的 `origin_task` / `toolchain` 追加本任务与版本戳，`repro` 维持 `repro-missing`（待同族任务以宽度扫描脚本回填）。
-- status: pending
-- confirmations: 1/2
-- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
-- decided_by: -
-- decided_note: 源工件未列为 VP（由 opt_log §3.1 与 `perf_feedback.md` 的归因数字蒸馏所得）。含实测数字与量纲 ⇒ D；无知识域 repro（需 msprof 宽度扫描）⇒ 降级 Tier 1 标 `repro-missing`。第二证候选 = 任一需要「向量 op 数 × 单价」估下界的调优/设计任务（不同任务/不同算子），重点看窄 op 单价是否落在 10–20 ns 档。
-
 ### Tier 2（R 类，结构化 diff 提案，待人工批准后 mode=apply 执行）
+
+## VP-2026-0311
+
+- type: R
+- title: `profile-collection.md` §2 增「**op 单价标定表**」为 Phase 1 必做采集项（窄/plane 宽度档 + 同一 op 的 dtype 档 + 运行期标量广播 + 本机空 kernel 地板）
+- evidence:
+  - task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（单价表：f32 `vmax` 12.3/21.1/23.1 ns、**int32 `vcmp` 1039 ns**、fp32 `vcmp` 30.5 ns、运行期 `vbrc` 23.8 ns、空 kernel 地板 3.12/3.38 µs）+ §3.2（6 个 timing-only 分解探针：删 2 条 int32 `vcmp` ⇒ 3481.69→1094.60 µs、`scalar` 2796→426 µs）+ §8.1 R1（「若首轮就测单价表，可 10 分钟内定位；实际是先跑完 baseline + 6 个探针才定位」）
+  - 对照（无单价表的成本）：同族 task max_pool1d-_max_pool1d_kernel-20261016T090104Z 只能由 `aiv_vec`/op 数**反解** 14.4 ns/op，`DESIGN §1.6.0` 发射项估算失准 **13.6×**（22.2 vs 301.936 µs）
+  - 数据侧已落盘（不重复）：`pattern-library/constants.md` CONST-vector-launch-overhead（宽度分档，queue VP-2026-0300 2/2）+ `traps-compiler.md` TRAP-int32-vcmp-scalarized；流程侧缺的只是 Phase 1 的**必做调用点**与三档最低覆盖清单
+- repro: repro-missing（流程规则；复现条件 = 按现行 skill 在 Phase 1 只采 baseline profile、不建单价表，观察诊断轮次与失准倍率）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+e8b5d51e（commit e8b5d51）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
+- delta: |
+    动作: update（§2「逐 kernel 采集 baseline 并排序」末句之后追加一段）
+    定位锚: "每个 workload 完成迭代后才尝试核内合并，并复测当前 kernel 的全部 `tune` workload。"
+    old 文本: "每个 workload 完成迭代后才尝试核内合并，并复测当前 kernel 的全部 `tune` workload。"
+    new 文本: |
+      每个 workload 完成迭代后才尝试核内合并，并复测当前 kernel 的全部 `tune` workload。
+
+      **op 单价标定（首轮必做，2026-10-18 起）**：baseline 之后、进入迭代前，用 512 深 depend 链标定本 kernel 用到的向量 op 单价（落 `perf_opt/op_cost_calibration.jsonl`，**不混入** `perf_records.jsonl`；地板/扇出类数据落 `copy_floor_calibration.jsonl`），最低覆盖三档：① 窄 `(1,64)` vs plane `(8,64)`/`(8,128)` 宽度；② **同一 op 的 dtype 档**（fp32 vs int32/int16——实测 int32 `vcmp` 1039 ns/op vs fp32 30.5 ns，34×）；③ 运行期标量广播（`T.vbrc`）。同时复测**本机**空 kernel Task 地板（设备不同数字不同：910B3 3.37 µs / 910B4 3.12–3.38 µs）。用法：`Task 下界 ≈ 地板 + op 条数 × 单价 + max(流量项)`（见 `iteration-diagnosis.md`「迭代效率两手法」②）；把单价表与 `scalar` 占比画像一起用来将「scalar 主导」分解到具体 op 类，避免直接跳到 tiling/换轴候选。实证：max_pool1d_with_indices 靠该表在一轮内定位「每单元 2 条 int32 `vcmp` 占 Task 69%」（sincnet −67.6%）；无表时同族任务把发射项估算错 13.6× 并多跑 6 个探针。
+    动机: 本任务 3480 µs 中约 2400 µs 来自 2 条 per-unit int32 `vcmp`，单价表 + 一次分解即可定位；现行 skill 只有「copy-floor 标定」而无「算子内部单元 op 单价」必做项，导致首轮诊断只能从 scalar 占比猜结构。
+- status: pending
+- confirmations: -/-
+- created_by: task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z 2026-10-18
+- decided_by: -
+- decided_note: 与 VP-2026-0302（目标线 vs 地板的前置比较）、VP-2026-0236（元素吞吐阶段达标性前置标定）互补：那两条管「目标是否可达」，本条管「单价从哪来」。数据侧勿再新开条目（已合入 CONST-vector-launch-overhead / TRAP-int32-vcmp-scalarized）。
 
 ## VP-2026-0008
 - type: R
@@ -3086,6 +3058,7 @@ decided_by: evolver / human / -   # 裁决者
 - type: R
 - title: signal-registry.md §5 S4 产物格式契约显式化——perf_records final 的 artifact_path 以 perf_opt/ 为基准（裸文件名），Final Performance Test Data 表为 ##/### 标题 + 恰 5 列纯数字（gate 4 机械解析形态）
 - evidence:
+  - 〔2026-10-18 第六数据点（不同任务，pool 族双输出 1D optimize；**派生字段口径缺陷 + append-only 保留**）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z：`perf_records.jsonl` round-0 三行 baseline 的派生字段 `achieved_bw_tb_s` / `bw_ratio_pct` 因 runner 首版**单位写反**全为 `0.0`，随后 12 行正常 ⇒ 同一文件内派生字段两套口径并存；因 append-only 契约原行不改写，实际处置 = 保留错误行 + `opt_log.md#§6.7` 逐条披露 + 全部 Ratio 由 `duration_us` + manifest bytes 重算（§4.1）。建议契约补一句：**派生字段落盘后立即与原始 `duration_us` 交叉复算一次**（本任务该缺陷直到蒸馏期人工对账才发现），或约束 Runner 首轮只写原始量（`duration_us`）而派生量统一由后处理生成。
   - task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260921T003531Z：.task_timeline.jsonl（Stage 4 attempt 1 fail 7681s，verdict=runtime，2026-09-21T02:43:32Z——gate 4 S4-PERF-RECORDS-RECON 对账失败；attempt 2 窄修复 complete 170s）——失败细节来自 conductor 终态钩子输入，opt_log §7 复盘未覆盖该次 fail 的 gate 侧原因（复盘缺口形态，同 stats ⑧⑩ 先例）
   - 两处产物格式错误（attempt 1）：① perf_records.jsonl final 记录 artifact_path 用仓库根相对路径（examples/TileOPs/... 前缀），gate 以 perf_records.jsonl 所在目录（perf_opt/）为基准拼接成双重前缀 → abspath 不匹配 → 「final 未测最终 perf_opt 文件」；② opt_log Final Performance Test Data 用加粗列表项而非 ##/### 标题 + 6 列且数值加粗——gate_lint.py L908 要求 `^#{2,3} Final Performance Test Data\s*$` 标题、L919 要求恰 5 列、L925 要求 float() 可解析（加粗 → ValueError / 6 列 → 行被跳过 → 「Final 表缺少 {key}」）
   - 修复形态（attempt 2，170s）：final 行 artifact_path = 裸文件名 `_ssd_chunk_scan_fwd_kernel.py`（perf_records.jsonl 末 3 行）+ opt_log §6 `### Final Performance Test Data` + 5 列纯数字表
@@ -4730,6 +4703,7 @@ decided_by: evolver / human / -   # 裁决者
 - type: R
 - title: `tilelang-op-optimize` Phase 2 把「结构分支正确性门」明确排在 msprof 采集之前（且 runner 默认开启正确性门）——正确性与性能分两轮采集会让错误的 winner 进入合并流程
 - evidence:
+  - 〔2026-10-18 **正例**（不同任务/不同算子/910B4）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z：round 1 两个结构分支在采数**前**被 L0 拦住——singlepass（单遍「破纪录」）报索引 5 630 901 / 5 633 136 错、jramp（运行期偏移 `vbrc`）直接段错误，两条均未进入 `perf_records.jsonl`（状态记 `rollback`，`perf_iteration.consecutive_no_improvement` 未受污染）。同期仅 3 个有效候选入账，说明「正确性门先于性能采集」在 runner 无默认开关时也能靠纪律达成。
   - task argmin-_argreduce_kernel-20261015T023310Z（Stage 4）：`perf_opt/opt_log.md` §Skill Retrospective 流程问题（唯一一条）+ Iteration 2 证伪更正记录——「per-row 展开写共享 (bm,N) 缓冲」分支实测 12.91–15.25 µs（快于正确链式 31.10–31.46 µs）但 `torch.equal` 判 MISMATCH（y0 = −3 vs ref 3211）；错误 winner 一度进入合并流程，直到单独一轮正确性复核才发现
   - 现行 SKILL 文本为「6. 每个实验分支跑 L0 精度回归。7. 对精度通过的分支，用 `msprof op` 采集……」，但实操中 L0 套件耗时长而被降级为 driver 级 smoke（本轮后期才在每个 msprof 采集前补 `--check`）
   - 数据侧自包含：traps-compiler.md `TRAP-scf-for-row-offset-silent-miscompile`（含 repro，断言「错值档更快 = 伪收益」）
@@ -4948,6 +4922,7 @@ decided_by: evolver / human / -   # 裁决者
 - type: R
 - title: optimize SKILL.md 证伪协议增第 5 条「**操作数形态子集**」——报告「某 API 不可用」前须穷举 whole-buffer / 切片 / bool-cond / rank 形态，否则形态限制被误记为 API 缺失
 - evidence:
+  - 〔2026-10-18 追加证据（不同任务/不同算子/910B4；**dtype 子形态**维度）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z：同一 `T.vcmp` 的 fp32 形态正常向量化（30.5 ns/op），而 **int32 形态被逐 lane 标量化**（1039 ns/op = 16.2 ns/lane，34×；`scalar_us` 占 98%）——「某 API 不可用」的穷举清单除 whole-buffer/切片/bool-cond/rank 外，还须加**操作数 dtype 档**（fp16/fp32 可用 ≠ int32/int16 可用；int16 同形态另有实证）。本任务据此把判决改到 fp32 域拿回 69% 的 Task（见 TRAP-int32-vcmp-scalarized）。
   - task adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z：`perf_opt/opt_log.md` §8.1 流程问题 R3 + §3.3 F6（`hivm.hir.vsel` 的 cond **不接受从更大 UB buffer 切出的 bool 区域**——`T.vselect(eq_mask[iw0+kw : iw0+kw+1, 0:ch_], ...)` 报 `operands' shape are inconsistent`；**同一 slice 作 `vcmp` 操作数合法**）⇒ 设计期「bool 切片直送 vselect」的 8→6 op 削减被记为 blocked（实际只削得掉死代码 8→7）
   - 数据侧已回写：`traps-compiler.md` **TRAP-hivm-vsel-cond-slice**（新条目，含无关变量排除 ch 8..128 / dtype 面）+ INDEX 一句话（「否定 v 算子 API 前须穷举 whole-buffer/切片/bool-cond/rank 形态」）
   - 现 SKILL.md 证伪协议第 1 条只要求「用文档合法形态测试…穷举代表性写法」，未把「**同一 API 的操作数形态子集**」列为独立维度（该维度缺失导致形态限制被误记为 API 缺失的判定风险）
@@ -6021,6 +5996,7 @@ decided_by: evolver / human / -   # 裁决者
 - type: R
 - title: `tilelang-op-optimize` Phase 0「首轮必查项」增「**性能目标口径核定**」——目标含 `Ratio`/带宽类指标时，先复现官方反解公式并标注分子口径（`Ratio` 的分子 `total_fops` 会随结构改写同向变化，按「带宽 roofline」理解会瞄错目标）
 - evidence:
+  - 〔2026-10-18 第二数据点（不同任务/不同算子/910B4；**计算受限分支**）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z：三 workload 的 `AI × 1.8 TB/s` = 125 / 11.4 / 135 TOps/s 均远大于 `computility`（3.349 / 3.378 / 3.294 TOps/s）⇒ 全部落**计算受限**分支，`Ratio_official = fops/(T × computility)`；同一优化里官方口径 sincnet 3.12%→13.45%（×4.3）而用户带宽口径 0.92%→5.93%（×6.5），两套口径按任务书要求**并列披露、不择优单报**；判别动作 = 先由 `AI` 与 `computility` 定分支、再由 `fops` 是否同降判断 Ratio 是否与 latency 解耦（本任务 `fops` 364M→243M，−33%）。溯源：`perf_opt/opt_log.md#§4.1/§4.2`。
   - task max_pool1d-_max_pool1d_kernel-20261016T090104Z：`perf_opt/opt_log.md` §7.1 流程问题 1 + §2.2（调度 prompt 给的口径是「带宽 roofline（`achieved_bw ÷ 1.75 TB/s`）」，按官方 report 的 `compute_from_csvs` 实测复现后发现 `Ratio = (total_fops/TaskDuration)/computility`——sincnet/ecg 在该模型中**计算受限**、只有 textcnn 是带宽受限支）+ §6.2（结果：**时延降 37.6% 只换来 Ratio +1.05pt**）
   - 知识侧已生效：queue **VP-2026-0227** 已 2/2 合入 `pattern-library/constants.md CONST-msprof-ratio-compute-roofline`（含反解公式、两证数字与可达性筛查算式）——本条只承担「**优化侧的读取时点**」（Phase 0 必查项），不重复数据
   - 相关：queue VP-2026-0081（Ratio 采数管线：`--aic-metrics=Roofline` + `--kernel-name` 过滤）
@@ -6045,6 +6021,7 @@ decided_by: evolver / human / -   # 裁决者
 - type: R
 - title: `tilelang-op-optimize` Phase 1（baseline 之后）增「**目标线 vs 平台地板 / 必需流量地板**」机械前置比较——把不可达 workload 在进入迭代前就标记（判据已在 `perf-feedback.md §1` 生效，缺的是 Phase 1 的调用点）
 - evidence:
+  - 〔2026-10-18 第二数据点（不同任务/不同算子/910B4；**op 条数下界**形态）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z：三 workload 的 70% 目标线 45.65 / 3.56 / 23.95 µs——textcnn 的目标线 **3.56 µs 已与空 kernel 地板 3.12–3.38 µs 同量级**（且 `k=128` 每输出元素 ≥5 条窄 op ⇒ 47 µs 的 op 下界），另两例的必需 op 下界（2752×3×16×5 / 1648×5×10×5 条 × 12.3 ns ÷ 40 核 = 203 / 127 µs）是目标线的 4.4–5.3× ⇒ **迭代前即可判口径不可达**。本任务把该判据写进 `perf_feedback.md`「机械前置判据」段并在 §6.5 逐 workload 复核，形式上已实践；缺口是 Phase 1 未据此提前标记（仍跑满 3 轮）。
   - task max_pool1d-_max_pool1d_kernel-20261016T090104Z：`perf_opt/opt_log.md` §7.1 流程问题 2（**直到 §6.2 才**用 `CONST-msprof-task-floor-910B3` 反解出 textcnn 的目标线 3.33 µs **低于**空 kernel 地板 3.37 µs）+ §6.2 三行（textcnn 目标 3.33 < 地板 3.37；sincnet / ecg 的实测 `mte2` 55.482 / 25.261 µs 单独已超各自 70% 线 39.8 / 24.7 µs）
   - 反例形态（「不可达内容被排进迭代」）：三个 tune workload 全部进入 Phase 2 排序与迭代（§1.2），其中一个的口径不可达只能事后判死
   - 已生效的判据来源：`_shared/standards/perf-feedback.md` §1「机械前置判据（先行，零成本）」（VP-2026-0238 **已于 2026-10-15 apply**）+ `constants.md CONST-msprof-task-floor-910B3`（910B3 空 kernel 3.37 / 必需流量 4.25 µs）
@@ -7559,3 +7536,60 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task argmin-_argreduce_kernel-20261014T151121Z 2026-10-14
 - decided_by: evolver
 - decided_note: 1/2→2/2 后合入（第二证 = task count_nonzero-_logical_reduce_kernel-20261016T005019Z Stage 1 的独立判别力对照组，与首证 task argmin-_argreduce_kernel-20261014T151121Z 属不同任务/不同算子族）。合入锚点：`.agents/skills/tilelang-op-design/references/quality-checklist.md` 主表新增第 **23** 行「等价性脚本判别力自证」（含第二证新增子项 ③ 谓词/计数类「源侧直觉路线」对照组、④ 结构可分证据）。与 VP-2026-0199（检视侧）/ VP-2026-0200（设计侧 Phase 2）互链；第二证形态差异（对照组取源侧直觉路线而非合成错误候选集）如实披露供复核。
+
+## VP-2026-0299
+
+- type: D
+- title: 窗口/归约类纯 Vector 算子的 `CH` 容量上限低于 C 时，通道尾块的窗口 op 仍按 CH 全宽执行——尾块 padding lane 是纯开销且 `num_logical` 翻倍（`_CH_MAX` 64→128：sincnet 301.936→187.964 µs / −37.7%、ecg −26.9%，逐位精确）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（`C=80`、`CH=64` ⇒ `num_cblk=2`、第 2 块 `real_c=16` 但窗口 op 仍按 CH=64 跑 ⇒ **37.5% 的 lane 是 padding**、`num_logical` 翻倍）与 §3.2 R1a 行；§4 Round 1 候选表（`chfull`：sincnet **187.964 µs** / textcnn 12.740 / ecg **113.002 µs**，L0 pass）+ Round 2/3 合并与 final 记录（188.454 / 113.182 / 11.620 µs，`max_diff=0.000e+00`）
+  - `perf_opt/perf_records.jsonl` round 1 `chfull` 三行（`artifact_sha256 c30d7ecb71736efc325fefb10ab1b3400809f626c60e56cc86fe81670434fcaa`）与 round 3 final 三行（`f8ae961c…`）
+  - 正面对照（正确性侧「尾块不写回即无害」）：queue VP-2026-0145 ②（通道块尾动态切片）——该纪律保证正确性，但**不消除 padding lane 的性能代价**，两条互补不矛盾
+  - 边界/延伸：queue VP-2026-0249（CH 判据 v2，单波集合内按核占用→尾块浪费排序）——本任务属 `units = 3392 ≫ vector_cores = 40` 的**多波 regime**（单波集合为空），尾块浪费判据仍成立（已按边界证据追加至 0249 证据链）
+- repro: repro-missing（最小形态 = 同一 1D 窗口 kernel 上 `_CH_MAX ∈ {64, ≥C}` 两档各采一次 msprof op 并比对 `num_logical` 与 Task；效应只在完整 kernel 规模显现，知识域脚本待同族任务回填）
+- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    update `PL-1.4-tiling-heuristic`（在「最小可行 CH（第六数据点）」段之后追加「第八数据点」段）：
+    **第八数据点（2026-10-16，纯 Vector 1D 窗口池化 general 路径；toolchain c3c39ba / CANN 9.0.0 / Ascend910B3）**：当 `CH` 被**容量上限**（而非容量不等式）钉在 `C` 之下且 `ceil(C/CH) > 1` 时，通道尾块同时付两份代价——① 窗口/归约 op 仍按 **CH 全宽**执行（尾块只把 `real_c = min(CH, C−cb·CH)` 段写回，padding lane 照样占向量位）：`C=80, CH=64` ⇒ 第 2 块 `real_c=16`、**37.5% 的 lane 是 padding**；② 单元数随 `ceil(C/CH)` 翻倍（`num_logical = N·ceil(L_out/BL)·ceil(C/CH)`：3392 → 2080）。把上限抬到 ≥ C 使 `CH = min(C, cap) = 80`（**容量不等式不变**、`BL` 由同一不等式自动收缩 26→21）后：sincnet 301.936 → **187.964 µs（−37.7%）**、ecg（`C=128`）154.653 → **113.002 µs（−26.9%）**，`aiv_vec` 205.5 → 113.4 µs，**L0/L1 三 dtype 逐位精确**（`max_diff=0.000e+00`）。适用域：`units ≫ vector_cores` 的**多波 regime**（此时「单波判据/最小可行 CH」（第五/六数据点）的单波集合为空、判据不适用，但**排序键「尾块浪费最少」仍成立**）；与第七数据点的双输出形态互不冲突。数据（任务工作区，允许失效）：`perf_opt/{perf_records.jsonl round 1 chfull 三行（sha c30d7ecb…）+ round 3 final、opt_log.md#§3.1/#§4, _max_pool1d_kernel_round1_chfull.py}`。
+- status: merged
+- confirmations: 2/2
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: evolver
+- decided_note: 价值点 VP-P1（源工件标 D）。含实测数字与倍率 ⇒ D；无知识域 repro（效应只在完整 kernel 规模显现）⇒ 按 merge-policy §1 降级 Tier 1 并标 `repro-missing`。第二证候选 = 任一「通道分块上限低于 C 且 `ceil(C/CH)>1`」的窗口/归约类纯 Vector 调优任务（不同任务/不同算子）——重点看 `num_logical` 是否翻倍与 padding lane 是否被计入。 【2026-10-18 蒸馏合入】第二证 = task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（不同任务/不同算子/双输出 indices 变体；tilelang 0.1.2+e8b5d51 + CANN 9.0.0 + Ascend910B4）：`C=80` 且 `_CH_MAX=64` ⇒ 2 个通道块、第 2 块仅 16/64 有效 lane（37.5% padding）、`num_logical` 5504；上限抬到 128 ⇒ `CH=80`、单元 2752，sincnet 1005.71→538.91 µs（−46.4%）、ecg 599.61→367.98 µs（−38.6%）。1/2→2/2，已合入 `layout.md` PL-1.4「第八数据点」（两证并列 + 可达性机制〔逐 buffer 精确足迹 + import 期自检〕+ 与第四数据点「实现复现冻结闭式」的边界说明）。
+
+## VP-2026-0300
+
+- type: D
+- title: 窄向量 op（CH 宽）的发射/地址代价实测 ≈**14.4 ns/op/核**（910B3）——`CONST-vector-launch-overhead` 的「~0.5 µs/op」是**宽块**档，不可外推到 CH 宽的窄 op（设计期据此估算失准 13.6×）
+- evidence:
+  - task max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 optimize）：`perf_opt/opt_log.md` §3.1（结构 = `T.serial(k) × T.serial(BL)` 内每 `(kw, owl)` 一条 `vmax` + 一条 NaN 掩码 `vmul`，即每逻辑单元 `2·k·BL + 12` 条 **CH 宽**向量 op；sincnet `2·3·26 = 156` 条窄 op + 12 条宽 op/单元、全 kernel **570K 条窄 op**；`aiv_vec` 205.498 µs ⇒ 570K / 40 核 ÷ 205 µs ≈ **14.4 ns/窄 op/核**）与 §2.3（`DESIGN.md §1.6.0` 估算下界 22.2 µs vs 实测 baseline 301.936 µs = **13.6×** 失准，且该节自标「发射项口径 = 未文档化假设」）
+  - `perf_opt/perf_feedback.md`「实测与假设矛盾」段（发射项实测确为主导项：`aiv_vec` 占 `aiv_time` 73%；`BL` 变化不改变窗口 op 总数 ⇒ 非 tiling 参数可解）
+  - 机制同族第二实例（不同算子/不同工具链）：`TRAP-vexp2-not-exact-pow2` 代价边注（`T.vshl` 在 UB 上被标量化 ≈ 20 ns/元素）；本条的「每 op 固定发射代价随宽度缩放」是另一维度
+- repro: repro-missing（最小形态 = 同一 UB tile 上扫 op 宽度 `{1,8,32,64,128,256}` 各跑 N 条同构向量 op 取斜率，断言 `ns/op` 随宽度单调下降且在 CH≈64 档落 ≈10–20 ns；需 msprof）
+- toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40）/ 2026-10-16
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    update `CONST-vector-launch-overhead`（正文与 front-matter 各一处）：正文追加「**窄 op 档（2026-10-16 实测）**：每 op 代价随**操作数宽度**缩放——`.5 µs/op` 仅在宽块（bn≈512 级）成立，**CH 宽（≤128 元素）的窄向量 op 实测 ≈14.4 ns/op/核**（1D 窗口池化：570K 条 CH=64 宽 op / 40 核 ÷ 205 µs `aiv_vec`）；把宽块单价外推到窄 op 会使设计期『发射项』估算失准一个量级以上（同任务 `DESIGN.md §1.6.0` 估算 22.2 µs vs 实测 301.936 µs = 13.6×，且失准主项即该发射项）。用法：向量链时延下界须按**宽度分档**取单价（宽块 ≈0.5 µs/op、CH 宽 ≈14.4 ns/op）后再乘 op 数，并注意 `2·k·BL` 条窄 op 的总数只与 `CH` 分块有关、与 `BL` 无关。」；front-matter 的 `origin_task` / `toolchain` 追加本任务与版本戳，`repro` 维持 `repro-missing`（待同族任务以宽度扫描脚本回填）。
+- status: merged
+- confirmations: 2/2
+- created_by: task max_pool1d-_max_pool1d_kernel-20261016T090104Z 2026-10-16
+- decided_by: evolver
+- decided_note: 源工件未列为 VP（由 opt_log §3.1 与 `perf_feedback.md` 的归因数字蒸馏所得）。含实测数字与量纲 ⇒ D；无知识域 repro（需 msprof 宽度扫描）⇒ 降级 Tier 1 标 `repro-missing`。第二证候选 = 任一需要「向量 op 数 × 单价」估下界的调优/设计任务（不同任务/不同算子），重点看窄 op 单价是否落在 10–20 ns 档。 【2026-10-18 蒸馏合入】第二证 = task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（不同任务/不同算子；910B4 + e8b5d51）：宽度分档实测 64 lane **12.3** / 512 lane **21.1** / 1024 lane **23.1** ns/op（8–16× lanes 仅 1.7–1.9×），data-dependent fp32 `vcmp` 30.5、运行期 `vbrc` 23.8，空 kernel 地板 3.12（`(1,64)`）/ 3.38 µs（`(8,64)`）——与首证 14.4 ns/op 同档；并补 `int32 vcmp` 例外 1039 ns/op（另立 `traps-compiler.md` TRAP-int32-vcmp-scalarized）。1/2→2/2，已合入 `constants.md` CONST-vector-launch-overhead（正文「窄 op 档」段 + 三杠杆用法）；`repro` 由 `repro/CONST-vector-launch-overhead.py` 机械转正（源 `perf_opt/probe_ops.py` 逐字节拷贝 md5 f1ac0f22… + 头部登记块，代码零改动，151 行超 100 行预算按 PL-1.10 先例披露）。
+
+## VP-2026-0130
+- type: P
+- title: 调优迭代效率两手法——① 归因「二选一」嫌疑列表当轮用变体对照消歧（不留到后续轮——argmax 标量化归因跨轮证伪实证）② 高成本负载先微基准定标（copy-only 行宽-效率曲线 W≥32 渐近）再上真 shape 采数
+- evidence:
+  - 〔2026-10-18 第二证（不同任务 / 不同算子 / 910B4 + e8b5d51）〕task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z Stage 4：先建 op 单价表（窄 12.3 / plane 21.1–23.1 ns、int32 `vcmp` 1039 ns、运行期 `vbrc` 23.8 ns、空 kernel 地板 3.12–3.38 µs，落 `perf_opt/op_cost_calibration.jsonl`）再上 3480.77 µs 级 workload；6 个 timing-only 分解探针据此定位「每单元 2 条 int32 `vcmp` 占 Task 69%」（删之 3481.69→1094.60 µs），一轮内改 fp32 判决域即 −67.6%。手法① 同轮消歧：singlepass（索引 5 630 901/5 633 136 错）与 jramp（段错误）两变体对照在 round 1 内即闭合两条结构嫌疑，未跨轮（`opt_log.md#§5 Round 1/§8.1`）。
+  - task argmax-_argreduce_kernel-20260924T031005Z Stage 4：opt_log Iteration 4（session-1 对 baseline 标量化留两个嫌疑〔(bm,1) 列广播操作数 / varange 生成失败〕未闭合，round 4 r4a 操作数变体对照一次证伪两者——真触发器是 2D T.Parallel(bm,N) 融合循环本身；证伪更正留痕 canonical §2-3）；Iteration 2（probe_gran copy-only 微基准定标行宽曲线：W=4→9.74µs / W=8→6.28 / W=16→5.56 / W=32→4.52µs，W≥32 达渐近线——r2a 窄行宽视图设计直接建立在该曲线上，避免真 shape 1632µs 负载多轮高成本采数）；SESSION_TIMING_ANALYSIS §3（诊断消歧并行化建议 + 3d baseline 采数最贵）
+- repro: none（方法类：判据与实例自包含于 delta；效应载体 = traps-compiler.md TRAP-parallel2d-bm-ge2-scalarize 证伪更正段）
+- toolchain_stamp: tilelang 0.1.2 dev root build 2026-09-24 + CANN 8.5.0 + Ascend910B2C / 2026-09-24~28
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    add「迭代效率两手法」小节：① **嫌疑列表当轮消歧**——Phase 1 诊断产出「二选一」式归因嫌疑时，当轮即对每个嫌疑派一个操作数/形态变体实验分支做对照（各 ~1 分支成本），不跨轮次延迟：argmax 实证（session-1 两嫌疑留到 round 4 才由 r4a 变体对照双双证伪——若 round 1 当轮消歧，链式形态可提前 3 轮锁定；证伪更正按 canonical §2-3 留痕：误判根因 + 合法形态 + 新数据）；② **高成本负载微基准定标先行**——baseline 采数最贵的 workload（多 wave/读膨胀/诊断链长）先用更小的快速回归 shape 或 copy-only 微基准定标关键常数（行宽-效率曲线、膨胀系数），再上真 shape——argmax 3d 负载的窄行宽视图设计直接建立在 probe_gran W 曲线（W≥32 渐近 4.52µs/4MB）上，避免 1632µs 级负载的多轮盲扫。
+- status: merged
+- confirmations: 2/2
+- created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
+- decided_by: evolver
+- decided_note: ①的实证即 TRAP-parallel2d-bm-ge2-scalarize 的证伪更正链（Stage 4 已回写知识侧），本条是其流程侧（当轮消歧纪律）的条目化。 【2026-10-18 蒸馏合入】第二证 = task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（不同任务/不同算子/910B4+e8b5d51）：手法② 以 op 单价表（12.3/21.1/23.1 ns、int32 `vcmp` 1039 ns、地板 3.12/3.38 µs）+ 6 个 timing-only 分解探针在一轮内锁定「每单元 2 条 int32 `vcmp` 占 Task 69%」并改到 fp32 判决域（sincnet −67.6%）；手法① 同轮以 singlepass/jramp 两变体对照同步证伪两条结构嫌疑。1/2→2/2，已合入 `iteration-diagnosis.md` 新增「迭代效率两手法」小节（②含单价表最低覆盖三档与 `Task 下界` 拟合式）。

@@ -11,6 +11,7 @@
 - Step 5：分别创建实验分支
 - Step 6：评估本轮 winner
 - Step 7：本轮输出模板
+- 迭代效率两手法（2026-09-28 首证 / 2026-10-18 第二证）
 - 注意事项
 
 ## 用途
@@ -321,6 +322,25 @@ smoke workload 只列精度结果，不填性能时延或参与性能门禁。
 - new_current_best: {file}
 - rollback_branches: {list}
 ```
+
+---
+
+## 迭代效率两手法
+
+> 由 queue VP-2026-0130 在两任务独立证据后合入（首证 argmax `_argreduce_kernel` 2026-09-24 / 第二证 max_pool1d_with_indices `_max_pool1d_with_indices_kernel` Stage 4 2026-10-18，不同任务 / 不同算子 / 不同工具链 910B2C→910B4）。
+
+### ① 嫌疑列表当轮消歧
+
+Phase 1 诊断产出「二选一」式归因嫌疑时，**当轮**即对每个嫌疑派一个操作数/形态变体实验分支做对照（各 ~1 分支成本），不跨轮次延迟。首证实证：session-1 对 baseline 标量化留了两个嫌疑（`(bm,1)` 列广播操作数 / `varange` 生成失败）未闭合，直到 round 4 才由 r4a 变体对照双双证伪——若 round 1 当轮消歧，链式形态可提前 3 轮锁定；证伪更正按 pattern-library INDEX §2 留痕（误判根因 + 合法形态 + 新数据）。
+
+### ② 高成本负载先微基准定标，再上真 shape 采数
+
+baseline 采数最贵的 workload（多 wave / 读膨胀 / 诊断链长）先用更小的快速回归 shape 或单 op 微基准标定关键常数，再上真 shape。
+
+- 首证（argmax）：copy-only 行宽曲线 `W=4→9.74 µs / 8→6.28 / 16→5.56 / 32→4.52`（W≥32 渐近）——窄行宽视图设计直接建立在该曲线上，避免 1632 µs 级负载的多轮盲扫。
+- 第二证（max_pool1d_with_indices，双输出 1D 窗口池化）：先建 **op 单价表**（512 深 depend 链、扣同 shape 空 kernel floor，见 pattern-library `CONST-vector-launch-overhead`）再上 3480 µs 级 workload——表一出来即锁定主因：`int32 vcmp` 1039 ns/op（16.2 ns/lane）vs f32 `vmax` 12.3 ns/op；随后 6 个 timing-only 分解探针（`_probe_decomp_*`）确认「每单元 2 条 int32 `vcmp` 占 Task 69%」，一轮内改到 fp32 判决域即 −67.6%。若不做单价表，`scalar 81%` 的画像只能引向「逐 visit 扫描」等错误嫌疑。
+- **单价表最低覆盖**：(a) 窄（`(1,64)`）vs plane（`(8,64)`/`(8,128)`）宽度档；(b) **同一 op 的 dtype 档**（fp32 vs int32/int16——同一 op 不同 dtype 可差一个量级以上）；(c) 运行期标量广播（`T.vbrc`）。
+- **用法**：`Task 下界 ≈ 空 kernel 地板 + op 条数 × 单价 + max(流量项)`；单价表落 `perf_opt/op_cost_calibration.jsonl`（**不混入** `perf_records.jsonl`），地板/扇出类数据落 `copy_floor_calibration.jsonl`。
 
 ---
 

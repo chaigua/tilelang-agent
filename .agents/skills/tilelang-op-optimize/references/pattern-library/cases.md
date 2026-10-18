@@ -524,10 +524,10 @@ kind: case
 family: [pool, pooling, window, argmax]
 mode: [developer]
 dtype: [fp16, bf16, fp32]
-device: 910B3
+device: 910B3, 910B4
 status: verified
-origin_task: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（函数级；op 级 max_pool1d_with_indices-max_pool1d_with_indices-20261014T100411Z）
-toolchain: tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14
+origin_task: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261014T100907Z（函数级；op 级 max_pool1d_with_indices-max_pool1d_with_indices-20261014T100411Z）/ 追加 Stage 4 续档 max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（scenario=optimize）
+toolchain: tilelang 0.1.2+892e2c18d80c37795727236b5ebbe145626a8313（dev root build ba60e99c…）+ torch 2.9.0+cpu + torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B3 / 2026-10-14；Stage 4 续档 tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51）+ 同 torch_npu/CANN + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18
 repro: none
 ---
 
@@ -542,6 +542,19 @@ pool 家族**第六个**迁移算子、**双输出（value + int64 indices）1D 
 **实测**（Session 墙钟 9 366.4 s ≈ 156.1 min，其中 Stage 1 首轮被取消的长跑占 40.3%）：Stage 3 attempt 1 即 `[PRECISION_PASS]`（L0+L1 阻塞全过、L2 8/8、Boundary 8/8；values `max_diff = 0.000e+00` 三 dtype，**int64 索引 0 / 12 207 226 失配**）；设计期 `verify_equiv.py` 1 074 项全 `EQUIV_PASS`；Stage 5 集成 per-op **47/47**（`max_abs_err=0.0`）、benchmark 36/36（`msprof_case_count=24`、`invalid_profile_count=0`）；非 smoke 性能 3 例——`sincnet` fp16 3 192.84 µs / `textcnn` fp16 138.52 µs / `ecg` bf16 1 429.55 µs，**Ratio 3.40–5.70%、带宽均 1.750 TB/s**（≈ fabric 上限，见 profile-collection.md 的纯选择算子 Ratio 判读口径）。
 
 **适用触发条件**：双输出（value + index）池化/argmax 类算子迁移或设计——索引契约逐要素实测、退化特化逐路输出独立可证、空窗口契约与 torch-oracle 陷阱、索引型 UB 记账、`_plan` 逐字复现设计闭式、等价脚本分支采样；Stage 5 集成期 torch 多输出 API golden 可用性核对（静默损坏判据 = dtype/shape 与契约不符）。
+
+**Stage 4 续档（2026-10-17/18，`scenario=optimize` / mode=full，task `max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z`；tilelang `e8b5d51` + CANN 9.0.0 + **Ascend910B4**）**：baseline 3480.77 / 169.60 / 1558.15 µs → final **538.63 / 160.26 / 368.48 µs**（−84.5% / −5.5% / −76.4%）；用户带宽口径 Ratio 0.92→**5.93%** / 1.47→**1.55%** / 1.08→**4.55%**（70% 目标未达），官方 report 口径 3.12→**13.45%** / 4.65→**4.92%** / 3.81→**12.95%**（两口径并列披露，不择优单报）。精度：`--level all` L0/L1/L2/Boundary 全过、int64 索引 **0 / 12 207 226** 失配、values `max_diff=0.000e+00`；op 级 20/20（经临时插件把 wrapper 工厂指向 `perf_opt`，未改 wrapper）；`tests/ops/test_pool.py` **75/75**。要点：
+
+① **主轴 = 消除 int32 `vcmp` 标量化**：每逻辑单元 2 条 int32 判决（`nan_idx>=0` / `idx32==BIG`）占 baseline Task 的 **69%**（scalar 2796/3480.77 µs）⇒ 改 `vcast(int32→f32)` + fp32 `vcmp`（索引 < 2²⁴ 精确）：sincnet 3480.77→**1128.20**（−67.6%）、ecg −57.0%，逐位精确。载体见 traps-compiler.md **TRAP-int32-vcmp-scalarized**（含共用测量 repro）。
+② **次轴 = `_CH_MAX` 64→128 + 逐 buffer 精确 UB 足迹**：`C=80` 时 `CH=64` 被切成 2 块（第 2 块仅 16/64 有效 lane = 37.5% padding、`num_logical` 5504），`CH=80` 后单元减半至 2752 且 padding lane 归零：1005.71→**538.91**（−46.4%）；ecg（`C=128`）599.61→**367.98**（−38.6%）；textcnn 计划未变（`CH=128` 需 span 平面 138.9 KB > 115.7 KB 预算）⇒ 噪声内。载体见 layout.md **PL-1.4 第八数据点**（含「Stage 3 复现冻结闭式 vs Stage 4 死 alloc 移除后重推」的边界）。
+③ 死代码移除（`flag`/`eq_mask`/`eq_f32`/`vmul`，终判走 `nan_idx`）：timing-only 探针 −3.5%，与 ① 叠加后再 −10.9%（合并后的 winner）。
+④ **否决结构族（全部实测留证，负面信息密度最高）**：ⓐ 单遍「破纪录」first-hit（`vcmp(row, 运行中 acc)` + 同缓冲 `vmax`）⇒ 读更新后 `acc`、退化为 last-hit，**5 630 901 / 5 633 136 索引错**——DESIGN §1.6.1「两遍法」是工具链硬约束；ⓑ 运行期偏移 `T.vbrc` 被静默丢弃（int32 读未初始化 UB ⇒ 段错误，见 TRAP-npuir-vbrc-region-dropped）；ⓒ `hivm.hir.vsel` 拒绝切片操作数；ⓓ `arange` 静态 ramp 形态 core dump；ⓔ 3D 相位抽取（`vtranspose` 仅 2 轴 / `T.deinterleave(channel_nums=3)` 段错误 / 无 strided GM copy）。
+⑤ **写侧（窗口类特有的次要上限）**：`UB_to_GM` = 真实写 **2.48×**（sincnet）/ **3.39×**（ecg）/ **23.4×**（textcnn，`mte3` 79.66 µs ≈ 其 Task 50%）——store 源是 `T.transpose` 输出 ⇒ UB→GM→UB 往返（TRAP-transpose-ub-gm-roundtrip 在本机复现；**未做隔离 A/B，按口径缺口标注**）。
+⑥ **`[DESIGN_LIMIT]` → 附录补记 + 能力缺口登记**（CG-2026-0031/0032/0035/0036；issue 未提交，待用户批准）：该结构族 op 条数下界 `N·C·L_out·k/CH` × 实测单价 12.3 ns ÷ 40 核 ⇒ sincnet **203 µs** / ecg **127 µs**，是 70% 线（45.65 / 23.95 µs）的 4.4–5.3×；唯一能再降 6–7× 的行批处理被相位抽取能力封死。**窗口类 general 路径在本工具链的最优结构 = C 轴向量 + 逐 (kw,ow) 窄 op 扫描**；库内无窗口类 Stage 4 参照（`max_pool2d` 只到 Stage 5）⇒ 天花板结论按规范**置信度降级**，不作绝对地板断言。
+⑦ **目标可达性机械前置判据（可复用）**：70% 目标线 ≤ 空 kernel 地板（textcnn 3.56 µs vs 地板 3.12–3.38 µs）或 ≤ 必需 op 下界 × 单价 ⇒ **口径不可达**，应在迭代前标记而非迭代后归因（queue VP-2026-0302）。
+⑧ **口径缺口如实登记**（不隐去）：round-0 三行派生字段 `achieved_bw_tb_s`/`bw_ratio_pct` 因 runner 首版单位写反为 0（`perf_records.jsonl` append-only 保留原行，日志 §6.7 披露，Ratio 全部由 `duration_us` + manifest bytes 重算）；「连续生产者 vs 跨步生产者」copy-floor 隔离 A/B **未执行**（写侧归因改用 `UB_to_GM/真实写` 比值，见 `copy_floor_calibration.jsonl` 的 `kind: gap` 行）。
+
+溯源（任务工作区，允许失效）：`.../max_pool1d_with_indices_kernel/perf_opt/{opt_log.md（§3 标定 / §4 双口径 / §5 Iteration Log / §8 Skill Retrospective）, perf_feedback.md, perf_records.jsonl（15 行）, op_cost_calibration.jsonl, copy_floor_calibration.jsonl, probe_ops*.py, _probe_decomp_*.py, profiles/}` + `_max_pool1d_with_indices_kernel_DESIGN.md#性能反馈附录`。
 
 ---
 id: CASE-norm-groupnorm-migration

@@ -34,7 +34,7 @@
 | PL-1.1-transpose-chain | 核内融合转置链（二轴交换链，实测 ~5.4µs；仅支持二轴交换、禁 reshape→transpose）——**2026-10-14 重验收窄**：仅「两边 ≥ 向量宽且为向量宽整数倍」的 2D 形态成立；池化族大 shape 的 3D 二轴交换被降级为 UB→GM→UB 往返（见 traps-compiler.md TRAP-transpose-ub-gm-roundtrip） | stale |
 | PL-1.2-caxis-accum | C 轴切片累加（i/j serial，实测 1.98–13.2x） | verified |
 | PL-1.3-host-permute | host permute 路线通常净亏（106–147µs） | verified |
-| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14）；**最小可行 CH**（第六数据点 2026-10-15：一维扫描 `min{CH: units≤cores}` 取代「折半」判据）；**第七数据点**（2026-10-15 双输出：同一规则给出 spp CH 64→48 / nondiv 64→32；进一步削 op 的形态边界见 TRAP-hivm-vsel-cond-slice） | verified |
+| PL-1.4-tiling-heuristic | BH=1 + 最宽 CH 最优；UB 192KB 容量驱动 CH 取档（2D/1D/双输出 1D 不等式，dtype 感知）；工厂层回退分发；**单波判据**（`num_local==1` 约束优先于「更宽向量」，第五数据点 2026-10-14）；**最小可行 CH**（第六数据点 2026-10-15：一维扫描 `min{CH: units≤cores}` 取代「折半」判据）；**第七数据点**（2026-10-15 双输出：同一规则给出 spp CH 64→48 / nondiv 64→32；进一步削 op 的形态边界见 TRAP-hivm-vsel-cond-slice）；**第八数据点**（2026-10-16/18 两证：容量上限钉住 `CH<C` ⇒ 尾块 padding lane 37.5% + `num_logical` 翻倍；逐 buffer 精确足迹 + import 期自检解锁 `CH=C`，sincnet −37.7%/−46.4%、ecg −26.9%/−38.6%） | verified |
 | PL-1.5-quickref | 乘常数/运行时 let-bound 倒数 / 3D reduce_sum 链 / H-collapse / fp32 求和序匹配 / launch 开销判定 / host 编译期常量折叠 | verified |
 | PL-1.15-broadcast-perf-tax | vsub/vmul 未文档化列广播可编译可算对但 +12~16% 性能税——合法化≠可用，列因子仍走 vbrc 展开 | verified |
 | PL-1.17-subfp32-fp32-transit | sub-fp32 逐元素 fp32 中转模式（bf16 v-prefix 缺失 + fp16 golden 对齐双触发；lerp+ssd 两证） | verified |
@@ -82,6 +82,7 @@
 | TRAP-tvm-parser-rules | TVM script 解析器四条硬规则（if/三元式/条件 alloc/T.rs 作用域） | verified |
 | TRAP-UB-dynsubview-dominance | task 级 UB 行 + 嵌套循环动态偏移 subview → auto-multi-buffer 非支配 IR（Q≥128） | verified |
 | TRAP-expert-v-operands | Expert v 算子操作数规则（vcmp 拒绝 tir.Cast 等） | verified |
+| TRAP-int32-vcmp-scalarized | `T.vcmp` 在 **int32 操作数**上被逐 lane 标量化：64 lane 1039 ns/op（16.2 ns/lane，34× fp32、85× `vmax`；`scalar_us` 占 98%）——结果正确但代价灾难；绕法 = `vcast(int32→f32)` + fp32 `vcmp`（`|idx|<2²⁴` 精确），双输出池化实测 sincnet −67.6% / ecg −57.0%（含共用测量 repro） | verified |
 | TRAP-transpose-epilogue-poison | 活跃源 transpose epilogue 毒化整 kernel（2.6x；绕法 = 增维视图） | verified |
 | TRAP-parallel2d-bm-ge2-scalarize | 2D T.Parallel(bm,N) 融合 ite 在 bm≥2 标量化（与操作数形态无关；链式/per-row 绕法）；**2026-10-15 适用域收窄**：plain 逐元素 2D loop（单向量 op/算术/cast）在 bm≥2 正常向量化，触发项含循环体内 ite 形态 | verified |
 | TRAP-vbrc-same-shape-empty-broadcast | vbrc 同形 src/dst → 空广播维数组 MLIR verify fail | verified |
@@ -140,7 +141,7 @@
 |----|--------|------|
 | CONST-capacity-910B2C | UB 192KB（×1.7 膨胀）/ L1 512KB / L0C 128KB + 双槽 bn 上限公式 | verified |
 | CONST-L1-port-bw | L1 端口 r+w ≈ 148–154 GB/s/核（Cube 操作数流地板） | verified |
-| CONST-vector-launch-overhead | 向量发射 ~0.5µs/op；f16≈f32 | verified |
+| CONST-vector-launch-overhead | 向量发射 ~0.5µs/op（**宽块档**）；f16≈f32；**窄 op 宽度分档**（2026-10-18 第二证，两设备）：64 lane 12.3 / 512 lane 21.1 / 1024 lane 23.1 ns/op（8–16× lanes 仅 1.7–1.9×），fp32 `vcmp` 30.5、运行期 `vbrc` 23.8，**int32 `vcmp` 例外 1039 ns/op**；空 kernel 地板 3.12/3.38 µs（含 repro） | verified |
 | CONST-fabric-bw | fabric 聚合 ≥1.73 TB/s | verified |
 | CONST-device-peak-910B3 | AIV 侧 GM 可达带宽**三口径**（910B3 / CANN 9.0.0）：纯连续读 **753.3–778.7 GB/s**、纯写 **1078–1115 GB/s**、读写混合聚合 **≈694–703 GB/s（最高档 ≈1.07 TB/s）** ⇒ `achieved_bw/1.75 TB/s ≥ 70%`（1.225 TB/s）为**口径不可达**；与 fabric 聚合 / 总流量退化 / 小流量档三口径互链（含 repro） | verified |
 | CONST-msprof-ratio-compute-roofline | msprof roofline `Ratio` = `(total_fops/TaskDuration)/computility`，**不与 latency 成反比**（结构改写同向压低分子 `total_fops`：10.12x 时延仅换 1.26x / 1.60x 时延仅换 1.076x）；设 Ratio 硬目标前必算上限 `(total_fops/时延地板)/computility`（resnet ≈12% ⇒ 70% 结构不可达；本任务三条目标线全部不可达）；分子恒定时退化为 `∝1/duration`、分母随 op 混合比塌缩可虚高 | verified |
@@ -191,7 +192,7 @@
 | CASE-pool-adaptivemaxpool2dindices-migration | pool 族第三个迁移档案（双输出值+int64 扁平索引：first-hit 极值方向 + 两 API 陷阱转正 + 整平面索引链回退 + 集成 7/7）；**Stage 4 续档**（2026-10-15：扁平整平面读 + dtype 宽度扫描 + 写侧生产者纪律 + 双输出单波 CH；global 144.4→91.9µs/1.57x；C4 双输出被归约链 UB 单价封顶） | verified |
 | CASE-pool-maxpool2d-migration | pool 族第四个 / **窗口池化**首例（adaptive 特化条件不可平移 + 容量驱动 CH + `T.vcast` 同 dtype 陷阱 + NPU golden 缺口两轮集成；三 dtype 逐位 0）——**Stage 4 续档**（3 轮：整行滑窗 max + 2 相 `T.deinterleave` 抽取 → (bh,ch) 栅格换规划器规则 → 行级 ping-pong 软流水；9 例 6.54–9.48×/2.63–4.51×，achieved 245.7–516.2 GB/s，70% 口径不可达 ⇒ `[DESIGN_LIMIT]` 不触发） | verified |
 | CASE-pool-maxpool1d-migration | pool 族第五个 / **1D 首例**（长轴分块 + 连续 span 钳制载入 + 三类尾块 + 容量回退不可达 + bench 脚手架缺陷；三 dtype 逐位 0，零返工）——**Stage 4 续档**（`[DESIGN_LIMIT]`：窗口类三项 70% Ratio 在冻结设计族内不可达，路由附录补记；`_CH_MAX` 64→128 消尾块 padding lane（−37.6%/−26.8%）+ C4 等代价 NaN 追踪（−8.6%）；两个结构族被实测否决 + 相位数/转置/行长三探针；三条 durable 载体） | verified |
-| CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配） | verified |
+| CASE-pool-maxpool1dindices-migration | pool 族第六个 / **双输出 1D 变体**（索引契约 + 两遍法 + 空窗口契约 + 索引型 UB 记账 + NPU golden 静默损坏 CPU 回退；集成 47/47、索引 0 失配）；**Stage 4 续档**（int32 `vcmp` 标量化为主因 −67.6% / CH=C 解 padding −46.4% / 五个结构族实测否决 / 写侧 23.4× 扇出 / `[DESIGN_LIMIT]` 附录补记；3480.77→538.63 µs） | verified |
 | CASE-quant-fp8-quant-migration | quantization 族首个 / **字节载体（fp8）首例**（软件 e4m3 编码 + uint8 载体 + host `.view` 保契约；舍入/符号/幂三陷阱 + 覆盖缺口假 PASS；集成 8/8 + bench 3/3 BW 1.75 TB/s） | verified |
 | CASE-norm-groupnorm-migration | norm 族 GroupNorm 迁移档案（affine 分层 + Stage 5 fp16 二次舍入逐位定位 + UB 平台值第三结构数据点 + 矩式方差第二证；集成 19/0/2、bench 4 例 6.0–11.1µs / 1.75 TB/s） | verified |
 | CASE-reduction-countnonzero-migration | reduction 族**首个 logical_reduce / 计数类**迁移（count_nonzero kind → int64 契约 + 元素预算双路径 [8 B/元素探针 / E_cap=8192 / 硬上限 24576] + `@T.prim_func` 解析期 if 陷阱 + wrapper `default_config` 重接线；集成 37/37 + bench 4 例 msprof 有效） | verified |

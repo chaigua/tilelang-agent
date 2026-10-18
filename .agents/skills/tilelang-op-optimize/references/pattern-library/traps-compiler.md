@@ -177,6 +177,28 @@ repro: repro-missing
 `T.vcmp` 标量操作数拒绝 `tir.Cast`（codegen `NpuirOperand::FromExpr cannot handle the expr with type of "tir.Cast"`）；**〔2026-09-15 第五轮实测补充，工具链 6797758〕vcmp 在 int16 上对所有操作数形态（运行时标量 PrimExpr / 文档合法的同 shape int16 张量）一律降级为标量指令执行**（编译警告 `will execute by scalar instruction with low efficiency`，[32,256] 实测 **236µs/链**）——在 causal mask 链上占整 kernel 壁钟 ~45%（aiv_scalar 94–97% 的主成分，与 flag 自旋同形，须查编译警告区分）。**绕法 = 算术惩罚掩码**：`scr = clamp(tpl - thr, 0, 1)`（vmax/vmin 标量广播，文档合法）→ `S += scr·(-1e38)`（f32 大数吸收，masked 位精确变 -1e38，与 vselect 假支逐位一致；NaN 无法被算术掩埋——stale 列/band 垃圾须 vselect 选择语义或源头零初始化）。标量 PrimExpr B 操作数合法有先例（`examples/deepseek_v4/example_sparse_attn_kernel_highperf.py` L353）；`T.vbrc` 标量源须 let 绑定局部量（字面量触发 rank 断言）；`T.vtanh` 需 fp32 同 dtype 操作数（int16 scratch 不可复用，MLIR verify 报错）。**v-op 切片仅接受静态边界**（运行时 Var 触发 parser `int(Var)` 拒绝，P10 探针）；**脚本解析器只折叠纯名常量 if**（`not X`/`X and Y` 表达式生成 TIR runtime if，须预组合纯名）；**条件 T.alloc 永不折叠**（含常量条件，v3_deadbuf 的强化实证——用宽度切换 `w = X if cond else 16` 替代）。证据：debug_log.md D4/D5 + 本轮任务工作区 `examples/multi_head_attention/_gqa_prefill_fwd_kernel/perf_opt/`（溯源：probe_vcmp_forms.py P6 / probe_forms.py P1-P5 / probe_rt_slice2.py P10 / opt_log.md Round 2）；origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260915（第五轮 Stage 4，工具链 6797758）。
 
 **〔第六轮补充实证，2026-09-16，tilelang a13585dc，origin_task 同上〕**v-op 操作数拒绝**带 runtime 首维索引的多维 buffer 切片**：`T.vlog2(ub_ell_snap[st, 0:half, 0:1], ...)`（snap 为 [2,half,1]，st 是 runtime Var）在 codegen `getBroadcastDim` 报 `buffer_shape0.size() == buffer_shape1.size()` 检查失败（3 维 vs 2 维不折叠）；`T.vmul(ub_m_snap[st, ...], ...)` 同型。绕法：**先 `T.copy` 拷回单槽 buffer 再喂 v-op**（plain `T.copy` 的源/目标接受 runtime 索引切片——`ws_s[kernel_id, slot, ...]` 先例，r8g epi 修复实证）。与既有「v-op 切片仅静态边界」（P10）同族：静态边界 + runtime 首维索引亦不可用。
+
+---
+id: TRAP-int32-vcmp-scalarized
+kind: trap
+family: [pool, pooling, window, argmax, elementwise, general]
+apis: [T.vcmp, T.vcast, T.vmax, T.vselect]
+dtype: [int32, int16, fp32]
+device: 910B4
+status: verified
+origin_task: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（Stage 4 optimize）
+toolchain: tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51 / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-18
+repro: repro/CONST-vector-launch-overhead.py
+---
+
+### `T.vcmp` 在 **int32 操作数**上被逐 lane 标量化（16 ns/lane，34× fp32；结果正确但代价灾难）
+
+- **现象（实测单价，910B4 / AIV=40，512 深 depend 链，`msprof op` Task median/20，扣同 shape floor）**：64 lane `(1,64)` 的 int32 `T.vcmp` **1039 ns/op = 16.2 ns/lane**；同 shape fp32 `vcmp`（data-dependent 体）**30.5 ns/op = 0.48 ns/lane** ⇒ **34×**；f32 `vmax` **12.3 ns/op** ⇒ **≈85×**。指纹：`scalar_us` 占该档 Task 的 **98.2%**（525.70 / 535.17 µs）、`vec_us` 仅 12.78 —— 即 op 被降级为逐 lane 标量循环（编译期只有一条 `will execute by scalar instruction with low effiency` 告警，**无量级提示**）。载体同族：int16 `vcmp` 同样全形态标量化（[32,256] 236 µs/链，见本条 TRAP-expert-v-operands 2026-09-15；不同 dtype、同机制）。fp16/fp32 形态正常向量化。
+- **后果（真实 kernel，双输出池化：values + int64 indices）**：每逻辑单元 2 条 int32 `vcmp`（`nan_idx >= 0` 选 NaN、`idx32 == BIG` 判空窗口）——sincnet `[32,80,4096]` fp16 baseline **Task 3480.77 µs**，`scalar 2796 µs`（占 `aiv` 的 **81%**），其中约 2400 µs 来自这两条判决；timing-only 消融（删这 2 条，结果不正确仅计时）**3481.69 → 1094.60 µs（−68.6%）**，`scalar` 2796 → 426 µs。
+- **合法绕法（本工具链逐位正确）**：索引判决改到 **fp32 域**——`T.vcast(idx_i32, idx_f32, "rint")` + fp32 `T.vcmp`（`|idx| < 2^24` 时 int32→fp32 精确；索引上界远小于该界）。代价 = 2 个 `(BL,CH)` f32 平面（UB **+8 B/输出元素**，须计入容量闭式）换回 ~2400 µs：实测 sincnet **3480.77 → 1128.20 µs（−67.6%）**、ecg `[16,128,2048]` bf16 **1558.15 → 669.38 µs（−57.0%）**，int64 索引 0/5 633 552 失配、`values max_diff = 0.000e+00`。
+- **判据**：`scalar` 占比 > 50% 时，**逐 op 按 dtype 核对**（同一 op 不同 dtype 的单价可差一个量级以上），不要只按「op 条数 × 单一单价」估算；整数域判决（`==`/`>=`/`!=` 哨兵与下标合法性）是最容易踩中的形态。同类但**语义**不同的陷阱见 TRAP-vcmp-ne-ordered-nan（比较模式的 NaN 语义）——本条只讲**代价**，不改语义。
+- **证明**：`python repro/CONST-vector-launch-overhead.py --op vcmp --dtype int32 --m 1 --ch 64 --reps 512`（配 `--dtype float32` 对照档，msprof 命令见文件头）；相对关系断言见该文件登记块。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/perf_opt/{op_cost_calibration.jsonl（p2_vcmp_int_m1_ch64_r512 / p2_vcmp_gt_m1_ch64_r512）, _probe_decomp_nointcmp.py, opt_log.md#§3.1/§3.2}`；能力缺口 `.agents/evolution/capability-gaps.md#CG-2026-0035`。
+
 ---
 id: TRAP-transpose-epilogue-poison
 kind: trap

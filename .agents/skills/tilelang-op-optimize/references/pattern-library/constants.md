@@ -45,20 +45,22 @@ repro: repro-missing
 ---
 id: CONST-vector-launch-overhead
 kind: constant
-family: [attention, expert, elementwise]
-apis: [v-prefix ops]
-dtype: [fp16, f16, fp32]
-device: 910B2C
+family: [attention, expert, elementwise, pooling, window]
+apis: [v-prefix ops, T.vmax, T.vcmp, T.vbrc]
+dtype: [fp16, f16, fp32, int32]
+device: 910B2C, 910B3, 910B4
 status: verified
-origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260909T033622Z
-toolchain: tilelang 0.1.2+3a214cde + CANN 8.5.0 / 2026-09-09
-source: PL-1.9-hardlimits
-repro: repro-missing
+origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260909T033622Z（宽块档 0.5 µs/op）/ max_pool1d-_max_pool1d_kernel-20261016T090104Z（窄 op 档第一证 14.4 ns/op）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（第二证 + 宽度分档实测 12.3/21.1/23.1 ns/op，910B4）
+toolchain: tilelang 0.1.2+3a214cde + CANN 8.5.0 / 2026-09-09（首证 910B2C）；tilelang 0.1.2+c3c39ba（commit c3c39ba）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16（窄 op 档）；tilelang 0.1.2+e8b5d51e（commit e8b5d51）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18（宽度分档）
+source: PL-1.9-hardlimits; queue VP-2026-0300（2/2）
+repro: repro/CONST-vector-launch-overhead.py
 ---
 
 ### 向量算子发射开销 ~0.5µs/op；逐元素速率 f16≈f32
 
 无 f16 打包加速；每 op ~0.5µs 固定发射成本主导——同元素总量下宽块 op（bn=512）恒优于窄块 op 翻倍（bn=256）。用法：向量链时延下界 ≈ op 数 × 0.5µs。
+
+**窄 op 档（2026-10-18 第二证，910B4 / AIV=40；512 深 depend 链，`msprof op` Task Duration median/20，扣同 shape 空 kernel floor）**：单价随**lane 数**分档，`0.5 µs/op` 只适用于宽块（bn≈512 级）——64 lane（`(1,64)`）f32 `vmax` **12.3 ns/op**、512 lane（`(8,64)`）**21.1 ns/op**、1024 lane（`(8,128)`）**23.1 ns/op**（**8× lanes 只贵 1.7×、16× 只贵 1.9×** ⇒ 批处理是省 op 数的杠杆）；同档 data-dependent fp32 `vcmp` **30.5 ns/op**、运行期标量 `T.vbrc` **23.8 ns/op**；**int32 `vcmp` 例外地 1039 ns/op（16.2 ns/lane，标量化，见 traps-compiler.md TRAP-int32-vcmp-scalarized）**；空 kernel Task 地板 **3.12 µs**（`(1,64)`）/ **3.38 µs**（`(8,64)`）。与第一证（910B3，由 `aiv_vec`/op 数反解 **14.4 ns/op/核**）同档 ⇒ **「窄向量 op（≤128 lane）单价 10–25 ns/op」在 910B3/910B4 两设备、两工具链成立**；把宽块单价外推到窄 op 会使设计期「发射项」估算失准一个量级以上（第一证实证：DESIGN 估算 22.2 µs vs 实测 301.936 µs = 13.6×）。**用法（三杠杆取二）**：`Task 下界 ≈ 地板 + op 条数 × 单价 + max(流量项)`——**加宽/批处理**降 op 条数，**改 dtype 域**降单价（int→fp32 判决），**削死代码**同时降两者；`BL` 类参数不改变 op 条数时不要指望收益（第一证 sincnet BL 变化对 op 总数无影响）。
 
 ---
 id: CONST-fabric-bw
