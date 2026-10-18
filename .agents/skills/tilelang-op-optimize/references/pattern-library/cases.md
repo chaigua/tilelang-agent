@@ -320,7 +320,8 @@ capability-gaps 登记簿（`.agents/evolution/capability-gaps.md`）open 条目
 | CG-2026-0010 | codegen（Developer mode persistent+gemm） | Developer 模式 persistent 分核 + gemm 混排运行时崩溃 |
 | CG-2026-0011 | Frontend API（gemm dst L0C region 写 / acc 相加原语） | gemm dst 不支持 L0C region 写、两 L0C acc 无相加原语 |
 | CG-2026-0012 | BishengIR（auto-multi-buffer 动态 subview 支配性） | 动态偏移 UB subview 进嵌套循环产出非支配 IR |
-| CG-2026-0030 | BishengIR（bishengir-compile 后端崩溃） | `S == 32` 段错误（persistent+Pipelined+动态 extent copy+gemm+行原子骨架；CANN 9.0.0，见 traps-compiler.md TRAP-bishengir-crash-s32 含 repro） |
+| CG-2026-0030 | BishengIR（bishengir-compile 后端崩溃） | shape/dtype 敏感段错误（**多形态**）：① `S == 32` 崩溃（Developer persistent+Pipelined+动态 extent copy+gemm+行原子骨架，含 repro）；② 大 shape×fp16（`1×64×2048×128` fwd/bwd bench）；③ **2026-10-18 新增**：`(1,512,8,64)`/`(1,1024,8,64)` **bf16** 的**未改动 fwd** kernel 在 910B4 + `2fb23ee` 崩溃（Expert/Developer 均复现），同 shape/dtype 直调 bwd 正常 ⇒ 与调优无关，条目 **recurring** |
+| CG-2026-0039 | Frontend API（Developer 模式 AIV 子块索引） | Developer 模式 Mix kernel 的 `subid` 恒为 0（无显式 `T.Scope` 时无可用的 AIV 子块索引）⇒ 无法按 subid 切分 Vector 工作、AIV 侧 2× 冗余为固有成本（绕法 = 切 Expert 双 Scope，估 ~20–30%；见 traps-compiler.md TRAP-dev-subid-zero-mix / attention.md PL-1.13 第二级收窄） |
 
 > BLOCKED 终态任务的反例根因链条目同入本节（由 evolver 追加，标注「反例」）：**CASE-attention-mha-bwd-migration**（`multi_head_attention` bwd 迁移，`BLOCKED_ENVIRONMENT`→环境外部修复后 `BLOCKED_INTEGRATION`——bwd 三核全 `[PRECISION_PASS]`、重试段 correctness 12/12，唯一残余 failure = gate 5 `S5-ASCEND-MODE` 多 Kernel 共 wrapper 结构性冲突）。
 
@@ -783,3 +784,26 @@ attention 族**首个 attention-backward 迁移**（GPU `MultiHeadAttentionBwdOp
 - **适用触发条件**：attention-backward / 三件套式（preprocess–main–postprocess）迁移；「同文件追加进既有算子包」的迁移形态；含行原子写回 fp32 梯度的算子；需要 tier-3 量化噪声分类的迁移门禁设计；CANN 8.5.0 时代既有 Expert 产物在新 CANN 上的可用性预判（迁移前先跑一次基线冒烟）。
 - **诊断顺序（本任务实证有效）**：先跑 bwd kernel 自带 golden harness（`python {func}.py --level L0`，16/16 PASS，844.7 s）确认 bwd 与 fwd 解耦；再 `git` 回溯对照（还原 wrapper → 同款 `syn_instr_mode` 失败 ⇒ 先存产物/工具链问题而非本次编辑引入）；再双编译器对照（系统 `bishengir-compile` vs 自建）定位为工具链版本错配。
 - 溯源（任务工作区，未上库，允许失效）：`examples/multi_head_attention/{._task_timeline.jsonl, SESSION_TIMING_ANALYSIS.md, _gqa_bwd_kernel/{RETROSPECTIVE.md, DESIGN.md, repro/}, _flashattn_bwd_preprocess_kernel/{RETROSPECTIVE.md, repro/}, _flashattn_bwd_postprocess_kernel/{RETROSPECTIVE.md, repro/}}`；集成侧 `examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/integration_log.md` + `examples/TileOPs/reports/tileops/20261016_065819_471539_MultiHeadAttentionBwdOp/{run.json,report.md}`（首轮）；Stage 5 重试段 provenance = `examples/multi_head_attention/{RETROSPECTIVE.md, SESSION_TIMING_ANALYSIS.md}` + `examples/TileOPs/reports/tileops/20261016_082438_849619_MultiHeadAttentionBwdOp/{run.json,report.md,benchmark.json}`。
+
+---
+id: CASE-attention-mha-bwd-stage4
+kind: case
+family: [attention, mixcv]
+mode: [developer]
+dtype: [fp16, bf16]
+status: verified
+origin_task: TileOPs-_gqa_bwd_kernel-20261018T145922Z（`MultiHeadAttentionBwdOp` 主反向 kernel `_gqa_bwd_main` Stage 4，mode=full）
+toolchain: tilelang 0.1.2+2fb23ee（dev root build）/ CANN 9.0.0 / Ascend910B4（AIC=20 / AIV=40 / UB 196608 B）/ 2026-10-18
+repro: repro/CONST-atomic-writeback-forms.py + repro/TRAP-region-atomic-4d-bshd.py + repro/PL-causal-skip-task-mapping.py + repro/TRAP-dev-subid-zero-mix.py
+---
+
+### attention-backward 主 kernel Stage 4：写出形态阶梯 + causal 跳过 + tile 面积（8 例 msprof **5.27–6.62×**）
+
+- **结构一句话**：causal 块级跳过（`T.Pipelined` 体 runtime guard）→ `by` 最慢的任务映射（负载均衡）→ 仅对角块掩码链 → **dq 回写改 rank-2 视图的跨步区域原子**（`(B·S,H·D)` 视图 + 工厂闭包 `view`）→ `bn` 32→64（`num_stages=1`）。
+- **量化链条（msprof `Task Duration` 中位数，20 采样）**：`llama-3.1-8b-short/fp16` 12 068.3 → 9 195.5（跳过）→ 7 254.3（映射）→ 7 106.1（仅对角掩码）→ 3 892.6（区域原子，**−45%**）→ **2 275.8 µs**（`bn=64`）；8 例 baseline 12.05–94.10 ms → final **2.26–14.25 ms**（short 档 5.27–5.33×、long 档 6.59–6.62×）。
+- **可复用教学点**：① **单价分解先于结构重设计**——逐行 1-D 原子 224 ns/行 vs rank-2 区域原子 32 ns/行 vs 区域 store 7.5 ns/行（同字节），7× 惩罚是发射/描述符而非流量 ⇒ 「原子贵」的 GPU 先验会把设计推向更差结构；② causal 跳过收益必须**同时**评估静态任务映射（单独跳过只兑现 1.31× / 理论 1.78×，差额 = `max/mean=1.35×`）；③ `ns=2` 无收益（14 250 vs 14 257 µs），同步相位合并（r7）**反向 +3.1~+25.9%**（编译器按 buffer 粒度同步，合并相位不减少等待）；④ 形参 rank 可以是**视图而非契约**（对外签名不变，wrapper 零改动）。
+- **失败/回退档案**：r4 subid 分片精度全错（Developer 模式 `subid ≡ 0`，见 `TRAP-dev-subid-zero-mix`）；r7 同步相位回退；尾块 causal（`dim=128, S%64≠0`）UB 217 KB > 192 KB ⇒ trace-time 回退 `bn=32`；`bn=80/96` 不可行（199/222 KB）。
+- **残留**：AIV 侧 2× 冗余未消除（Developer 模式无 subid，`CG-2026-0039`）；每迭代固定发射/跨引擎同步约 5–8 µs（`aiv_scalar` 占 62.6–71.8%）⇒ 后续需 Expert 双 Scope 跨迭代流水。
+- **适用触发条件**：attention/backward 类，fp32 梯度写回为跨步行（BSHD）且逐行 op 主导 mte3；causal 域且 `seq_len % tile == 0`（尾块须走开关回退）；tile 面积受 UB 钳制的 `dim=128` 档。
+- **端到端验收注意**：单算子 report 的 correctness 失败集合全部落在**未改动的 fwd** kernel 的 `bishengir-compile` 段错误上（同 shape/dtype 直调 bwd kernel 正常），且失败集合跨 run 不稳定（第 1 次 4 例含 fp16、第 2/3 次 2 例仅 bf16）⇒ wrapper 未翻转、按 optimize §4 保持 baseline import；工具链侧登记 `CG-2026-0030` 形态③。
+- 溯源（任务工作区，未上库，允许失效）：`examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/perf_opt/{opt_log.md, perf_records.jsonl, workload_inventory.json, profiles/, _gqa_bwd_kernel_r1..r7*.py}`；`examples/TileOPs/reports/tileops/20261018_17*/{run.json,report.md}`。

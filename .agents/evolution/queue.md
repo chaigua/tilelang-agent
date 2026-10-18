@@ -5635,6 +5635,7 @@ decided_by: evolver / human / -   # 裁决者
     - ③ 20 个 block 并发写同一 2-D 区域 ⇒ 精确 20.0（2 写者档 2.0）
   - 已收窄的首版候选（本任务 Stage 1 的「跨步区域原子逐位正确」）因其探针被测形态实为 rank-2 显式切片而被 Stage 2 推翻 ⇒ 本条按**修正后**形态登记（仅 rank-2 显式切片正确；BSHD `[B,S,H,D]` 的 rank-reduced 区域形态不可用）
   - 交叉引用：pattern-library `constants.md` 的原子相关常数（见 VP-2026-0284）；`docs/Tilelang.language/原子操作/T.atomic_add.md` §2.4（建议补 rank-reduced/跨步目标的推荐形态，属 docs 写域）
+  - 〔2026-10-18 蒸馏注记（task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`）〕① 已由**知识域条目**承接并合入：`traps-compiler.md` `TRAP-region-atomic-4d-bshd`（Tier 0，含 `repro/TRAP-region-atomic-4d-bshd.py`，910B3 首验 + 910B4 重验跨设备两证；并给出可用替代 = `(B*S,H*D)` 视图的 rank-2 跨步区域写，端到端 −45%）⇒ **本提案的 `add` delta 不再单独执行**（会与既有条目重复）；②③ 与边界「`H==1` 或 `dim==H*D` 掩盖缺陷」仍是独特价值，待同族任务补 repro 后以 **update** 合入同一 `TRAP-region-atomic-4d-bshd` 条目。
 - repro: repro-missing（最小复现 = 三组断言：① rank-reduced 4-D 区域形态断言「目标区未被写满 + 区外被污染」（静态 extent）与「首编报 `not 'Var'`」（动态 extent）；② 非零初值 + 可区分加数断言 fetch-add 语义；③ N 个 block 并发同址断言总量 = N。探针形态已存在但为任务工作区脚本，待同族任务最小化转正）
 - toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
@@ -5660,6 +5661,7 @@ decided_by: evolver / human / -   # 裁决者
   - 同一任务的行原子微基准（`design_probe_row_atomic_bshd.py` timing 段）：`real_n=32`@dim=128 行原子环 125.80 µs ≈ 0.99× 同体积**单次**区域 store（126.95 µs）；`real_n=64`@dim=64 为 0.79×（122.51 vs 154.57 µs）⇒ 该档差异被 ~120 µs/launch 的地板吞掉，**每行原子 op 的单价不可从孤立微基准确立**
   - 并行污染对照（同任务 Stage 2）：同一对探针并行跑得 **1.68×**（atomic 225.89 vs store 134.21 µs），串行重跑得 **0.99×**（128.50 vs 129.28 µs）——差异 ±70% 足以把方向带反（详见 VP-2026-0285）
   - 交叉引用：pattern-library `constants.md` 的 `CONST-vector-launch-overhead`（~0.5 µs/op @910B2C/CANN 8.5.0）与 `CONST-msprof-task-floor-910B3`（地板 + pass 单价 @910B3/CANN 9.0.0）——本条给出「原子 vs store」的相对关系而非绝对单价，与两条口径互补
+  - 〔2026-10-18 蒸馏注记（task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`，910B4/`2fb23ee`，**口径不同不可直接比较**）〕新增 `constants.md` `CONST-atomic-writeback-forms`（Tier 0，含 repro，同一字节量四形态）：逐行 1-D 原子 **224 ns/行** vs rank-2 区域原子 **32 ns/行** vs 区域 store **7.5 ns/行**（20 block = 1/核、内核内 64 次重复**摊销 launch 地板**）⇒ 结论分层：㈠ 「原子放大是流量问题、不是单价比问题」对**区域原子 vs store** 在同规模下不成立（4.3×），但㈡ 本提案的「孤立单 launch 小 op 单价被 ~120 µs 地板吞掉」仍是有效边界——新测量的关键是**内核内重复摊销**这一测量设计，故本提案的方法学结论收窄为「**单 launch 单次**小 op 单价不可确立」，而非「逐行单价不可测」。两数字按「设备 × 并发 block 数 × 是否摊销」三要素并存，**不构成同口径矛盾**（910B3/256 block/未摊销 1.09× vs 910B4/20 block/摊销 4.3×）。本提案的 `add CONST-atomic-vs-store-910B3` delta 建议改写为**update** 既有 `CONST-atomic-writeback-forms` 的「区域原子 vs store」口径段，避免两条目并存矛盾。
 - repro: repro-missing（最小复现 = 同形同体积的「连续 2-D 区域 `T.atomic_add`」与「`T.copy` store」两 kernel 背靠背**串行**计时，断言比值 < 1.5×（量级与相对关系，不锁绝对值）；另断言「行原子环 N 次 vs 单次区域 store」的耗时比落在噪声带内以暴露地板效应）
 - toolchain_stamp: tilelang 0.1.2 dev root build + CANN 9.0.0 + Ascend910B3 / 2026-10-16
 - target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
@@ -6464,6 +6466,8 @@ decided_by: evolver / human / -   # 裁决者
   - 问题本体（绕过 Tier 分级的实证，非本任务）：optimize SKILL.md Phase 4 第 6 条把 pattern-library 回写列为「不自动修改 skill 文档禁令的唯一例外」，第 8 条据此豁免——**任务内写作者 = 未过任何证据门**，其中 `repro-missing` 条目、跨任务口径更正（如 `0.158 µs/pass` 的量纲混淆）都曾直接落盘，后续由 evolver 以「复核 + 证伪更正」补链（stats 中连续多周期的「复核 optimizer 任务内回写 ×N」即该结构性成本）
   - 交叉引用：`capability-gaps.md` 头部「写入者 = 任务各阶段 Agent 直接追加」亦属同一类；本轮 `CG-2026-0037` 由 optimizer 在 §10.4 给出文本、evolver 登记（`created_by` 可追溯），验证「提案文本 + evolver 落盘」链路可行且不损失内容
   - 影响面：仅改**写权限归属**，不改「复盘必须产出 D/P/R/C 提案 + 三件套」的要求；round-4 实证表明提案文本形态不降低信息密度（D 类两条均含数字与边界、P 类含判据与代价）
+  - 〔2026-10-18 **第二现（规则未落盘期间复发，最强证据）**〕task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（optimize，同日 14:59Z 起）的 optimizer **再次直写** `pattern-library/`：`constants.md` 1 条 + `traps-compiler.md` 2 条 + `attention.md` 1 条（P 类）+ `repro/` 4 个脚本 + `INDEX.md` 4 行（`kb_lint` 0 failure 自报）。evolver 蒸馏侧为此支付：① 逐条三件套/溯源/数值核验（4 条 + 4 repro + INDEX）；② 3 处修正（P 类越级以 `verified` 落盘 → 补 1/2 证据档并入队；`CONST-atomic-writeback-forms` repro 117 行超 ED-B 预算未披露 → 补披露；`PL-1.13` 适用域未随新 trap 同步收窄 → 补第二级收窄，避免后续误用 subid 分片静默丢一半工作）；③ 一处**虚构 repro 路径**——`opt_log.md` §7.2 把 `repro/PL-aiv-fixed-per-iteration-cost.py` 列为已产出，实际**不存在** ⇒ 对应价值点只能降级 Tier 1 入队（VP-2026-0332），而同一份 §8 只以「`kb_lint.py` 0 failure」自证完整。⇒ 「只读 + 提案文本」可把上述三类返工前置到任务内（optimizer 有环境、有上下文），成本更低。
+  - 〔备选 delta（若最终决定保留任务内写权限，而非完全只读）〕须同时附三项机械自检，否则不落盘：① `repro` 字段指向的文件**必须存在**且 `py_compile` 通过（未写出则写 `repro-missing`，不得填计划文件名）；② P 类条目正文标注「证据档 1/2（Tier 1，待第二独立任务确认）」并同步入队，不得以 `verified` 独占；③ 回写后跑 `kb_lint` 并把 failures/warnings 增量写进 `opt_log`，同时刷新 `INDEX.md` 路由行与 `repro/README.md` 索引行。（此备选源自本轮被 rejected 的 `VP-2026-0336`，拒绝原因见其 Decided 条目。）
 - repro: repro-missing（流程规则；复现条件 = 检查任一 optimize 任务的 pattern-library diff 是否全部来自 evolver 快照、opt_log Phase 4 是否含完整提案文本）
 - toolchain_stamp: 流程规则（无运行时依赖）；本轮环境 tilelang 0.1.2+c316b0e / CANN 9.0.0 / Ascend910B4 / 2026-10-18
 - target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
@@ -6740,6 +6744,147 @@ decided_by: evolver / human / -   # 裁决者
   - 建议替换：`源工厂 \`any\` = bool（载体 int8）+ \`reduce_max\`、\`all\` = int8 + \`reduce_min\`（GPU 源语义）；本单元 NPU 重设计把两者对调——\`any\` = \`reduce_min\` + 1−min、\`all\` = \`reduce_max\` + 1−max（四项随 OR/AND 对偶全反转），照抄源侧算子即语义翻错。`
   - 依据：`_logical_reduce_kernel.py` 的 `T.reduce_min`（L303/L369/L444/L456）、`DESIGN.md#§1.6.0/§11/§4.3`、`--level all` 101 次逐位 0 差异
   与本轮 `VP-2026-0330`（配置期望 vs 精度断言）同属「同一文本承载两类语义」族，但作用面不同（本条 = 复盘材料的事实核验纪律，0330 = 测试门禁的断言分类）；apply 时互链。
+
+## VP-2026-0332
+
+- type: D
+- title: causal attention-backward 的**每迭代固定成本**量级档——时延 ∝ 迭代数、每迭代成本对 tile 面积不敏感（`bn` 32→64：7.8→8.4 µs/迭代 +8%，迭代数减半 ⇒ **1.85×**）；每迭代固定发射+跨引擎同步合计约 **5–8 µs**（模型反解，非直接微基准）
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z` 的 `perf_opt/opt_log.md` §3 Round 5/6 + §6.1（任务工作区，允许失效）：`_gqa_bwd_main`，(4,512,32,128) fp16，R5（bn=32）3 892.6 µs → R6（bn=64）2 275.8 µs = **1.71×**（同口径 merged 记录 2 275.8）；long 档 28 153.4 → 14 291.4 µs = 1.97×；同轮 `bn=64` 的每迭代成本只从 7.8 升到 8.4 µs
+  - 同任务 `perf_records.jsonl` 的 `merged`（`r6-tuned`）8 行与 `final` 8 行（append-only，逐行对账一致）
+  - **数字不一致披露（本条入队而非合入的直接原因）**：opt_log 内同时出现 5.3 µs（§6.1「每迭代固定 ≈5.3 µs」）、7.8/8.4 µs（§3 Round 6）与「跨引擎同步往返 ≈1.4 µs/相位」（§7.2）三组值——前者与后两者口径未对齐，且 1.4 µs/相位无任何直接测量支撑（R7 合并相位后时延反升，只证明「相位合并无效」）。故本条只固化**可对账的差值关系**（迭代数减半 ⇒ ~1.7–2.0×；每迭代成本变化 <15%），`1.4 µs/相位` **不收录**
+- repro: repro-missing（最小复现 = 同一 kernel 两 tile 档（bn=32/64）在固定 4 形态 workload 上的 `msprof op Task Duration / 有效迭代数` 对比，断言「每迭代成本变化 <15%」且「迭代数减半带来 >1.6×」；需 NPU + msprof，尚无最小脚本。opt_log §7.2 声称的 `repro/PL-aiv-fixed-per-iteration-cost.py` 在 knowledge domain **不存在**（2026-10-18 蒸馏实测 `ls` 无命中））
+- toolchain_stamp: tilelang `0.1.2+2fb23eee1c6293affa903e631c1d8fb018cf173b`（dev root build）+ CANN 9.0.0 + Ascend910B4（AIC=20 / AIV=40 / UB 196608 B）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    add 条目 `CONST-attention-bwd-per-iteration-cost`（置于 CONST-atomic-writeback-forms 之后）：
+    **形态与适用域**：causal attention-backward 主 kernel（`_gqa_bwd_main` 形态：persistent 任务循环 + `T.Pipelined` query 循环 + 5 GEMM + 9 整 tile 向量 op + fp32 梯度原子回写），bm=64、ns=1、`dim=128`。
+    **数据（msprof `Task Duration` 中位数，20 采样）**：`bn=32` 3 892.6 µs → `bn=64` 2 275.8 µs（(4,512,32,128) fp16，**1.71×**）；(2,2048,32,128) fp16 28 153.4 → 14 291.4 µs（**1.97×**）。有效迭代数随 `n_q·n_kv` 减半，而每迭代成本 7.8 → 8.4 µs（+8%）。
+    **结论**：该形态下**时延近似 ∝ 迭代数**；每迭代存在约 **5–8 µs** 的、与 tile 面积弱相关的固定成本（发射 + 跨引擎同步等待：final 画像 `aiv_scalar` 占 62.6–71.8%，`aiv_scalar_wait_id7` ≈86% 时长）⇒ UB 容得下时**优先加 tile 面积（减迭代数）**，而不是在固定 tile 内做相位/流水微调（R7 合并相位 +3.1~+25.9% 反证）。
+    **边界/置信度**：数字为**两档差值的模型反解**，非直接微基准；`1.4 µs/相位` 未收录。重测须同口径（同 kernel、同 workload、只改 bn）。
+    动机: 本任务 45% 来自写出形态、另 ~46%（3893→2276）来自 tile 面积；「每迭代固定成本与 tile 面积无关」是决定「继续加 tile vs 改同步结构」的唯一判据，且 R7 已实测「合并相位」无效——后续同形态任务不应重试该方向。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: D 类缺 repro（且来源 opt_log 的 per-iteration 数值内部不一致）⇒ 按 ED-A 降级 Tier 1 入队；第二证须来自不同任务且带同口径 repro（`repro_runner` 通过可走 E-3 快速通道计 2/2）。
+
+## VP-2026-0333
+
+- type: P
+- title: 「发射受限」判定必须**先分辨三种单价**：逐行 op 单价 / 区域 op 单价 / 跨引擎同步往返单价——纸面模型（「原子≈store、不是单价问题」）会把方向带偏（本任务逐行 vs 区域 = **7×**，一击 −45%）
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，允许失效）：`perf_opt/probe_atomic.py`（同字节 4 形态：逐行 1-D 原子 224 ns/行 / 无 `size=` 同价 / rank-2 区域原子 32 ns/行 / 区域 store 7.5 ns/行）+ `opt_log.md` §3 Round 5（7106.1 → 3 892.6 µs，**−45.2%**，`aiv_mte3` 45%→4.6%）+ §2.2（DESIGN「行原子单价≈整 op」被实测推翻）
+  - 反面对照：同任务 R6 只把 `bn` 32→64（迭代数减半）再拿 1.71×，说明**两种杠杆收益量级相当、但单价分解先做才能判断先打哪个**
+  - 交叉引用：`pattern-library/constants.md` `CONST-atomic-writeback-forms`（单价阶梯，Tier 0 已合入）
+- repro: repro/CONST-atomic-writeback-forms.py（覆盖第 ① 问「逐行 vs 区域」的单价；第 ③ 问「跨引擎同步往返单价」仍 `repro-missing`——R7 只有「合并相位无效」的负向实测，无正向量值）
+- toolchain_stamp: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    add 小节「单价分解三问（发射受限诊断第 0 步）」：
+    **判定信号**：`aiv_scalar` / `mte3` / `mte2` 中任一 pipe 忙时占比高（>40%）且 `aiv_scalar_wait_id*` ≈ 全时长。
+    **三问**：① **写出是逐行还是区域？**——同一字节量的逐行 1-D op vs rank-2 区域 op 可差 **7×**（224 vs 32 ns/行；区域 store 7.5 ns/行）；逐行形态是发射/描述符问题，**不是**流量问题，先改形态再谈 tile。② **每迭代有几个跨引擎相位？**——相位合并通常不减少等待（编译器按 buffer 粒度同步；实测合并后 +3.1~+25.9%）。③ **每迭代固定开销 / tile 元素数是多少？**——固定开销与 tile 面积弱相关时，减迭代数（加 tile）优于流水微调（每迭代 7.8→8.4 µs，迭代减半 ⇒ 1.7–2.0×）。
+    **执行顺序**：三问的答案决定候选排序——形态（①）> 迭代数（③）> 相位（②，最后且常无效）。
+    动机: 本任务 DESIGN 按「原子≈store、不是流量问题」把第一杠杆定为 tile 面积，实测第一杠杆是**写出形态**（−45% vs tile 的 −41.5%，且形态改动更小）；纸面模型与实测差 7× 时，先测单价再排候选可省 2–3 轮。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: -
+
+## VP-2026-0334
+
+- type: P
+- title: causal 块级跳过（`T.Pipelined` body runtime guard，逐位精确）+ **`by` 最慢的任务映射**——单独跳过只兑现 1.31× / 理论 1.78×（差额 = 静态映射 `max/mean=1.35×`），改映射后 9195.5→7254.3 µs（−21%）
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，允许失效）：`opt_log.md` §3 Round 1/2（8 例全测 + 2 例探针；`perf_records.jsonl` `candidate` 行 8 条 = r1 全量）
+  - 已任务内回写：`pattern-library/attention.md` `PL-causal-skip-task-mapping`（**2026-10-18 蒸馏核验：证据档 1/2**，技术内容与数字逐项对账相符）——本条用于补 Tier 1 的二次独立确认门，**不重复登记内容**
+  - 与既有条目互补：`PL-1.9-twophase-causal`（causal 域两相位适配）/ `PL-1.11-causal-mask-scalartrap`（掩码算术形态）
+- repro: repro/PL-causal-skip-task-mapping.py（纯解析模型，断言两映射的 max/mean 比 1.35× vs 1.01–1.02×；无需 NPU）
+- toolchain_stamp: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/attention.md
+- delta: |
+    动作: update（条目 `PL-causal-skip-task-mapping` 证据档 1/2 → 2/2，仅当第二证来自**不同任务的不同算子/不同注意力结构**且满足以下之一：同映射形态的另一 causal attention 算子实测；或 `repro/PL-causal-skip-task-mapping.py` 在另一上下文 `repro_runner.py` 通过且该任务有对应实测锚点）
+    定位锚: "〔2026-10-18 蒸馏核验（P 类治理注记）"
+    new 文本: 在该注记行尾追加 "**第二证（{task_id} {date}）：{形态与数字}** ⇒ 证据档 2/2，`status` 维持 verified。"；不删除原注记。
+    动机: 任务内直写把 P 类以 `verified` 落盘，越过 Tier 1 的二次确认门；内容本身经对账无误，故以「补确认」而非「撤条目」收口（保留知识、恢复分级）。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: 证据档按 1/2 计（本任务为首证）。
+
+## VP-2026-0335
+
+- type: P
+- title: 跨步大张量写出优先用「**张量 rank 视图 + 工厂闭包**」而非逐行 op——`dq` 声明为 `(B·S, H·D)` 后写 rank-2 显式切片跨步区域，对外签名零改动、wrapper 无需改（−45%）
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，允许失效）：`opt_log.md` §3 Round 5 + §4.2（rank-reduced 4-D 形态静默写坏、动态 extent 前端报错）+ §6.2（wrapper 直插验证：`dq` max|base−tuned| = 1.22e-4 为原子累加序末位差、`dk`/`dv` 逐位相同；9 参调用签名不变）
+  - 已任务内回写：`constants.md` `CONST-atomic-writeback-forms`（单价事实）+ `traps-compiler.md` `TRAP-region-atomic-4d-bshd`（形态可用性 + 910B4 重验）
+- repro: repro/TRAP-region-atomic-4d-bshd.py（可用/不可用两形态的代码骨架）+ repro/CONST-atomic-writeback-forms.py（单价对照）
+- toolchain_stamp: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    add 条目 `BP_strided_region_write_view`：
+    **触发**：fp32 梯度/累加器写回目标为 BSHD `(B,S,H,D)` 的跨步行区间（行 stride = `H·D ≠ D`），且 profile 显示写侧 pipe（`mte3`/`aiv_scalar`）单点 >40%。
+    **动作**：把该张量在 kernel 签名/工厂闭包层声明为其**同一存储的 2-D 视图** `(B·S, H·D)`，写回改为 `T.atomic_add(dst[flat:flat+bn, h*D:(h+1)*D], blk, [bn, D])`（rank-2 双侧显式切片）；对外签名不变（工厂返回薄闭包做 `.view(...)`），wrapper 零改动。**不要**用 rank-reduced 4-D 切片形态（`dst[bz, s0:s0+rn, h, 0:D]`）——本工具链把它当连续平铺块静默写坏。
+    **判据**：写侧 pipe 忙时下降量级 ≥ 区域/逐行单价比（本机 7× 上限，实测端到端 −45%），且 L0 与 baseline 逐位同值（原子累加序差异只允许出现在 max|Δ| ≈1e-4 量级）。
+    **机制归因**：逐行 op 的代价是发射/描述符（每行一条 op + 地址计算），不是流量；视图形态把 N 条 op 合成 1 条区域 op。
+    动机: attention/ssd 类的 fp32 梯度回写普遍是「逐行 op + 跨步目标」，该形态迁移成本极低（一个闭包 + 一次 view），收益上限高；且与「原子贵所以避原子」的 GPU 先验相反，须以可复用条目校正方向。
+- status: pending
+- confirmations: 1/2
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: 与 `CONST-atomic-writeback-forms`（D 类事实）分账：本条是**设计/改动方法**（跨算子可迁移），D 类是单价数字。
+
+## VP-2026-0337
+
+- type: R
+- title: 多 kernel 算子的 per-kernel 采集**必须自建驱动**——op 级 report 的 kernel 名解析只命中第一个 kernel（本任务只捕获 preprocess），不能作主 kernel 时延来源
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，允许失效）：`opt_log.md` §7.1 第 3 行（「op 级 benchmark 的 kernel 名解析只捕获 preprocess ⇒ per-kernel 采集脚本是必须的」）；本任务自建 `perf_opt/{bench.py, run_measure.py, read_profile.py}`，8/8 workload 有效，`msprof op --kernel-name=_gqa_bwd_main` 捕获名 `_gqa_bwd_main_mix_aic`
+  - 反证：同一 op 的 `tileops.reporting.cli` 报告在本任务 3 次运行中 `case_count=0 / msprof_case_count=0`（benchmark 未执行，correctness 即失败），无任何 per-kernel 时延可用
+  - 交叉引用：`profile-collection.md` §2「逐 kernel 采集」已有方法，但未写明「多 kernel op 的驱动形态」
+- repro: repro-missing（流程规则；复现条件 = 对一个 3-kernel wrapper 跑 `tileops.reporting.cli run --op <Op> --prof-mode msprof`，检查 `run.json` 的 `kernel` 字段是否只含第一个 kernel）
+- toolchain_stamp: 流程规则；证据环境 tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/profile-collection.md
+- delta: |
+    动作: update（§3「串行运行 msprof op」开头段末尾追加）
+    定位锚: "**不运行需要 Stage 5 wrapper 的正式 benchmark**。"
+    new 文本: |
+      **多 kernel 算子的 per-kernel 驱动（2026-10-18 补）**：op 级 report 的 kernel 名解析在多 kernel wrapper 下只命中第一个/预处理 kernel（`MultiHeadAttentionBwdOp` 实测只捕获 preprocess），**不得作为主 kernel 的时延来源**。须在 `perf_opt/` 自建同 tensor / 同 launch 序列的 `bench.py` + `run_measure.py`：`msprof op --kernel-name=<主 kernel 前缀>`（实测捕获名形如 `_gqa_bwd_main_mix_aic`），逐 `(candidate, workload)` 串行采集，raw profile 落 `profiles/<phase>_<candidate>/<label>_<dtype>/`，解析结果 append 进 `perf_records.jsonl`。
+    动机: 多 kernel op（preprocess/main/postprocess）是 attention-backward 的标准形态；缺 per-kernel 驱动会让 optimizer 在「无可信主 kernel 时延」的状态下开工，或误把 op 级数字当主 kernel 结论。
+- status: pending
+- confirmations: -/-
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: Tier 2（skill reference 的流程性内容），待用户批准。
+
+## VP-2026-0338
+
+- type: R
+- title: wrapper 翻转采纳前补「单算子 report 冒烟 + 崩溃归因 + 跨 run 失败集合一致性」——避免把兄弟 kernel 的 `bishengir-compile` 段错误记成 tuned kernel 回归
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，未上库，允许失效）：
+    - `python perf_opt/_gqa_bwd_kernel.py --level all` **rc=0**（L0 16/16、L1 10/10、L2 1 WARN=S32 已知崩溃、Boundary 1 WARN=tier-3 记录项），gate 4 0 failures / 0 warnings
+    - 单算子 report 3 次：`20261018_174830_*` correctness **4 失败**（fwd/bwd × fp16/bf16，全部 `bishengir-compile` SIGSEGV）→ `20261018_175519_*` / `20261018_175715_*` **2 失败**（仅 bf16）；失败集合**跨 run 不稳定**，且失败测试均涉及**未改动的 fwd** kernel（同 shape/dtype 直调 bwd 正常）
+    - 对照：`20261016_082438_*`（910B3 + 较早 build）同测试文件 correctness 12/12 ⇒ 该失败是设备/工具链敏感，不是本轮编辑引入
+    - 处置：wrapper 回退 baseline import、benchmark 全部 skipped、任务终态 DONE 但端到端未验收（`CG-2026-0030` 形态③）
+- repro: repro-missing（流程规则；复现条件 = 对任一 Stage 4 任务在 wrapper 翻转前后各跑一次单算子 report，比对 correctness 失败集合与 `--level all` 结果）
+- toolchain_stamp: 流程规则；证据环境 tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 3 第 3 条「wrapper 的 baseline/perf_opt 双 import 切换块由 conductor …」之后追加）
+    定位锚: "本 skill 不修改 wrapper。"
+    new 文本: |
+      **翻转采纳前的前置证据（2026-10-18 补）**：除 `--level all` 回归外，须有一次单算子 report 冒烟。report 的 correctness 失败若**全部**落在未改动的兄弟 kernel 的 `bishengir-compile` 段错误上（同 shape/dtype 直调本 kernel 正常），按**工具链崩溃**归因（登记 capability-gaps），不判为 tuned kernel 回归；并须**跨 run 复核失败集合一致性**——本任务 3 次 report 依次 4 例 → 2 例 → 2 例（fp16 侧一次失败两次通过），失败集合不稳定时不得据单次结果回退 tuned kernel。wrapper 保持 baseline import，并在返回中如实披露「端到端未验收」与残余 failure 的归因。
+    动机: 本任务 tuned kernel 独立回归全绿、调优收益 5.27–6.62×，却因兄弟 kernel 的编译崩溃无法端到端验收；若不写清归因纪律，后续任务可能（a）误回退有效 tuned kernel，或（b）据稳定/不稳定混合的失败集合得出相反结论。
+- status: pending
+- confirmations: -/-
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: -
+- decided_note: Tier 2（流程规则），待用户批准；与 `VP-2026-0289`（gate 5 多 Kernel 共 wrapper）相邻，但本条只约束翻转采纳的证据链，不改 gate 规则。
+
 
 ## Decided（merged / rejected / expired / conflict 归档）
 
@@ -8103,3 +8248,31 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task argmax-_argreduce_kernel-20260924T031005Z 2026-09-28
 - decided_by: evolver
 - decided_note: ①的实证即 TRAP-parallel2d-bm-ge2-scalarize 的证伪更正链（Stage 4 已回写知识侧），本条是其流程侧（当轮消歧纪律）的条目化。 【2026-10-18 蒸馏合入】第二证 = task max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（不同任务/不同算子/910B4+e8b5d51）：手法② 以 op 单价表（12.3/21.1/23.1 ns、int32 `vcmp` 1039 ns、地板 3.12/3.38 µs）+ 6 个 timing-only 分解探针在一轮内锁定「每单元 2 条 int32 `vcmp` 占 Task 69%」并改到 fp32 判决域（sincnet −67.6%）；手法① 同轮以 singlepass/jramp 两变体对照同步证伪两条结构嫌疑。1/2→2/2，已合入 `iteration-diagnosis.md` 新增「迭代效率两手法」小节（②含单价表最低覆盖三档与 `Task 下界` 拟合式）。
+
+## VP-2026-0336
+
+- type: R
+- title: optimize Phase 4 的 pattern-library 回写补「分级 + 三项机械自检」——P 类不得以 `verified` 直写（须标注 1/2 并入队）、`repro` 字段指向的文件必须存在、INDEX/repro README 同步
+- evidence:
+  - task `TileOPs-_gqa_bwd_kernel-20261018T145922Z`（任务工作区，允许失效）三起同根因事件：① `opt_log.md` §7.2 把 `repro/PL-aiv-fixed-per-iteration-cost.py` 列为 repro，但该文件**不存在**（蒸馏期 `ls` 实测）⇒ 对应 D 价值点无法 Tier 0 合入、被迫降级入队；② P 类条目 `PL-causal-skip-task-mapping` 以 `status: verified` 任务内直写（越过 Tier 1 二次确认门）；③ `repro/CONST-atomic-writeback-forms.py` 117 行超 ED-B 100 行预算，opt_log §8 只报「`kb_lint.py` 0 failure」未披露该 warning
+  - 现状文本：`SKILL.md` Phase 4 第 6 条已要求「repro 落盘 + front-matter 登记 + `repro-missing` 标注 + INDEX schema」，但**未规定 P 类的证据档语义**，也未要求回写后跑 `kb_lint` 并披露预算结果 ⇒ 三起事件的共同缺口
+  - 同一族的历史复发（stats ㊱/㊳/㊵「声称未落盘」）说明仅靠文字要求不足，需把自检写成回写步骤的一部分
+- repro: repro-missing（流程规则；复现条件 = 任选一次 Stage 4 任务，比对 `opt_log.md` §7.2/§8 列出的 repro 路径与 `pattern-library/repro/` 实际文件，以及新条目的 `status` 与 `confirmations` 是否匹配）
+- toolchain_stamp: 流程规则（无运行时依赖）；证据环境 tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 4 第 6 条「回写 pattern-library」内，在「流程/结构层面的改进仍只提 proposal，不自动改。」之前插入一段）
+    定位锚: "流程/结构层面的改进仍只提 proposal，不自动改。**本条任务内回写与终态 evolver 蒸馏互补防双写"
+    new 文本: |
+      **回写分级与三项机械自检（2026-10-18 补）**：① **P 类（模式方法）不得以 `status: verified` 独占落盘**——必须在条目正文标注「证据档 1/2（Tier 1，待第二独立任务确认）」并同步在 `.agents/evolution/queue.md` 建/接续对应提案；D 类（数据/陷阱）可直接写。② 每条新条目的 `repro` 字段**必须指向已存在且 `python -m py_compile` 通过的文件**；尚未写出的写 `repro-missing`，不得填计划中的文件名。③ 回写后跑一次 `python3 .agents/tools/kb_lint.py`，把结果（failures/warnings 增量）写进 `opt_log.md`；同时刷新 `pattern-library/INDEX.md` 路由行与 `repro/README.md` 索引行。
+      流程/结构层面的改进仍只提 proposal，不自动改。**本条任务内回写与终态 evolver 蒸馏互补防双写
+    动机: 三起事件（虚构 repro 路径 / P 类越级 / ED-B 预算未披露）都不是知识错误而是**回写清单缺自检**；把自检写成步骤 + 机械工具，比事后 evolver 逐条补更省（本轮 evolver 为此额外做了 4 条条目的逐项核验与 3 处修正）。
+- status: rejected
+- confirmations: -/-
+- created_by: task TileOPs-_gqa_bwd_kernel-20261018T145922Z 2026-10-18
+- decided_by: evolver
+- decided_note: |
+  **rejected（2026-10-18 蒸馏，evolver）— 被用户裁定的 `VP-2026-0320` 取代，避免两条方向相反的提案并存**：
+  - `VP-2026-0320` 载明用户 2026-10-18 裁定「optimizer 自本轮起对 `pattern-library/` 与 `capability-gaps.md` 只读，沉淀一律以提案文本返回」——本条「允许写 + 加自检」与该裁定相反，按「人工裁定 > evolver 提案」判本条不采纳；
+  - 本条的三项发现仍有效，已转为 `VP-2026-0320` 的**备选 delta**（若将来恢复任务内写权限，须附：repro 文件存在性、ED-B 行数披露、INDEX/repro README 同步）；
+  - 本条不删除（拒绝原因须留档，防重复提案）。

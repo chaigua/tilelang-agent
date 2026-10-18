@@ -668,3 +668,36 @@ repro: repro-missing
 - **证明**：`repro-missing`（待补：从 `perf_opt/probe_floor.py` 裁出 empty/copyout × bm 三档，
   断言 bm=4 < bm=2 < bm=1 的总时延序与 16 KB 单价区间）。溯源（任务工作区，允许失效）：
   `examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel/perf_opt/`。
+
+---
+id: CONST-atomic-writeback-forms
+kind: constant
+family: [attention, mixcv]
+apis: [T.atomic_add, T.copy]
+dtype: [fp32]
+device: 910B4
+status: verified
+origin_task: TileOPs-_gqa_bwd_kernel-20261018T145922Z
+toolchain: tilelang 0.1.2+2fb23ee（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18，`msprof op` Task Duration 中位数（`--launch-count=10 --warm-up=3`）
+source: DESIGN §1.6.0「行原子单价≈整 op、不是流量问题」的实测更正
+repro: repro/CONST-atomic-writeback-forms.py
+---
+
+### fp32 写出形态的单价阶梯（同字节：20 block × 64 rep × 32 行 × 128 fp32 = 40960 行/launch）
+
+| 形态 | Task Duration | 单价 |
+|---|---|---|
+| 逐行 1-D `T.atomic_add(dst[i, 0:128], src[r, 0:128], [1, 128])` | 459.0 µs | **224 ns/行** |
+| 同形态不传 `size=` | 460.2 µs | 224 ns/行（无差别） |
+| rank-2 连续 2-D `T.atomic_add(dst[i0:i0+32, 0:128], src, [32,128])` | 65.1 µs | **32 ns/行** |
+| 纯区域 store（同字节） | 15.3 µs | 7.5 ns/行 |
+
+- **逐行形式是 7× 单价惩罚**：属发射/描述符主导（每行一条 op + 地址计算），**不是**流量问题。
+- 因此「原子放大」要分两笔账：**放大倍数**是流量问题（受 `bm`/L2 影响），**写出形态**是单价问题（逐行 vs 区域，7×）。
+- 跨步 BSHD 目标不能用 4-D 区域形态（见 `TRAP-region-atomic-4d-bshd`），可用替代 = 张量声明为 `(B*S, H*D)`
+  2-D 视图 + 工厂闭包 `view`，写 rank-2 显式切片跨步区域（本任务实测 −45% 端到端：7106 → 3893 µs，
+  `_gqa_bwd_main` (4,512,32,128) fp16）。
+- 溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/attention/multi_head_attention/multi_head_attention_kernel/perf_opt/{opt_log.md#3-Round5, probe_atomic.py}`。
+- **测量口径（引用前必读）**：20 block = 每核 1 个（无并发同址争用）× 内核内 64 次重复（摊销 launch 地板）⇒ 单行单价可测。与 pending `VP-2026-0284`（910B3、8.4 MB / **256 block**、区域原子/纯 store = **1.09×**）的关键差别是**并发度与地板摊销方式**（后者未在内核内重复，故其结论为「单 launch 的小 op 单价不可确立」）。
+  本条在同一规模下测得区域原子/纯 store = 65.1 / 15.3 µs ≈ **4.3×**，两者**不构成同口径矛盾**：引用时按「设备 × 并发 block 数 × 是否内核内摊销」三要素选档，并优先用本条 repro 在本机重测。
+- **ED-B 预算披露**：`repro/CONST-atomic-writeback-forms.py` = 117 行 / 4 464 B（四个 mode 的 kernel 生成器 + 测量协议），超 100 行预算但 < 8 KB；按 `PL-1.10` 先例**不裁剪披露**（evolver 侧 ED-C 只做机械转正，不删代码）。同族任务补 repro 时优先精简为单 mode 参数化形态。

@@ -901,3 +901,58 @@ repro: repro/TRAP-deinterleave-two-phase-only.py
 - **case D 的证明形态（如实披露）**：负面现象（运行时分支内 op 消失）由来源任务实测记录承担（provenance，允许失效）；知识域侧只断言**合法形态**——`python repro/PATT-row-pingpong-pipeline.py --check` 断言 trace 期展开后的 ping-pong 结果与 serial 参考 `torch.equal` 逐位相等（448 unit），并打印两变体的 `dur/vec/mte2/mte3`。原探针未保留 `r % 2` 分支变体，故**负面侧未内联**（与 `TRAP-bishengir-crash-s32` 形态② 同处置形态）。
 
 > 〔2026-10-16 蒸馏，D 类 Tier 0 合入（provenance + 版本戳 + repro 三件套齐备）；repro 为 ED-C 机械转正（逐字节拷贝 `probe_deint.py` + 头部登记块，代码与断言零改动，登记后 `py_compile` PASS；179 行超 100 行预算（<8 KB），按 PL-1.10 先例不裁剪披露）。〕
+
+---
+id: TRAP-region-atomic-4d-bshd
+kind: trap
+family: [attention]
+apis: [T.atomic_add]
+dtype: [fp32]
+device: 910B4
+status: verified
+origin_task: TileOPs-_gqa_bwd_kernel-20261018T145922Z（DESIGN §0.6 R3 的 910B3 首验在 910B4 重验）
+toolchain: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+source: DESIGN §0.6 R3 / §9 R1
+repro: repro/TRAP-region-atomic-4d-bshd.py
+---
+
+### rank-reduced 4-D BSHD 区域 `T.atomic_add` 静默写错（910B4 + CANN 9.0.0 重验，2026-10-18）
+
+- 形态：`T.atomic_add(dst[bz, r0:r0+ROWS, h, 0:D], src_ub, [ROWS, D])`，`dst=(B,S,H,D)`、`H>1`、`D != H*D`、`h=5`（中间 head）。
+- 静态 extent：目标区 `[0, 16:48, 5, :]` 只有 **256/2048** cell == 1.0，**区外 1792** cell 被写坏
+  （被当作"从该偏移起的连续平铺块"）。
+- 动态 extent（`T.min(ROWS, S-r0)`）直接前端报错：`int() argument must be a string, a bytes-like object or a real number, not 'Var'`。
+- **可用替代（逐位正确，7× 快）**：把该张量声明为 `(B*S, H*D)` 视图，工厂返回薄闭包做
+  `dq.view((B*S, H*D))`（对外签名不变），写 `T.atomic_add(dq2[flat:flat+bn, h*D:(h+1)*D], blk, [bn, D])`。
+  该形态是 rank-2 显式切片跨步区域，实测目标区全中、区外 0（本任务 L0/L1 全绿）。
+- 重验触发词：`python repro/TRAP-region-atomic-4d-bshd.py --mode static` → 打印 `TRAP reproduced`（若打印 `FIXED` 则后端已修）。
+- 同族纪律：region 类 API 的「形态三要素」= 张量 rank / 索引方式（标量 vs 切片）/ 目标行 stride 关系，任一不同即须独立实测。
+- 〔2026-10-18 蒸馏核验〕**本条承接 pending `VP-2026-0283` 的 ①**（rank-reduced 4-D 区域形态静默写错）并首次带**知识域 repro**（910B3 首验 + 910B4 重验，跨设备两证）；该提案残余价值 = ② `T.atomic_add` 是真 fetch-add（非零初值 `5.0+1.0 ⇒ 6.0`，零初始化探针无法区分累加与覆盖）、③ 20 block 并发同址精确无丢更新、边界 `H == 1` 或 `dim == H*D` 时缺陷被掩盖——仍待同族任务以 repro 补齐后合入，不与本条重复登记。
+- 与 `constants.md` `CONST-atomic-writeback-forms` 的**单价**结论分账：本条是**语义/形态**（可用不可用），单价阶梯（逐行 224 ns/行 vs 区域 32 ns/行）属常数条目；二者互链。
+
+---
+id: TRAP-dev-subid-zero-mix
+kind: trap
+family: [mixcv, attention, expert]
+apis: [T.Kernel, T.Scope]
+dtype: [fp16, bf16]
+device: 910B4
+status: verified
+origin_task: TileOPs-_gqa_bwd_kernel-20261018T145922Z（PL-1.13 适用域再收窄）
+toolchain: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+source: PL-1.13-aiv-dup-subid-split（2026-10-15 已收窄到 Mix kernel）
+repro: repro/TRAP-dev-subid-zero-mix.py
+---
+
+### Developer 模式 Mix kernel 的 `subid` 恒为 0（Vector 程序在双 AIV 上复制执行）
+
+- 探针：`with T.Kernel(4, is_npu=True) as (cid, subid): out[cid*2+subid] = 1 + subid`
+  → `out = [1,0,1,0,1,0,1,0]`、`max = 1.0`（从无 2.0）⇒ **`subid` 恒为 0**。
+- 含义：本工具链**Developer 模式**的 Mix kernel 无法用 `subid` 切分 Vector 工作；按 subid 切分会静默丢一半行
+  （本任务 Stage 4 r4 实测：dq/dk/dv 全错，tier1 超差 12.5 万点，`(1,512,8,64)` fp16）。
+  ⇒ `PL-1.13` 的 subid 分片**只适用于 Expert 双 Scope Mix kernel**（`T.Scope("C")`/`T.Scope("V")` + 显式同步）。
+- 冗余判据（真实 kernel，非探针）：两个 AIV 子块的 `GM_to_UB_datas` 相同而 `UB_to_GM_datas` 只在 vector0 出现
+  （本任务 `(4,512,32,128)` fp16：45045 vs 43698 KB / 16432 vs 0 KB）⇒ Vector 装载与计算各做两遍、原子写单份。
+  该冗余是 Developer 模式 Mix kernel 的固有成本（约 AIV 侧 2×），只能靠切 Expert 双 Scope 消除。
+- 重验触发词：`python repro/TRAP-dev-subid-zero-mix.py` → `max = 1.0`（若出现 2.0 说明后端已支持 subid 分片）。
+- 〔2026-10-18 蒸馏核验〕`attention.md` `PL-1.13-aiv-dup-subid-split` 的适用域已同步做**第二级收窄**（只适用 Expert 双 Scope Mix kernel），并在 front-matter 记本任务溯源；能力缺口侧登记 `CG-2026-0039`（Developer 模式无可用 AIV 子块索引 ⇒ AIV 侧 2× 冗余为固有成本，消除需切 Expert 双 Scope，估计 ~20–30%）。

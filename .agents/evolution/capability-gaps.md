@@ -1625,7 +1625,7 @@ created_by: adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_k
 last_seen: 2026-10-15 adaptive_max_pool2d_with_indices-_adaptive_max_pool2d_with_indices_kernel-20261015T100705Z Stage 4
 ```
 
-### CG-2026-0030（2026-10-16 Stage 5 重试段补**形态②**：大 shape × fp16 触发同一后端段错误）
+### CG-2026-0030（2026-10-16 Stage 5 重试段补**形态②**：大 shape × fp16 触发同一后端段错误；**2026-10-18 补形态③（未改动 fwd × bf16 smoke，910B4）→ recurring**）
 
 ```yaml
 gap_id: CG-2026-0030
@@ -1678,6 +1678,29 @@ evidence:
     provenance 形态 = 单算子 report（需整包 fwd+bwd 与 TileOPs 报告链），暂无法最小化为
     知识域 repro ⇒ 形态② 在 pattern-library 侧标 `repro-missing`。
   - 未文档化假设：docs/ 无 bishengir-compile 形状相关缺陷清单；估计依据为两形态的实测记录
+  - 〔形态③（2026-10-18，task `TileOPs-_gqa_bwd_kernel-20261018T145922Z` Stage 4 终态验收段）〕
+    **未改动的 fwd kernel**（`multi_head_attention_kernel/_gqa_prefill_fwd_kernel.py`，mtime
+    2026-10-13，本任务零改动）在 `(B,S,H,D)=(1,1024,8,64), causal=False, bf16` 上
+    `bishengir-compile` **段错误（rc −11，`Stack dump without symbol names`，栈顶
+    `__kernel_rt_sigreturn`）**：standalone 脚本直接构造 `MultiHeadAttentionFwdOp` 复现
+    （`TILELANG_ASCEND_MODE=Expert` 与 `Developer` 均复现，session-local，未留存脚本）；
+    pytest 侧 `tests.ops.test_multi_head_attention::test_mha_fwd[smoke-fwd-bf16]` 复现
+    （`(1,512,8,64)` causal，manifest smoke 档），`smoke-bwd-bf16` 因
+    `MhaBwdWorkload.gen_inputs` 先跑 fwd 被连带；**同 shape/dtype 用
+    `perf_opt/_gqa_bwd_kernel.py` 与 baseline `_gqa_bwd_kernel.py` 直调均编译运行正常**
+    ⇒ 主 kernel 无罪、与 Stage 4 调优无关。
+    证据（任务工作区，未上库，允许失效）：
+    `examples/TileOPs/reports/tileops/20261018_174830_288542_MultiHeadAttentionBwdOp/`（任务工作区）
+    （`summary.correctness_failed=4`：fwd/bwd × fp16/bf16）与同前缀
+    `20261018_175519_617768_*` / `20261018_175715_860147_*`
+    （`correctness_failed=2`：仅 bf16 两例；`benchmark_requested=false`）——同一测试文件
+    **失败集合跨 run 不稳定**（fp16 侧一次失败两次通过），说明触发点对运行态/编译缓存敏感，
+    而非固定 shape 表；对照 `20261016_082438_849619_*`（910B3 + 较早 build）同测试文件
+    correctness 12/12、仅 benchmark 失败 2 例 ⇒ **形态③是设备/工具链敏感的形态**。
+  - 〔形态② 在 910B4 未复现（2026-10-18）〕`(B=1,H=64,D=128,S=2048,fp16)` 在本任务 8 个
+    tune workload 中编译并运行正常（baseline 与 final 均有有效 msprof profile，
+    `llama-3.1-70b-long/fp16` 94 077 → 14 231 µs）⇒ 形态② 的设备/版本适用范围收窄到
+    910B3 + 2026-10-16 build 一侧；**不等价于缺陷已修复**。
 workaround: >-
   〔形态①〕该 shape 档按「工具链崩溃（非精度问题）」单独记录为 warn-only，不做精度断言；
   分层测试的 WARN 通道须区分 `[toolchain-crash]` 与 `[precision-record]` 两类（同一通道混记
@@ -1687,17 +1710,82 @@ workaround: >-
   `summary.benchmark_failed=2`），报告整体降级 `partial` 但 correctness 独立判定为 pass；
   可选的可用形态未验证（换 dtype 档 bf16 可正常 profile+build ⇒ bf16 是该 shape 下当前唯一
   可用档）。
-occurrences: 1
-tasks: [multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（函数级 _gqa_bwd_kernel Stage 3，形态①）, multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z（Stage 5 重试段单算子 report benchmark，形态②——同 op / 同环境 / 同一任务谱系的 Stage 5 重试段，按同 op 谱系**不计独立 occurrences**，故 occurrences 维持 1）]
+  〔形态③〕端到端验收绕法 = **把失败集合归因到未改动的兄弟 kernel + 复核跨 run 稳定性**，
+  据此把任务判为「tuned kernel 已合格、wrapper 不翻转」（本任务按 optimize §4 保持 baseline
+  import，`python perf_opt/_gqa_bwd_kernel.py --level all` 独立全绿）；**不得**依据该
+  correctness 失败回退 tuned kernel 本身，也不得据此把任务判成 kernel 回归。
+  可用的 fwd 侧形态未验证（同 shape 的 fp16 在本机两次通过、一次崩溃 ⇒ fp16 档可重试，
+  但跨 run 不稳定，不作承诺）。
+occurrences: 2
+tasks: [multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（函数级 _gqa_bwd_kernel Stage 3，形态①）, multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z（Stage 5 重试段单算子 report benchmark，形态②——同 op / 同环境 / 同一任务谱系的 Stage 5 重试段，按同 op 谱系**不计独立 occurrences**，故当时 occurrences 维持 1）, TileOPs-_gqa_bwd_kernel-20261018T145922Z（Stage 4 终态验收段，形态③——**跨设备 910B4 / 跨 build 2fb23ee / 新形态（未改动 fwd + bf16 smoke）**，计 1 次独立识别 ⇒ 1→2）]
 toolchain_stamp: >-
   tilelang 0.1.2 dev root build（/workspace/tilelang-mlir-ascend/build）+ CANN 9.0.0
   （/usr/local/Ascend/cann-9.0.0/bin/bishengir-compile）+ Ascend910B3（AIC=20 / AIV=40 /
-  UB 196608 B）/ 2026-10-16
-status: open
-proposal: none（未达 recurring；建议方向 = ① 上游定位两触发点（提供最小 .npuir 与
-  crash stack，形态① 已有可最小化 repro）；② 在 `bishengir-compile` 崩溃时输出「已进入
-  pass 阶段 + 触发 shape/dtype」的最小上下文，避免 `PLEASE submit a bug report` 无信息量
-  ——形态② 连「哪个 IR 构造触发」都无从判断，只能记录；issue 须用户批准）
+  UB 196608 B）/ 2026-10-16；
+  形态③ 追加：tilelang `0.1.2+2fb23eee1c6293affa903e631c1d8fb018cf173b`（dev root build，
+  `git log -1` = `2fb23ee`）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+status: recurring
+proposal: >-
+  〔2026-10-18 达 recurring（3 形态 / 2 设备 / 2 build），产出补齐提案；issue 须用户批准后
+  按 tilelang-github-operations 建（标题带 `[npuir]` 前缀）〕
+  目标层 = BishengIR（`bishengir-compile`，CANN 9.0.0）。
+  建议改动：① **崩溃可诊断化**——`NPU IR opt failed` 路径在崩溃前输出「已进入 pass 名 +
+   触发 op/算子清单 + 关键 shape/dtype 常量」，并在发布包内自带 `llvm-symbolizer`（当前
+   `Stack dump without symbol names` 使三形态无法比对触发点）；② 修复 bf16 小 shape 的
+   fwd 触发点（形态③：`(1,512,8,64)`/`(1,1024,8,64)` causal/non-causal）；③ 回归防呆——
+   把 `S==32`（形态①）与 `(1,64,2048,128) fp16`（形态②）加入 CI 编译冒烟。
+  量化收益：形态③是 `MultiHeadAttentionBwdOp` 本轮**无法完成端到端验收的唯一原因**
+  （3 次单算子 report correctness 失败、benchmark 全部 skipped；tuned kernel 独立回归全绿）；
+  形态①②分别使 `S=32` 档不可编译、大 shape fp16 bench 档缺性能记录。
+  受影响算子：attention 族（MultiHeadAttentionFwd/BwdOp 及其 fwd 主 kernel），形态①另及
+  任何含「persistent + Pipelined + 动态 extent copy + gemm + 行原子」骨架的 kernel。
+  诊断成本：本任务为定征该现象额外消耗 3 次 report 重跑（每次 12 例全量 correctness）。
 created_by: multi_head_attention-MultiHeadAttentionBwdOp-20261016T015430Z（_gqa_bwd_kernel Stage 3 自登记，2026-10-16）
-last_seen: 2026-10-16 multi_head_attention-MultiHeadAttentionBwdOp-20261016T082329Z Stage 5 重试段单算子 report benchmark（形态② = `(B=1,H=64,D=128,S=2048,fp16)` 大 shape × fp16 段错误；形态① 见 Stage 3 L2 warn-only）
+last_seen: 2026-10-18 TileOPs-_gqa_bwd_kernel-20261018T145922Z Stage 4 终态验收段（形态③ = 未改动 fwd kernel 在 `(1,512,8,64)` bf16 崩溃，910B4 + `2fb23ee`；同任务另记录形态② 在 910B4 未复现）
+```
+
+### CG-2026-0039（2026-10-18 新增：Developer 模式 Mix kernel 无可用 AIV 子块索引）
+
+```yaml
+gap_id: CG-2026-0039
+layer: Frontend API / codegen（`T.Kernel(..., is_npu=True)` 的 `subid` 语义）
+capability: >-
+  Developer 模式的 Mix kernel（同一 kernel 内既有 `T.gemm` 又有 v-prefix 向量 op，但未写
+  显式 `T.Scope("Cube")` / `T.Scope("Vector")`，Cube/Vector 划分由编译器完成）中，
+  `with T.Kernel(n, is_npu=True) as (cid, subid)` 的 **`subid` 恒为 0**——不存在可用的
+  AIV 子块索引，因而无法按 AIV 切分 Vector 侧工作。docs 侧只出现 `(cid, subid)` 的用法示例
+  （`docs/Tilelang.language/同步管道操作/T.sync_block_set.md` L47、
+  `T.sync_block_wait.md` L49），**未标注 `subid` 的取值语义与生效前提**
+  （Expert 双 Scope vs Developer）——属未文档化假设 + 实测证伪。
+blocked_algo: >-
+  「按 AIV 子块拆分 Vector 行区间 / dq 原子环」（PL-1.13 的蛇形分片形态）在 Developer
+  模式不可用：按 `subid` 切分会把一半行交给永不执行的 `subid=1`（本任务 r4 分支
+  dq/dk/dv 全错、tier-1 超差 12.5 万点）。被迫保留 **AIV 侧 2× 冗余**（Vector 程序在两个
+  AIV 上复制执行：两 AIV `GM_to_UB_datas` 相同 45045 vs 43698 KB/核，`UB_to_GM_datas`
+  只在 vector0：16432 vs 0 KB）⇒ 消除该冗余需整 kernel 切 Expert 双 Scope（结构级重写），
+  估计剩余 ~20–30% 性能空间在本轮不可达。
+evidence:
+  - 探针（知识域 repro）：`pattern-library/repro/TRAP-dev-subid-zero-mix.py`——`1+subid`
+    写入 `out[cid*2+subid]`，实测 `max=1.0`（从无 2.0），`py_compile` PASS
+  - 真实 kernel 判据：本任务 `perf_opt/profiles/…` 的两 AIV `GM_to_UB_datas` /
+    `UB_to_GM_datas` 对比（见 opt_log §4.5）；r4 精度 FAIL（`(1,512,8,64)` fp16，
+    tier1 超差 12.5 万点）
+  - docs（未文档化假设的依据）：
+    `docs/Tilelang.language/同步管道操作/T.sync_block_set.md`、
+    `docs/Tilelang.language/同步管道操作/T.sync_block_wait.md`（仅示例，无 subid 语义小节）；
+    全 `docs/Tilelang.language/` + `docs/developer/` grep `subid` 仅这 2 处命中
+  - 知识域条目：`pattern-library/traps-compiler.md` `TRAP-dev-subid-zero-mix`（含 repro）+
+    `attention.md` `PL-1.13-aiv-dup-subid-split` 第二级收窄（只适用 Expert 双 Scope）
+workaround: >-
+  ① Developer 模式接受 Vector 程序 2× 复制执行（不改结构，零风险，本任务选此）；② 走
+  Expert 双 Scope（显式 `T.Scope` + `sync_block_set/wait`）换回 subid 分片——属结构级重写，
+  本任务未做（opt_log §6.3 残留 1）。判据：任何「按 subid 分片」的收益须先核验 GM 流量 /
+  指令数 / 输出覆盖率不按比例下降（PL-1.13 采纳纪律）。
+occurrences: 1
+tasks: [TileOPs-_gqa_bwd_kernel-20261018T145922Z]
+toolchain_stamp: tilelang 0.1.2+2fb23eee1c6293affa903e631c1d8fb018cf173b（dev root build）+ CANN 9.0.0 + Ascend910B4（AIC=20 / AIV=40 / UB 196608 B）/ 2026-10-18
+status: open
+proposal: none（未达 recurring；建议方向 = 在 `T.Kernel` 与 `T.sync_block_*` 文档补齐 `subid` 的取值语义与生效前提〔Expert 双 Scope / Developer 无〕，或在 Developer 模式对 `subid` 的使用给出编译期告警〔恒 0 极易被误用为分片索引，且失败形态是静默丢一半工作〕；issue 须用户批准）
+created_by: TileOPs-_gqa_bwd_kernel-20261018T145922Z（Stage 4 自登记经 evolver 核验，2026-10-18）
+last_seen: 2026-10-18 TileOPs-_gqa_bwd_kernel-20261018T145922Z Stage 4（r4 分支精度 FAIL + 探针 + 双 AIV profile 判据）
 ```

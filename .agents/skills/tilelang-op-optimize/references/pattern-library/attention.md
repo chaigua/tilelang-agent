@@ -162,8 +162,8 @@ apis: [T.Kernel, T.Scope, sync_block_set, sync_block_wait, T.serial]
 dtype: [fp16, bf16]
 device: 910B2C
 status: verified
-origin_task: ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z（Stage 4；2026-09-17 蒸馏 D2 溯源归位——原回写误标 20260917T0855Z，实际 task_id 以 .stage_state.json 为准）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（**适用域收窄**：纯 Vector kernel 的 `subid` 恒为 0，本条不适用）
-toolchain: tilelang 0.1.2+1990aa9fe4 / CANN 8.5.0 / Ascend910B2C / 2026-09-17；2026-09-20 4515de8 重验存活（task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z 重跑复刻蛇形分片，全量门禁绿）；**2026-10-15 适用域收窄**（tilelang 0.1.2+489385e9 / CANN 9.0.0 / Ascend910B3）
+origin_task: ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260917T035420Z（Stage 4；2026-09-17 蒸馏 D2 溯源归位——原回写误标 20260917T0855Z，实际 task_id 以 .stage_state.json 为准）/ adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（**适用域收窄**：纯 Vector kernel 的 `subid` 恒为 0，本条不适用）/ TileOPs-_gqa_bwd_kernel-20261018T145922Z（**2026-10-18 第二级收窄**：Developer 模式 Mix kernel 的 `subid` 亦恒为 0，本条只适用 Expert 双 Scope）
+toolchain: tilelang 0.1.2+1990aa9fe4 / CANN 8.5.0 / Ascend910B2C / 2026-09-17；2026-09-20 4515de8 重验存活（task ssd_chunk_scan-_ssd_chunk_scan_fwd_kernel-20260920T122332Z 重跑复刻蛇形分片，全量门禁绿）；**2026-10-15 适用域收窄**（tilelang 0.1.2+489385e9 / CANN 9.0.0 / Ascend910B3）；**2026-10-18 第二级收窄**（tilelang 0.1.2+2fb23ee / CANN 9.0.0 / Ascend910B4）
 repro: repro/PL-1.13-aiv-dup-subid-split.py
 ---
 
@@ -172,6 +172,10 @@ repro: repro/PL-1.13-aiv-dup-subid-split.py
 > 该陷阱的迷惑性极高：探针 Task Duration 出现 **-20%~-41% 的「加速」**，唯一破绽是 **`GM_to_UB_datas` 精确减半**（实测 global 拷贝 kernel 36.8 → 18.4 KB/block）。
 > **采纳纪律**：任何「分片/双核/按 subid 拆分」类收益，采纳前必须核验 GM 流量、指令数或输出覆盖率之一未按比例下降。
 > 判据（NPU 可运行）：`repro/PL-1.13-vector-kernel-subid-zero.py`——kernel 把 `1+subid` 写入 `out[cid*2+subid]`，断言 `max(out)==1.0`（恒无 2.0）⇒ subid 恒 0。溯源：`examples/TileOPs/tileops/kernels/pool/adaptive_max_pool2d/adaptive_max_pool2d_kernel/perf_opt/{opt_log.md#3.1, probe_subid.py}`（任务工作区）。
+
+> **⚠️ 适用域再收窄（2026-10-18，attention-backward `_gqa_bwd_main` Stage 4 实测）**：本条的 subid 分片**只在 Expert 双 Scope 的 Mix kernel 下成立**（显式 `T.Scope("Cube")` / `T.Scope("Vector")`，`T.Kernel(..., is_npu=True) as (cid, subid)` 的 `subid` 才有 0/1 语义）。
+> **Developer 模式**的 Mix kernel（无显式 Scope、Cube/Vector 块由编译器划分，`T.Kernel(n, is_npu=True) as (cid, subid)`）中 `subid` **恒为 0**——探针把 `1+subid` 写入 `out[cid*2+subid]`，实测 `out=[1,0,1,0,…]`、`max=1.0`（从无 2.0；`repro/TRAP-dev-subid-zero-mix.py`）。按 subid 切分 Vector 行区间会**静默丢一半行**：本任务 r4 分支 dq/dk/dv 全错、tier-1 超差 12.5 万点（`(1,512,8,64)` fp16），而 profile 上还表现为「GM 流量近乎减半」的伪收益。
+> 该模式下 Vector 程序在两个 AIV 上**复制执行**（真实 kernel 判据：两 AIV `GM_to_UB_datas` 相同 45045 vs 43698 KB/核，而 `UB_to_GM_datas` 只在 vector0：16432 vs 0 KB）⇒ AIV 侧 2× 冗余是固有成本，只能靠切 Expert 双 Scope 消除（本任务未做，留 ~20–30% 结构空间；缺口登记 `CG-2026-0039`）。条目细节见 `traps-compiler.md` `TRAP-dev-subid-zero-mix`。
 
 ### Mix kernel 双 AIV 重复执行与 subid 分片（−28~−36%）
 
@@ -235,3 +239,34 @@ repro: repro/PL-1.18-floor2-wins.py
   3. **配置路径覆盖缺口（R→D）**：tuned bn=128 钳位后 N_TILES 恒为 1，kernel 自带 L0/L1 测试**永不触达** N_TILES_MULTI 路径；而 tileops wrapper 的 GPU 启发式默认 bn=min(64,N) 会走 multi 路径——结构改动涉及配置分支时须补 bn<N 探针（本会话 `probe_bn64.py` 4 case 覆盖双 dtype×尾块×双 pp）。与旧任务"bf16×非整除 shape"教训同族：**分支验证覆盖=shape 维度 × 配置路径维度的笛卡尔积**。
 - **方法论**：稳态画像暴露的「新瓶颈」不必然存在「可打空间」——段数是中继结构的物理流量；结构候选受数学事实（band 行绑定）/ L2 局部性（工作集）/ L1 端口（读写竞争）三重约束夹击，逐一实测是唯一裁决方式。单 buffer 消 idle 的正路是减少段数本身（数学/结构层），而非更深流水/更早预取。
 - 溯源：`examples/ssd_chunk_scan/_ssd_chunk_scan_fwd_kernel/perf_opt/`（opt_log R7/R8 + §5 清单第二轮五行；perf_records round 7/8；分支文件 _opt_v10/v11/v12/v13/v14_*.py）。
+
+---
+id: PL-causal-skip-task-mapping
+kind: pattern
+family: [attention, mixcv, persistent]
+apis: [T.Kernel, T.serial, T.Pipelined]
+dtype: [fp16, bf16]
+device: 910B4
+status: verified
+origin_task: TileOPs-_gqa_bwd_kernel-20261018T145922Z
+toolchain: tilelang 0.1.2+2fb23ee + CANN 9.0.0 + Ascend910B4（20 AIC）/ 2026-10-18
+source: DESIGN §9 R4（runtime start 不可用的兜底）
+repro: repro/PL-causal-skip-task-mapping.py
+---
+
+### causal 块级跳过 + 「`by` 必须最慢」的任务映射（−21%，逐位精确）
+
+- **跳过形态**：`T.Pipelined` 的 **runtime start** 在本工具链不可用（伪 `cbuf overflow`），但循环**体**可以加
+  runtime `if c0 + real_n > r0:`（`real_n` 为尾块实长）。整块落在掩码三角内的迭代 P ≡ +0.0 ⇒ dv/dk/dq 贡献恰好 0，
+  跳过**逐位精确**（本任务 L0 的 causal/GQA/tail 全绿，且 max_diff 与 baseline 逐位同值）。
+- **负载模型（关键）**：跳过后每任务工作量 `work(by) = n_q − ⌊by·bm/bn⌋` **随 `by` 单调递减**。
+  沿用 `uid = it*cores + cid`（`by` 最快下标）时，20 核拿到的 `by` 组合不同：
+  `max/mean = 1.35×`（S=512 档）/ 1.10×（S=2048 档）⇒ 1.78× 的理论迭代下降只兑现 **1.31×**。
+  改 `by = uid // (B*H)`、`bz = (uid % (B*H)) // H`、`bx = uid % H`（零算术变化）后 max/mean = 1.01–1.02×。
+- **实测**（`_gqa_bwd_main`，(4,512,32,128) fp16，bm=64/bn=32）：12068 →（仅跳过）9195.5 →（加映射）**7254.3 µs**，
+  与解析模型 1.31× / 1.75× 一致（repro 逐行断言）。
+- **代价/边界**：body guard 在**尾块** shape 上抬高 UB（本任务 `(2,300,4,4,128)` causal：217 KB > 192 KB）⇒
+  用 trace-time 开关只在 `seq_len % tile == 0` 时启用；非整除 shape 走 baseline 形态（结果不变、无块级跳过）。
+- 溯源：`examples/TileOPs/.../multi_head_attention_kernel/perf_opt/opt_log.md` §3 R1/R2。
+- **repro 形态**：`repro/PL-causal-skip-task-mapping.py` 是**纯解析模型**（无需 NPU）——断言两种任务映射的 `max/mean` 工作量比（1.35× vs 1.01–1.02×）并打印「理论迭代下降 × 负载不均后的有效加速」；实测锚点（9195.5 → 7254.3 µs）写在条目正文与 repro 头部，脚本内不锁绝对时延。
+- 〔2026-10-18 蒸馏核验（P 类治理注记）：本条为 **P（模式方法）**，任务内直写使 `status: verified` 先于 Tier 1 的二次独立确认门。技术内容与数字经逐项对账（opt_log §3 R1/R2 表 + `perf_records.jsonl` 的 `candidate` 8 行）后保留，**证据档按 1/2 计**，已入队 `VP-2026-0334`（P，1/2）；第二独立任务确认后转 2/2。与同族既有条目互补：`PL-1.9-twophase-causal` 管 causal 域两相位适配、`PL-1.11-causal-mask-scalartrap` 管掩码算术形态，本条管**块级跳过 + 静态任务映射**，三者不重复。〕

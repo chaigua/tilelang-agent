@@ -65,8 +65,9 @@
 | PL-1.9-twophase | 两相位重构达标 + morph 阶梯方法 + causal 域画像与宽块解锁反转（第五轮） | verified |
 | PL-1.11-causal-mask-scalartrap | 第五轮 causal 域 14.2x：vcmp int16 全形态标量化陷阱 + 算术惩罚掩码 + zbuf l1_b 零初始化（NaN 边界）+ UB ×1.10–1.12 开销 | verified |
 | PL-1.12-task-pipeline-depth2 | TASKDONE 屏障冗余审计（全域 −7~−21%）+ Cube 深度 2 任务流水 + f32 S 载体；Vec 侧同构 blocked；r9 bn 钳位域×bm80 UB 守卫（判据/守卫式见条目） | verified |
-| PL-1.13-aiv-dup-subid-split | Mix kernel 双 AIV 默认重复执行 Vector 程序；subid 边界表达式分片（蛇形均衡）实测 −28~−36%（判据：两 AIV 子块指标相同）；**2026-10-15 适用域收窄**：纯 Vector kernel `subid` 恒 0，本条仅适用 Mix kernel（否则静默丢一半工作，假收益破绽 = GM 流量精确减半） | verified |
+| PL-1.13-aiv-dup-subid-split | Mix kernel 双 AIV 默认重复执行 Vector 程序；subid 边界表达式分片（蛇形均衡）实测 −28~−36%（判据：两 AIV 子块指标相同）；**2026-10-15 收窄**：纯 Vector kernel `subid` 恒 0；**2026-10-18 第二级收窄**：Developer 模式 Mix kernel `subid` 亦恒 0（`1+subid` 探针 max=1.0）⇒ 本条**只适用 Expert 双 Scope**（否则静默丢一半工作，假收益破绽 = GM 流量精确减半；见 TRAP-dev-subid-zero-mix / CG-2026-0039） | verified |
 | PL-1.18-ssd-steady-structure-floor | 稳态画像以最长任务串 workload 为准 + 段数记账更正（指令数互证法）+ 三胜出（几何 1.078×）+ 十方向否决 + 重建复证（+9.7%；明细见条目） | verified |
+| PL-causal-skip-task-mapping | causal 块级跳过（body runtime guard，逐位精确）+ **`by` 应为最慢下标**：否则静态任务映射 max/mean 1.35×，把 1.78× 跳过收益压到 1.31×；改后 1.01×，实测 −21%（**P 类证据档 1/2**，待第二独立任务确认 VP-2026-0334） | verified |
 | PL-1.16-expert-dualscope-bypass | Developer 阻塞（标量化 / 条件构造崩溃 / persistent+gemm 崩溃）的结构级绕法：Expert 双 Scope + pass_configs 硬边界（attention+ssd 两证） | verified |
 
 ### traps-compiler.md — 编译器/解析器陷阱
@@ -114,6 +115,8 @@
 | TRAP-window-decimation-primitives | 窗口类「折叠成宽归约」的三种抽取原语实测**全部不可用**：`T.gather` ≈**1.8 ns/元素** / `extract_slice` 行距不匹配 ⇒ UB→GM→UB 物化**且被标量化**（301.9→**23328 µs**，scalar 22878）/ 位置主序改造仍 998.92 µs > baseline 302 µs（含 repro）；**2026-10-17 收窄**：④ 可用原语 = `T.deinterleave(channel_nums=2)` 的「整行滑窗 max + 2 相抽取」（`s_w==2` 窗口类，max_pool2d −55.8%~−84.8%，三 dtype 逐位 0）——被否的是三条路径不是整类 | verified |
 | TRAP-deinterleave-two-phase-only | `T.deinterleave` 相位数上限实测 = **2**：`channel_nums=2` 语义正确（含 region 目标），`=3` → `bishengir-compile` **SIGABRT**（rc=−6，NPU IR 已生成后崩溃；docs §2.3 称「特殊限制：无」未标注上界）；**2026-10-17 新增形态**：落在**运行时 `if/else` 分支**内被 lowering **静默丢弃**（hivm IR 无该 op、输出全错）⇒ 绕法 = 奇偶在 **trace 期展开**（含 repro + 重验触发词） | verified |
 | TRAP-npuir-ir-gate-loop-scope | IR 形态门禁的 `scf.for` / `if_then_else` **禁令按路径/变体限定**——驻留（单 tile）路径 lowering 无 `scf.for`，列分块路径的静态 `T.serial` tile 循环**合法地**含 `scf.for`；把 `TRAP-parallel2d-bm-ge2-scalarize` 的禁令逐字套到 tiled 变体会对**完全向量化**的 kernel 报假失败；正确门禁 = 对所有变体断言 `vreduce <mode>` + `reduce_dims=[1]` + 无 `arith.cmpf`，禁令只对驻留变体（含 repro，compile-only） | verified |
+| TRAP-region-atomic-4d-bshd | rank-reduced 4-D BSHD 区域原子静默写错（目标区 256/2048、区外 1792 被写坏；动态 extent 前端报错）——910B4 重验；绕法 = `(B*S,H*D)` 视图 + rank-2 显式切片跨步区域（7× 快、逐位正确） | verified |
+| TRAP-dev-subid-zero-mix | Developer 模式 Mix kernel 的 `subid` **恒为 0**（`1+subid` 探针 max=1.0）⇒ PL-1.13 的 subid 分片只在 Expert 双 Scope 成立；冗余判据 = 两 AIV 的 `GM_to_UB_datas` 相同、`UB_to_GM_datas` 只在 vector0（AIV 侧 2× 固有成本） | verified |
 
 ### traps-runtime.md — 运行时/数值/语义陷阱
 
@@ -148,6 +151,7 @@
 | CONST-msprof-ratio-compute-roofline | msprof roofline `Ratio` = `(total_fops/TaskDuration)/computility`，**不与 latency 成反比**（结构改写同向压低分子 `total_fops`：10.12x 时延仅换 1.26x / 1.60x 时延仅换 1.076x）；设 Ratio 硬目标前必算上限 `(total_fops/时延地板)/computility`（resnet ≈12% ⇒ 70% 结构不可达；本任务三条目标线全部不可达）；分子恒定时退化为 `∝1/duration`、分母随 op 混合比塌缩可虚高 | verified |
 | CONST-mte2-degradation | MTE2 带宽退化曲线 + 混合流量地板 + L2 驻留口径（数字见条目） | verified |
 | CONST-copy-floor-method | copy-floor 标定法（方法学） | verified |
+| CONST-atomic-writeback-forms | fp32 写出形态单价阶梯：逐行 1-D 原子 **224 ns/行** vs rank-2 连续 2-D 区域原子 **32 ns/行** vs 区域 store 7.5 ns/行（同字节、20 block）⇒ 7× 形态惩罚，与流量放大分账；跨步 BSHD 走 2-D 视图 | verified |
 | CONST-flag-id-budget | flag id 预算 ≤15/核（n-block 下标可贴限） | verified |
 | CONST-store-fixpipe-gm-only | store_fixpipe 仅 L0C→GM（跨引擎传输强制 GM 往返） | verified |
 | CONST-aicore-910B2C | 物理核数 24（910B2C）/ **20（910B3 实查）** + persistent 任务平衡公式；跨型号不可复用本值 | verified |
@@ -204,6 +208,7 @@
 | CASE-reduction-any-migration | reduction 族**第三个 logical_reduce / 谓词 OR 类**迁移（any kind → bool 输出/int8 载体 + 补式 `1 − min[x==0]` 与 `T.vmin` no-alias 三件套 + 单位元 1.0；与姊妹 `all` 四项全反转（max↔min/补式方向/vmax↔vmin/0.0↔1.0）+ 判别性输入方向相反（高置零 ~70%）+ 空 OR 单位元 False 与 all 相反；两新 trap（`TRAP-any-predicate-reduction-pair` / `TRAP-npuir-ir-gate-loop-scope`）+ `S2-MIG-DIM0` 第四次误报 + `integrate_kernel.py` 预置选择块非幂等（重复表头）；集成 42/42 + bench 6/6 + msprof 3 例有效）；**Stage 4 续档**（910B4 / `c316b0e`：4 轮 7 候选 `budget_exhausted`，唯一采纳 resident `IND_DTYPE=f16` **−4.73%（4/4）/−6.08%（3/3）**，C 路径/尾块保 f32 且四类结构变体全 tie + codegen 逐字节相同；读地板 12.48/6.94/1.77 µs、tile ≥8192 饱和、静态 copy extent +19.8% 证伪；双轨验收 3d 579 GB/s 达线 / 32k 90.8% / 4k 结构不可达；A/B arm 误配置与 L0 配置期望误报两条 R 提案） | verified |
 
 | CASE-attention-mha-bwd-migration | attention 族**首个 attention-backward 迁移**（同文件追加进既有 fwd 包：3 个 bwd kernel 全部 `[PRECISION_PASS]` 且 conductor 二次校验；**两段终态** = 首轮 `BLOCKED_ENVIRONMENT`〔fwd Expert 核 `syn_instr_mode` 工具链错配〕→ 环境外部 shim 修复后 Stage 5 重试段 **correctness 12/12 / per-op 8/8**、benchmark partial、唯一残余 failure = `S5-ASCEND-MODE` 多 Kernel 共 wrapper 结构性冲突 ⇒ `BLOCKED_INTEGRATION`）——高密度反例档案：3 新 trap（affine cast 平面 / gemm 动态 size / UB buffer 角色冲突）+ `S==32`/大 shape fp16 后端段错误 + 逐行 1-D 行原子形态 + 源忠实 golden tier-3 判据 + gate 5 同文件追加悖论 + bwd 集成态 msprof 基线（`flash_bwd_prep` 35.2–79.7 µs / Ratio 24.1–28.9% / 1.75 TB/s）+ 环境类阻塞「只重跑受影响 Stage」820 s 实证；**2026-10-16 新增（2026-10-16 重试段续档）** | verified |
+| CASE-attention-mha-bwd-stage4 | attention-backward **主 kernel Stage 4**（`_gqa_bwd_main`，8 例 msprof **5.27–6.62×**）：写出形态阶梯（逐行原子→`(B·S,H·D)` 视图的区域原子，−45%）+ causal 块级跳过 × `by` 最慢映射（−21%）+ `bn=64`；含 r4 subid 精度全错 / r7 同步相位反向 / 尾块 UB 回退三项失败档案；durable 载体 = CONST-atomic-writeback-forms / TRAP-region-atomic-4d-bshd / PL-causal-skip-task-mapping / TRAP-dev-subid-zero-mix |
 
 ### repro/ — 最小可复现代码（ED-B）
 
