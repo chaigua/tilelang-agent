@@ -717,6 +717,20 @@ reduction 家族**第二个 logical_reduce / 谓词 AND 类** TileOPs 迁移（`
 - **门禁交互（非设计缺陷的两类返工，供后续同族任务预判）**：① `S2-MIG-DIM0` 裸子串 `"n/a"` 被源路径 `reduction/all` 命中（词边界修复见 queue VP-2026-0197）；② `S3-GOLDEN-TORCH` 要求 golden **函数体内联 `torch.*` 命名空间调用**——`x.bool().all(dim, keepdim)` 语义等价但被 AST 判失败，改 `torch.all(x, dim=dim, keepdim=keepdim)` 即过（VP-2026-0107 第三数据点；本例未产生精度语义变化，复数真值判据 `real != 0 or imag != 0` 与 Op 层契约一致）。
 - **边界声明（迁移范围）**：源的 tiled 变体 `_logical_reduce_kernel_tiled` **明确不在迁移范围**（用户约束）；其「大 N 可处理」的能力动机由 NPU 侧元素预算驱动的列分块路径承接。同工厂兄弟档案见 `CASE-reduction-countnonzero-migration`（契约相反：int64 vs bool）。
 
+### CASE-reduction-all-migration — Stage 4 续档（2026-10-18，910B4 / optimize：R′ 反向 + f16 指示平面按 path 分派）
+
+`scenario=optimize`、`stage_plan=[4]`、单 dispatch 单 attempt complete **7 706 s**、`failures=[]`、`retry_count=0`、`perf_iteration={count:3, last_improvement:4.26}`；工具链 `tilelang 0.1.2+4d2e413…`（dev root build）+ CANN 9.0.0 + **Ascend910B4**（40 AIV / UB 196 608 B，自报 roof **0.8 TB/s**）。3 个 tune workload（bool→**f32** kernel 契约）+ 3 个 smoke（仅精度）。任务书把姊妹单元的 R′（超预算单 tile 驻留）列为必做 A/B 项。
+
+- **终值**（`msprof op` `Task Duration`，`--launch-count=30 --warm-up=5`；final sha `70ecea6d…`，逐 workload `--check` 逐位 PASS）：`mask-validation-4k [32,4096]` 2.9793→**2.8127 µs**、`mask-validation-32k [32,32768]` 7.7587→**8.1120**（`no_gain`）、`3d-multidim [4,128,4096]→(128,16384)` 14.3373→**14.7120**（`no_gain`）。
+- **唯一采纳点 = resident 路径的 f16 指示平面（−4.26% / −6.4%）**：`(32,4096)` 交错 A/B/A/B 3 对 **3/3 同向 −4.26%**；第二 session 相邻对 **−6.4%**；`vec_ratio` 0.375→0.285 与 Task 同降。**按 path 分派交付**：resident=f16、column-tiled=f32、tail=f32。
+- **三条结构性否决（全部有机制归因，非"没试出来"）**：① **多开核（OP3，16→32 块）** 4k **−18.5%**，与空 kernel 地板 16→32 块的 +0.67 µs 预测同量级 ⇒ 「小 M 读主导」形态下多开核先付地板（`CONST-groupnorm-smallshape-memfloor-910B4` 第二工具链档）；② **R′（OP4/OP7）** `(128,16384)` **15.715 / 16.007 µs vs 13.967（+12.5% / +14.6%）**——单 tile 64 KB 读 1.508 µs vs 列分块 2×0.192 µs、且单缓冲丢 auto-multi-buffer（`mte2` 0.552→0.671）⇒ 与姊妹 fp16 −12.7%/−15.6% **方向相反**（形态差异：8 B/元素 131 KB vs 12.14 B/元素 198.8 KB 溢出）；③ **UB tile cap（OP5）** 32k 4×8192→2×16384 **−2.6%**（读单价 0.192→1.508 µs/64 KB）与 **显式 2 级流水（OP8）** −0.9%（与 auto multi-buffer 逐项相同 pipe 指标 ⇒ 同一机制、无叠加）。
+- **容量侧硬事实**：f32 指示平面 `W=16384, bm=1` **不可编译**（`ub overflow, requires 1590784 bits while 1572864 bits available` = 198 848 B = **12.14 B/元素**）⇒ DESIGN §1.6.4「fp32 16384 元素可编译」假设在本工具链**不成立**；改 f16 指示平面（−2 B/元素）后才进入 A/B。
+- **run-state 双态与跨 session 冲突（本任务最重要的方法论证据）**：同码跨 session 漂移 **5–8%**（3d：15.51 vs 14.34）。f16 在 3d 上 session 1 **−9.99%（3/3）**、session 2 **+1.22%（3/3）** ⇒ 6 对符号 **3:3、sign-test p=1.0**、判不可判定、**不采纳**。**若只做一次 A/B 就会把 run-state 假象写进交付件**。
+- **codegen 等同性作为"不改回退"的机械依据**：32k / 3d 的 final 与 Stage 3 baseline `get_kernel_source()` **sha 逐字节相同**（`c701a2088c3c4a99` / `9dbec92c8be2754`），故其相对 round-0 基准的 +4.6% / +2.6% 只能归 run-state，判 `no_gain` 而非回退；4k 不同（`a89563c7…`，已采纳的 f16 resident）。
+- **精度门禁实证（L2 唯一拦住的回归）**：f16 指示平面在 **tail ≤ 8** 误判——`N=8193`（tail=1）**22/32 行错**、`N=8200`（tail=8）**3/32 行错**，tail ≥ 64 exact；**L0 27 例 + L1 25 例全绿，只有 L2 的 `N=E_cap+1` 暴露**。修复 = 尾块保留 Stage 3 的 f32 指示链（f16 累加器并入 `mx_tail` 的 cast 在该工具链不被接受）。
+- **验收（双轨）**：族验收线 `0.7 × 0.8 TB/s = 560 GB/s`——4k **结构性不可达**（线 0.936 µs < 空 kernel 地板 1.455–1.845 µs）；32k **517 GB/s（差 7.7%）** 归因「归约单价由行宽 N 决定 vs 读单价不可兼得」（`CONST-vector-launch-overhead` 第三数据点）；3d **570 GB/s 达标**（+1.8% 余量，session 1 同码 585 GB/s）。台账 `1.75 TB/s` 口径只记录（10.7% / 29.5% / 32.6%）。
+- **durable 载体**：`layout.md PL-1.25` 第六数据点（R′ 适用域反向 + f16 分派 + 窄尾块边界）/ `constants.md CONST-aiv-read-roof-and-tiny-dma-910B4`（读单价第二自变量）/ `CONST-reduce-ub-per-element` 第七数据点（f32 12.14 B/元素）/ `CONST-vector-launch-overhead` 第三数据点（归约 pass 行宽分档）/ `CONST-groupnorm-smallshape-memfloor-910B4`（8/16 块档）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{opt_log.md, perf_records.jsonl, copy_floor_calibration.jsonl, op_cost_calibration.jsonl, check_tails.py, codegen_compare.py, profiles/ab/}`。
+
 ---
 
 id: CASE-reduction-any-migration

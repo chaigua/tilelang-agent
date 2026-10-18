@@ -6381,24 +6381,25 @@ decided_by: evolver / human / -   # 裁决者
 ## VP-2026-0317
 
 - type: R
-- title: optimize 参考模板（autotune T-4 / 采数命令）两处修正——① `run_experiments.py` 把 baseline 放进 EXPERIMENTS 使 `--all` 重复采基线（本次产出 2 组 baseline 行）；② `--kernel-name` 与 `msprof_kernel_name` 可能不一致，采数后须核对 captured op 名
+- title: optimize 参考模板（autotune T-4 / 采数命令）四处修正——① `run_experiments.py` 把 baseline 放进 EXPERIMENTS 使 `--all` 重复采基线（本次产出 2 组 baseline 行）；② `--kernel-name` 与 `msprof_kernel_name` 可能不一致，采数后须核对 captured op 名；③ `run_l0` 子进程**未注入 `PYTHONPATH`**，仓库内包布局下 `import tilelang` 失败被记成「L0 fail」；④ pipe 指标解析须处理 **pipe CSV 无 `Op Name` 列**（逐 block 行）
 - evidence:
   - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：`perf_opt/perf_records.jsonl` **22 行**中 `phase=baseline` 4 行 + `candidate_id=baseline` 4 行（同一 baseline 被 `--phase baseline` 与 `--all` 各采一次，2 组各 4 workload）；`opt_log.md#Skill-Retrospective`「需要修正的 skill 指引」首条即此
   - 同任务 `opt_log.md#§0.2`：模板 `KERNEL_NAME="main"` 生效（`prim_func.name == "main"`），但 kernel 工厂变体的 `msprof_kernel_name` 属性为 `count_nonzero_resident` 类名；report 的 `Kernel` 列显示 `main`。⇒ 在「属性名与 prim_func 名不一致」的算子上，采数名以哪个为准**不可由模板默认值保证**，须核对 profile 目录内 `OpBasicInfo*.csv` 的 captured 名
+  - 〔2026-10-18 第二任务证据（不同任务 / 同族 reduction / 910B4 + `4d2e413`），task `all-_logical_reduce_kernel-20261018T070754Z`〕③ **`run_l0` 环境缺口逐字节可复核**：`references/run_experiments_template.py` 的 `run_l0()`（L92–98）只传 `[sys.executable, branch_file, "--level", "L0"]`、**不设 `env`**（继承父进程），而 tilelang 在本仓是**仓库内包**（非 site-packages）；本任务目录层级 `kernels/reduction/all/all_kernel/perf_opt` 下父进程未必带仓库根，子进程 `import tilelang` 失败 ⇒ `returncode != 0` 被 `l0_fail` 记账，**与精度失败不可区分**。本任务本地副本须改为从 `run_bench` 取 `REPO_ROOT/TILEOPS_DIR` 并显式拼 `PYTHONPATH`（`perf_opt/run_experiments.py` L30–33 / L116–127）后才恢复。④ **pipe CSV 无 `Op Name` 列**：模板只把 `PipeUtilization` 放进 `--aic-metrics`（L65），但**不含解析器**；本任务 `run_bench._parse_pipe` 首次实现按 `Op Name` 取行名，实测该 CSV 是**逐 block 行、无 `Op Name` 列** ⇒ 指标恒为空，须加 `has_op_col` 分支并以 `main` 聚合（`perf_opt/run_bench.py` L61–80）。同任务 `opt_log.md#Skill-Retrospective`「需要修正的 skill 指引」第 1、2 条。
   - 交叉引用（不重复其内容）：queue **VP-2026-0232**（多 `@T.prim_func` 采数名派生歧义的判读与 wrapper 声明契约）/ **VP-2026-0157**（已 merged，`report --op` per-op rollup 口径）——本条只补**模板侧的核对动作**，不改契约
-- repro: repro-missing（流程规则；复现条件 = 用现行模板跑一次 `--phase baseline` 再 `--all`，统计 `perf_records.jsonl` 的 baseline 行数；并核对 profile 的 captured op 名与 `prim_func.name` 是否一致）
-- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- repro: repro-missing（流程规则；复现条件 = ① 用现行模板跑一次 `--phase baseline` 再 `--all`，统计 `perf_records.jsonl` 的 baseline 行数；② 核对 profile 的 captured op 名与 `prim_func.name` 是否一致；③ 在 `kernels/<family>/<op>/<op>_kernel/perf_opt` 深度下不加 `PYTHONPATH` 跑模板 `run_l0`，观察子进程 `ModuleNotFoundError` 被记成 `l0_fail`；④ 对任一 `PipeUtilization*.csv` 读表头，确认无 `Op Name` 列时 `_parse_pipe` 返回空）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18；第二任务证据 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
 - target_doc: .agents/skills/tilelang-op-optimize/references/autotune.md
 - delta: |
-    动作: update（T-4「实验批处理 runner」小节追加两条机械要求）
+    动作: update（T-4「实验批处理 runner」小节追加四条机械要求）
     定位锚: "run_experiments.py"（该小节内首次出现处，apply 时按当时文件锁定精确锚）
-    new 文本（要点）: ① **baseline 与候选列表分离**：`EXPERIMENTS` 只装候选，baseline 由独立的 `--phase baseline` 采一次；`--all` 不得重复采 baseline（重复行会让「每 workload 一条 final / 一次 baseline」的对账口径失效，并使同一 baseline 出现两份可能不同 run-state 的数字）。② **采数名核对**：`--kernel-name` 的默认值（`prim_func.name`，常见 `main`）不保证等于 Op 层 `msprof_kernel_name` 属性；采数后必须回读 profile 的 `OpBasicInfo*.csv` 确认 captured 名与目标 kernel 一致，不一致时以实测 captured 名为准并在 `opt_log.md` 记一行——不要凭默认值推断归因。
-    动机: 本次重复采集 baseline 产生两组各 4 行的基线（后续对账需人工判哪组为准），而采数名问题在属性名≠`main` 的工厂变体上属潜在欠归因风险；两条都是模板级一行修正。
+    new 文本（要点）: ① **baseline 与候选列表分离**：`EXPERIMENTS` 只装候选，baseline 由独立的 `--phase baseline` 采一次；`--all` 不得重复采 baseline（重复行会让「每 workload 一条 final / 一次 baseline」的对账口径失效，并使同一 baseline 出现两份可能不同 run-state 的数字）。② **采数名核对**：`--kernel-name` 的默认值（`prim_func.name`，常见 `main`）不保证等于 Op 层 `msprof_kernel_name` 属性；采数后必须回读 profile 的 `OpBasicInfo*.csv` 确认 captured 名与目标 kernel 一致，不一致时以实测 captured 名为准并在 `opt_log.md` 记一行——不要凭默认值推断归因。③ **`run_l0` 子进程须显式注入 `PYTHONPATH`**（仓库根 + tileops 目录，从 `run_bench` 一类既有常量派生而非按 `dirname` 层数硬推——层数随 `kernels/<family>/<op>/<op>_kernel/perf_opt` 深度变化），并**区分「环境失败」与「精度失败」**：`returncode != 0` 时读 stderr 首行，`ModuleNotFoundError` / `ImportError` 记 `l0_env_error`（不计精度结论、不写 `l0_fail` 行），其余记 `l0_fail`。④ **pipe 指标解析须容错两种表头**：`PipeUtilization*.csv` 在有 `Op Name` 列时按名取行，**无 `Op Name` 列时（逐 block 行）以 `main` 聚合**；解析结果为空须打印 CSV 表头并把该 workload 标 `pipe_missing`，不静默返回空 dict（否则「pipe 指标恒为空」会被误读成「该 workload 无 pipe 数据」）。
+    动机: ①② 本次重复采集 baseline 产生两组各 4 行的基线（后续对账需人工判哪组为准），而采数名问题在属性名≠`main` 的工厂变体上属潜在欠归因风险；③④ 第二任务实测：模板 `run_l0` 的 import 失败会伪装成精度失败（误导归因方向），pipe 空结果会让「被覆盖 pipe」判据（`BP_redundant_work_or_roundtrip`）完全不可用——四条都是模板级一行修正。
 - status: pending
 - confirmations: -/-
-- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（③④ 由 task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18 追加）
 - decided_by: -
-- decided_note: 与 VP-2026-0232（采数名契约）分工：那条管「多 prim_func 时如何声明」，本条管「模板默认值不可信时如何核对」；与 VP-2026-0240（final 冻结/重采通道）不重叠（本条管 baseline 行数）。
+- decided_note: 与 VP-2026-0232（采数名契约）分工：那条管「多 prim_func 时如何声明」，本条管「模板默认值不可信时如何核对」；与 VP-2026-0240（final 冻结/重采通道）不重叠（本条管 baseline 行数）。③ 与 VP-2026-0151（Stage 5 `PYTHONPATH` 前置，已多次实证）同族但**作用点不同**（那条管 integrator 集成脚本，本条管 optimize 的 L0 子进程）；④ 与 VP-2026-0315（读 pipe ratio 的方法）互补：本条的解析缺口会使该判据无数据可用。
 
 ## VP-2026-0318
 
@@ -6532,6 +6533,103 @@ decided_by: evolver / human / -   # 裁决者
 - created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（opt_log §10.3 提案文本）
 - decided_by: -
 - decided_note: 与「同主题已有条目」的关系：判据落在既有 PL-1.25（update 而非新开条目）；数字已作为第五数据点入条目正文（ED-A 自包含），本条负责把「何时/怎么用」显性化——两层不重复。
+
+## VP-2026-0323
+
+- type: P
+- title: run-state 双态的裁决须**跨 session 复测**——单 session 内「3/3 同向」不构成充分证据（3d 上 session 1 −9.99% 3/3 → session 2 **+1.22% 3/3**，6 对符号 3:3、sign-test p=1.0）
+- evidence:
+  - task `all-_logical_reduce_kernel-20261018T070754Z`（Stage 4 optimize，910B4 / `4d2e413`）：`perf_opt/opt_log.md#§4.4`——A = Stage 3 baseline、B = f16 指示平面候选，同机同 run 交错 A/B/A/B。**session 1**（3d）：A 中位 15.5067 / B 13.9580 µs，逐对 Δ **−9.59% / −11.36% / −9.79%**（3/3 同向）；**session 2**（同 kernel 复测 3 对）：A 14.5927 / B 14.7713，逐对 Δ **+1.09% / +3.40% / +1.04%**（3/3 同向，方向相反）⇒ 6 对符号 **3:3**、sign-test p=1.0 ⇒ 不可判定。原始 profile：`perf_opt/profiles/ab/op6_3d-multidim-reduce-bool/{A,B}_run{1..3}` 与 `profiles/ab/final_3d/{A,B}_run{1..3}`
+  - **同码跨 session 漂移 5–8%**（同任务 §1.1，三档独立采样）：4k 2.9793 / 3.0387 / 2.9587 µs、32k 7.7587 / 8.1473 / 8.1220（**+5.0% / +4.7%**）、3d 14.3373 / 14.5373 / **15.5067**（**+8.1%**，单次 max 18.6 µs 双态尾）⇒ 第二 session 的 A 臂落在「快态」，B 臂随调度落在「慢态」，符号随之翻转
+  - **正对照（同任务的采纳项）**：4k 两 session 同向（session 1 A/B **−4.26%** 3/3；session 2 相邻对 baseline_recheck 3.0387 vs final 2.8453 = **−6.4%**）⇒ 跨 session 复测既能证伪假象、也能确认真收益，不是「一律判 inconclusive」
+  - 现行条目边界：`bottleneck-patterns.md BP_run_state_bimodality` 的「推荐动作/验证指标」只要求**同 run 内**≥3 次交错 + 配对次序稳定（「同一方向跨 run 成立」）——本任务是首个「**两 session 内部各自 3/3 同向、跨 session 符号相反**」的实证，正好落在该判据的盲区
+- repro: repro-missing（效应只在完整 kernel 规模 + msprof op 上显现；最小形态 = 同一对 kernel 文件在两个独立 session 各跑 3 对交错 A/B/A/B，输出两组中位与符号表）
+- toolchain_stamp: tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch_npu 2.9.0.post8 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/bottleneck-patterns.md
+- delta: |
+    动作: update（`BP_run_state_bimodality` 的「触发信号」与「验证指标」各追加一条，正文其余不动）
+    追加要点:
+      ① 触发信号新增 **跨 session 档**：同一对实现**在同一 session 内**交错 A/B 得到「≥3 对、方向全一致」之后，若 |Δ| < 10% 且该 kernel 贴地板/小规模，仍须在**另一个独立 session** 复测 ≥3 对——实测 3d 上 session 1 −9.99%（3/3）与 session 2 +1.22%（3/3）符号相反（6 对 3:3、p=1.0）。即「session 内方向一致」是**必要不充分**条件（机制：每次 session 的进程/内存状态把 A、B 两臂同时推入快态或慢态，臂间差被态差淹没后符号可翻）。
+      ② 验证指标新增 **冲突处置**：两 session 符号冲突（sign-test 不显著）⇒ 记 `inconclusive`，**不得**记为 winner / 不得记回退；opt_log 须并列两组中位与逐对 Δ（本任务 §4.4 的表格形态）。两 session 同向才升级为「真实差异」，同向且 |Δ| ≥ 阈值才采纳。
+      ③ 边界：cross-session 复测不替代同 session 的交错协议（后者消除 run 内漂移），两者串联使用；同码跨 session 的本底漂移可直接量化为「同 sha 两 session 的基线差」（本例 5–8%），作为判定阈值的下界参考。
+- status: pending
+- confirmations: 1/2
+- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
+- decided_by: -
+- decided_note: 与 queue `VP-2026-0010`（T-2 交错 A/B 多 run 协议，已 merged）为**串联关系**：0010 管「同一 session 内怎么交错」，本条补「跨 session 还要再来一次」；与其 R 类另一半 `VP-2026-0324`（写进 iteration-diagnosis Step 6 的流程硬规则）拆开走各自 Tier。第二证路径：任一 optimize 任务在贴地板 workload 上做「两 session 各 ≥3 对」的 A/B 并复现符号翻转或确认同向即计 2/2。
+
+## VP-2026-0324
+
+- type: R
+- title: `iteration-diagnosis.md` Step 6 的 T-2 A/B 协议补**跨 session 复测**硬规则——两 session 结论冲突即判 `inconclusive`、不得采纳（单 session 3/3 同向不构成充分证据）
+- evidence:
+  - task `all-_logical_reduce_kernel-20261018T070754Z`：`perf_opt/opt_log.md#§4.4`——3d 上 f16 候选 session 1 **−9.99%**（3/3 同向）→ session 2 **+1.22%**（3/3 同向），6 对 3:3、sign-test p=1.0；若按现行 Step 6 文本（「≥3 次独立 `msprof op` run、交替次序、合并中位数比较」+ `ab_test.py` 的配对方向一致性判定）执行一次即会判 **B 快 ~10% 并采纳**，把 run-state 假象写进交付件。**实际交付按「冲突即不可判定」处置**（resident 用 f16、column-tiled 保 f32，3d 走 f32 路径）
+  - 同任务 §1.1：同码跨 session 本底漂移 **5–8%**（32k +5.0%/+4.7%、3d +8.1%）——单 session 的配对一致性无法区分「候选真快」与「B 臂恰好落在快态」
+  - 现行文本缺口：Step 6 bullet 与 `bottleneck-patterns.md BP_run_state_bimodality` 都只覆盖 **run 级**双态；`.agents/tools/ab_test.py` 的 JSON 输出含配对符号与 p 值，但**没有「再跑一个 session」的调用约定**。知识侧判据另立 `VP-2026-0323`（P，Tier 1），本条只承担流程侧（何时做、结果如何落账）
+- repro: repro-missing（流程规则；复现条件 = 对同一对 kernel 在两个独立 session 各跑一次 `ab_test.py`（各 ≥3 对），观察两组符号是否一致）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+4d2e413… + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/iteration-diagnosis.md
+- delta: |
+    动作: update（Step 6「评估规则」的 T-2 交错 A/B bullet 末尾追加两句）
+    定位锚: "小 kernel（Task Duration <20us）或逼近带宽/搬运地板的 workload，<5% 量级的候选差异须先经**交错 A/B/A/B 多 run 协议**裁决"
+    new 文本（追加，原句保留）: |
+      **跨 session 复测（2026-10-18 新增）**：上述协议在同一 session 内跑完后，对 |Δ| < 10% 的结果**再开一个独立 session 复测 ≥3 对**（同一对文件、同样的交替次序）；两 session 符号冲突（sign-test 不显著，如 6 对 3:3 / p=1.0）⇒ 记 **`inconclusive`**，opt_log 并列两组中位与逐对 Δ，**不得**记为 winner、也不记回退；只有两 session 同向且 |Δ| 过阈值才采纳。实测依据：`all` Stage 4 的 3d 候选 session 1 −9.99%（3/3 同向）→ session 2 +1.22%（3/3 同向），单 session 协议会误采；同码跨 session 本底漂移 5–8%。跨 session 复测**替代**不了同 session 的交错协议，两者串联。
+    动机: 「run 级双态」的实证已多次表明单次测量不可信（`BP_run_state_bimodality`），但现行协议只把「多 run」做在**一个 session 内**；本次实测两 session 内部各自 3/3 同向而符号相反 ⇒ 缺的是「换 session 再来一次」这一步。该步骤成本 = 一次 A/B（≈3 对 msprof），远低于误采一个 run-state 假象的代价（会写进交付件与 final 记录）。
+- status: pending
+- confirmations: -/-
+- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
+- decided_by: -
+- decided_note: 与 `VP-2026-0010`（已 merged，T-2 交错 A/B 多 run 协议）为**增量**关系（不推翻、只补跨 session 一步）；与 `VP-2026-0323`（知识侧 BP 条目更新）拆开：本条管流程动作，那条管检索时可读到的判据。若同批 apply，建议两条一起落（否则「规则要求复测」与「条目解释为什么」分离）。
+
+## VP-2026-0325
+
+- type: R
+- title: dtype / 数值域变更类候选的精度门禁：**L2 的窄宽度与最小尾块用例从「仅记录」升级为必检**（L0+L1 全绿仍可能漏掉 tail≤8 的误判）
+- evidence:
+  - task `all-_logical_reduce_kernel-20261018T070754Z`：`perf_opt/opt_log.md#§4.5`——候选把指示平面由 f32 改 f16（等价 0/1 域，理论上 f16 精确）。**L0 27 例全 PASS、L1 25 例全 PASS**，而 L2 的 `N = E_cap+1`（`(32,8193)` fp16，`num_full=1, tail=1`）报 **22/32 行错**；交付前逐尾宽扫描（`check_tails.py`）：tail=1 **22/32**、tail=8 **3/32**、tail ≥ 64（64/128/808）**exact**，同形态 f32 链全 exact。修复 = 尾块路径保留 f32 指示链（§4.6 按 path 分派）
+  - 缺口定位：`_shared/standards/stage3-routing.md` 明写「L2/Boundary 告警仅记录不阻塞」，而 **Stage 4 没有任何对应条款**——优化器按「L0 是门禁」的既有习惯推进，dtype 变更类候选在窄宽度上的退化**只由 L2 偶然暴露**（本任务若跳过 L2 会把误判交付出厂；该 case 的判别性来自 `N=E_cap+1` 恰好造出 tail=1）
+  - 同类结构证据（不重复其内容）：`VP-2026-0269`（develop 侧「输入判别性 + compile-only 探针 run 级复核」）、`VP-2026-0308`（新派发路径立即 `--level all`）——本条补的是 **Stage 4 的 dtype 变更档**
+- repro: repro-missing（流程规则；复现条件 = 把任一指示平面/lift 链候选的 dtype 下压（如 f32→f16），跑 `--level all` 并对比 L0/L1 与 L2 `N=E_cap+1` 的结果；或直接扫 `N ∈ {E_cap+1, E_cap+8}` 两档）
+- toolchain_stamp: 流程规则（无运行时依赖）；发生环境 tilelang 0.1.2+4d2e413… + CANN 9.0.0 + Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 2 每轮执行第 6 步扩写；并声明两处联动措辞）
+    定位锚: "6. 每个实验分支跑 L0 精度回归。"
+    new 文本: |
+      6. 每个实验分支跑 L0 精度回归；**候选改动 dtype / 舍入域 / 数值域时（如指示平面 f32→f16、累加或上抛 dtype 变更、精度域下压），L0 之外必须跑 L2 的最小宽度与最小尾块用例**（`N = E_cap + 1`、`N = E_cap + 8` 两档足矣），结果逐候选写入 opt_log 的候选行；L2/Boundary 的其余项仍按「记录不阻塞」处理。理由：`all` Stage 4 实测 f16 指示平面在 tail≤8 上误判（tail=1 22/32 行、tail=8 3/32 行）而 **L0 27 + L1 25 全绿**——常规 shape 覆盖不到窄尾块，`N=E_cap+1` 是唯一自然造出 tail=1 的用例。
+    联动（同批 apply）: ① `.agents/skills/tilelang-error-fixer/references/precision-patterns.md`「精度失败定征顺序」追加一条「dtype 变更类候选先扫最小宽度/尾宽（tail ∈ {1, 8, 64}）再扫 shape 维度：窄宽度与宽 shape 的失败不同源，先扫 shape 会把 22/32 行错的窄尾块缺陷误判为偶发」；② `.agents/skills/_shared/standards/stage3-routing.md` 的「L2/Boundary 告警仅记录不阻塞」加限定句「不含 Stage 4 的 dtype/数值域变更类候选」。
+    动机: 本任务 `--level all` 唯一拦住的回归就来自 L2（§4.5），而现行文本没有任何条款要求 Stage 4 看 L2；`tail=1/tail=8` 这种窄宽度在 benchmark workload 与 L0/L1 常规 shape 里都不出现，靠运气暴露不可接受。
+- status: pending
+- confirmations: -/-
+- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
+- decided_by: -
+- decided_note: target 选 optimize SKILL.md（Stage 4 动作位）；precision-patterns.md / stage3-routing.md 为同批联动措辞，apply 时必须三条一起改，否则「要求跑 L2」与「L2 仅记录」两句在库里并存。与 `VP-2026-0308`（新派发路径立刻 `--level all`）互补：那条管路径切换，本条管 dtype 切换。
+
+## VP-2026-0326
+
+- type: D
+- title: f16 指示平面在**窄尾块（tail ≤ 8）**上 mis-reduce——`N=8193`（tail=1）22/32 行错、`N=8200`（tail=8）3/32 行错，tail ≥ 64 与 f32 同形态全 exact（910B4 / `4d2e413`）
+- evidence:
+  - task `all-_logical_reduce_kernel-20261018T070754Z`：`perf_opt/opt_log.md#§4.5`——L2 `N = E_cap+1`（`(32,8193)`、`num_full=1, tail=1`）在 f16 全局版本上报 `22/32 entries differ; first at 2: got=True want=False`；`perf_opt/check_tails.py` 逐尾宽扫描（`N ∈ {8193, 8200, 8256, 8320, 9000}` → tail 1/8/64/128/808）：f16 **22/32、3/32、exact、exact、exact**；Stage 3 f32 对照**五档全 exact**。日志 `perf_opt/logs/final_L0L1L2_boundary.log`
+  - 形态：`vcmp("eq") → vcast(i1→f16) → reduce_max(dim=1)`（等价 0/1 域，f16 可精确表示 0 与 1）；不是 NaN/±0 语义问题（同链路在 f32 上正确），是**窄宽度 f16 归约**的 mis-reduce
+  - 绕法（本任务交付形态）：尾块路径保留 f32 指示链，f16 只用于 resident 路径（§4.6 按 path 分派）；复核 `check_tails.py` 五档全 exact + `--level all` L2 全 PASS
+  - 与能力缺口互链：`capability-gaps.md CG-2026-0038`（codegen 层：窄宽度 f16 归约产生错误结果；workaround = 该段保留 f32 链）
+- repro: repro-missing（最小形态 = 同一 f16 指示链 kernel 在 `(32,8193)` 与 `(32,8200)` 两 shape 上各跑一次，断言「f16 出现 >0 行差异、f32 对照 0 行差异」；需 NPU 与 msprof 之外不依赖任何任务工件——待同族任务回填）
+- toolchain_stamp: tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch_npu 2.9.0.post8 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/traps-compiler.md
+- delta: |
+    动作: add（traps-compiler.md 新增条目 `TRAP-f16-narrow-reduce-misreduce`；front-matter: kind=trap / family=[reduction, elementwise] / apis=[T.vcmp, T.vcast, T.reduce_max] / dtype=[fp16, fp32] / device=910B4 / status=verified / origin_task=all-_logical_reduce_kernel-20261018T070754Z / toolchain=见本条 / repro=repro-missing）
+    正文要点:
+      ① **现象**：`vcmp(eq) → vcast(i1→f16) → reduce_max(dim=1)`（含由它派生的 `(bm,)` 微缓冲）在**窄尾块**（归约轴长度 ≤ 8）上给出错误行值；`N=8193`（tail=1）**22/32** 行错、`N=8200`（tail=8）**3/32** 行错；`tail ∈ {64,128,808}` 正确。
+      ② **对照与判别力**：同形态 **f32** 链五档全 exact ⇒ 不是比较语义（NaN/±0）问题，也不是补式方向问题；把 dtype 换回 f32 即修复（本任务按 path 分派：resident=f16、tail=f32）。
+      ③ **门禁指纹**：L0/L1 常规 shape 覆盖不到 tail≤8（本任务 L0 27 + L1 25 全绿），唯一自然暴露点是 L2 的 `N = E_cap + 1` ⇒ dtype 变更类候选必须扫 `N=E_cap+1` / `E_cap+8` 两档（流程侧见 queue `VP-2026-0325`）。
+      ④ **边界/量纲**：纯正确性条目（无时延量纲）；适用域 = 含 f16 归约的等价 0/1 指示链与同类窄宽 f16 归约；宽尾（≥64）与 f32 不受影响。版本戳见 front-matter，工具链升级后须重验（`kb_stale_check`）。
+      ⑤ **与既有条目关系**：`PL-1.25-row-reduce-indicator-complement` 第六数据点已记同一边界的形态侧；本条是可检索的正确性陷阱本体（`vcmp/vcast/reduce` 链 + 窄宽度关键词）。与 `TRAP-int32-vcmp-scalarized`（同为窄宽度相关但机制不同：那条是标量化性能）分列。
+- status: pending
+- confirmations: 1/2
+- created_by: task all-_logical_reduce_kernel-20261018T070754Z 2026-10-18
+- decided_by: -
+- decided_note: 按 ED-A 降级入队（`repro-missing`，需 NPU 才能复现，无法在知识域内自包含为纯 torch 脚本）；第二证路径 = 任一同族（all/any/count_nonzero 或含 f16 归约的元素算子）任务在窄尾块上复现「f16 错 / f32 对」，或回填最小 repro 后按「有 repro 的 D 类」直接 Tier 0 合入。与 `CG-2026-0038` 同源（本条是陷阱知识，CG 是缺口本体与补齐跟踪）。
 
 ## Decided（merged / rejected / expired / conflict 归档）
 

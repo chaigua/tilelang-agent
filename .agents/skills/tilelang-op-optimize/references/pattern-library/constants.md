@@ -50,8 +50,8 @@ apis: [v-prefix ops, T.vmax, T.vcmp, T.vbrc]
 dtype: [fp16, f16, fp32, int32]
 device: 910B2C, 910B3, 910B4
 status: verified
-origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260909T033622Z（宽块档 0.5 µs/op）/ max_pool1d-_max_pool1d_kernel-20261016T090104Z（窄 op 档第一证 14.4 ns/op）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（第二证 + 宽度分档实测 12.3/21.1/23.1 ns/op，910B4）
-toolchain: tilelang 0.1.2+3a214cde + CANN 8.5.0 / 2026-09-09（首证 910B2C）；tilelang 0.1.2+c3c39ba（commit c3c39ba）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16（窄 op 档）；tilelang 0.1.2+e8b5d51e（commit e8b5d51）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18（宽度分档）
+origin_task: multi_head_attention-_gqa_prefill_fwd_kernel-20260909T033622Z（宽块档 0.5 µs/op）/ max_pool1d-_max_pool1d_kernel-20261016T090104Z（窄 op 档第一证 14.4 ns/op）/ max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T235029Z（第二证 + 宽度分档实测 12.3/21.1/23.1 ns/op，910B4）/ all-_logical_reduce_kernel-20261018T070754Z（第三数据点：**行归约 pass 的大宽度分档** 4096/8192/16384 → 0.55–0.60 / 1.00 / 1.00 µs，910B4）
+toolchain: tilelang 0.1.2+3a214cde + CANN 8.5.0 / 2026-09-09（首证 910B2C）；tilelang 0.1.2+c3c39ba（commit c3c39ba）+ CANN 9.0.0 + Ascend910B3 / 2026-10-16（窄 op 档）；tilelang 0.1.2+e8b5d51e（commit e8b5d51）+ CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40）/ 2026-10-18（宽度分档）；tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build，.so 构建于 2026-10-13）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（第三数据点，`msprof op` Task Duration、`--launch-count=15 --warm-up=3`）
 source: PL-1.9-hardlimits; queue VP-2026-0300（2/2）
 repro: repro/CONST-vector-launch-overhead.py
 ---
@@ -61,6 +61,8 @@ repro: repro/CONST-vector-launch-overhead.py
 无 f16 打包加速；每 op ~0.5µs 固定发射成本主导——同元素总量下宽块 op（bn=512）恒优于窄块 op 翻倍（bn=256）。用法：向量链时延下界 ≈ op 数 × 0.5µs。
 
 **窄 op 档（2026-10-18 第二证，910B4 / AIV=40；512 深 depend 链，`msprof op` Task Duration median/20，扣同 shape 空 kernel floor）**：单价随**lane 数**分档，`0.5 µs/op` 只适用于宽块（bn≈512 级）——64 lane（`(1,64)`）f32 `vmax` **12.3 ns/op**、512 lane（`(8,64)`）**21.1 ns/op**、1024 lane（`(8,128)`）**23.1 ns/op**（**8× lanes 只贵 1.7×、16× 只贵 1.9×** ⇒ 批处理是省 op 数的杠杆）；同档 data-dependent fp32 `vcmp` **30.5 ns/op**、运行期标量 `T.vbrc` **23.8 ns/op**；**int32 `vcmp` 例外地 1039 ns/op（16.2 ns/lane，标量化，见 traps-compiler.md TRAP-int32-vcmp-scalarized）**；空 kernel Task 地板 **3.12 µs**（`(1,64)`）/ **3.38 µs**（`(8,64)`）。与第一证（910B3，由 `aiv_vec`/op 数反解 **14.4 ns/op/核**）同档 ⇒ **「窄向量 op（≤128 lane）单价 10–25 ns/op」在 910B3/910B4 两设备、两工具链成立**；把宽块单价外推到窄 op 会使设计期「发射项」估算失准一个量级以上（第一证实证：DESIGN 估算 22.2 µs vs 实测 301.936 µs = 13.6×）。**用法（三杠杆取二）**：`Task 下界 ≈ 地板 + op 条数 × 单价 + max(流量项)`——**加宽/批处理**降 op 条数，**改 dtype 域**降单价（int→fp32 判决），**削死代码**同时降两者；`BL` 类参数不改变 op 条数时不要指望收益（第一证 sincnet BL 变化对 op 总数无影响）。
+
+**大宽度档：行归约 pass 按行宽 N 分档（2026-10-18 第三数据点，910B4 / `4d2e413`；`read − copyout` 反解，单平面 `reduce_max(dim=1)`）**：同一 16384 元素总量下，`tn` 宽度直接决定归约 pass 单价——4 个 4096 元素 tile 各 **0.551 / 0.592 / 0.595 µs**（合计 ≈2.37 µs）、1 个 8192 元素 tile **0.999 µs**、1 个 16384 元素 tile **0.999 µs**（8192 与 16384 同价 ⇒ N≥8192 档每元素单价减半后**饱和**，不是线性）。判据意义：加宽 `tn` 确实降低每元素归约代价（本例 −58%），但同批标定的 GM→UB 读单价在 64 KB / W=16384 档由 16 KB 档的 0.129 µs 抬到 **1.508 µs**（见 `CONST-aiv-read-roof-and-tiny-dma-910B4`）且单 tile 必然放弃双缓冲 ⇒ 本形态净亏（32k / 3d 实测 −2.6% / −6.9%）。量纲 = **µs/pass（含该行宽整条归约 lowering）**，与本文窄 op 档的 `ns/op` 不是同一口径、不可互推。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{op_cost_calibration.jsonl（`reduce_pass` 5 行原值）, probe_floor.py, copy_floor_calibration.jsonl}`；工具链见 front-matter 第三数据点。
 
 ---
 id: CONST-fabric-bw
@@ -388,8 +390,8 @@ apis: [T.reduce_max, T.reduce_sum, T.reduce_min, T.vcmp, T.vmul, T.vcast]
 dtype: [fp16, bf16, fp32]
 device: 910B3
 status: verified
-origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：reduce_min 链同价 + 独立重标定 E_cap）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（第五数据点：`(W,bm)` 档位差 12.03 vs 8.00 B/元素；第六数据点：`W=4096` 档两 dtype 单价相同 ⇒ dtype 分档不可跨 `(W,bm)` 引用）
-toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第五/第六数据点 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（部分重验：第五数据点仅 `W=8192/bm=2` 与 `W=23552/bm=1` 两档；第六数据点 `W=4096` × bf16/fp16/fp32 三 dtype 编译探针）
+origin_task: adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015（Stage 4）/ count_nonzero-_logical_reduce_kernel-20261016T005019Z（2-D 行归约形态第二数据点）/ all-_logical_reduce_kernel-20261016T024920Z（第三数据点：bf16 dtype 分档 + 最紧档位运行期通过）/ any-_logical_reduce_kernel-20261016T062400Z（第四数据点：reduce_min 链同价 + 独立重标定 E_cap）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（第五数据点：`(W,bm)` 档位差 12.03 vs 8.00 B/元素；第六数据点：`W=4096` 档两 dtype 单价相同 ⇒ dtype 分档不可跨 `(W,bm)` 引用）/ all-_logical_reduce_kernel-20261018T070754Z（第七数据点：f32 16384 元素单 tile 12.14 B/元素、不可编译）
+toolchain: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；2-D 行归约数据点 tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3 / 2026-10-16；第三数据点 tilelang 0.1.2+1bc8dbc3a1c80345a12522d815a2268e555270fa（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第四数据点 tilelang 0.1.2+7fe5a890cbba3784f27ea742af219984eda202ba（dev root build）+ CANN 9.0.0 + Ascend910B3（AIV=40 / UB 196608 B）/ 2026-10-16；第五/第六数据点 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（部分重验：第五数据点仅 `W=8192/bm=2` 与 `W=23552/bm=1` 两档；第六数据点 `W=4096` × bf16/fp16/fp32 三 dtype 编译探针）；第七数据点 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18（`W=16384, bm=1` f32 编译探针，仅编译期）
 repro: repro/TRAP-reduce-ub-per-element.py
 ---
 
@@ -429,6 +431,7 @@ repro: repro/TRAP-reduce-ub-per-element.py
   - **dtype 分档的机制**：bf16 上 `vcmp` 的操作数被 lowering 上抛 f32（IR 可见 `vcast bf16→f32` 作用于两操作数，多 2 个 f32 平面 ⇒ 单价 ×1.5）；「含 `vcmp` 的归约链」的容量估算依赖对目标 dtype 的逐档实测（compile-only 探针约 3 s/配置）——按「单价与 dtype 无关」外推（沿 8 B/元素对 bf16 记账）在负载上直接 UB 溢出。**（第六数据点收窄：×1.5 只在部分 `(W,bm)` 档显现——`W=4096` 上两 dtype 同为 ≈12 B/元素，该档的 `(W,bm)` 记账差与 dtype 机制不可区分；引用时按目标档实测，不得据机制跨档外推。）**
   - **实测通过点**（compile-only 探针反解 + 运行期闭合）：fp16 24576 / fp32 16384 / bf16 16384 元素；竞态安全档 `E_cap = 8192`（按最坏 dtype 12 B 记账）。**最紧档位运行期通过**：bf16 `(256,4096)`、`bm=2` ⇒ 8192 元素 × 12 B = 96 KB = UB/2（恰触双缓冲余量上限）在设备上逐位精确、无需降阶或切列分块路径。
   - **设计期后果（实录）**：把上表 3-D 整平面单价（最高档 ≈128 B/元素）代入 2-D 行形态会高估容量需求 **16×**，使可行负载被误判为不可实现（或过度引入列分块/转置等结构性开销）；反之按 8 B/元素对 bf16 记账则低估 1.5×。⇒ 容量判据按 `bm·N ≤ E_cap`（**元素数**）记账，且**引用本表任一单价前先核对形态适用域与 dtype 档**。
+  - **第七数据点（910B4 / 2026-10-18 / `4d2e413`：f32 在 16384 元素单 tile 档也落在 ≈12 B/元素，8 B/元素外推会漏判 overflow）**：同一条 `vcmp(eq) → vcast(i1→f32) → reduce_max(dim=1)` 链的 **f32** 形态在 `W=16384, bm=1`（16384 元素）编译失败 `ub overflow, requires 1590784 bits while 1572864 bits available` ⇒ **198,848 B ÷ 16384 = 12.14 B/元素**（超 196,608 B 预算 2,240 B = 1.14%）。即上表「fp16/fp32 8.00 B/元素 ⇒ 24576 元素上限」在**大行宽档不成立**：f32 的 16384 元素单 tile 实际**不可编译**（第五/六数据点已就 fp16/bf16 收窄 `(W,bm)` 依赖，本点补 f32 且落在 12.14 > 12.0）。把指示平面改 f16（省 2 B/元素）后同形态可编译并经运行期逐位校验（本任务交付形态按 path 分派：resident=f16、column-tiled/tail=f32）。判据：容量档必须在目标 `(dtype, W, bm)` 上直接编译探针，不得由其他档的 B/元素外推。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{logs/round1/L0_rprime*.log, logs/round1/L0_tilecap*.log}`；工具链见 front-matter 第七数据点。
   - 形态与双路径落地（resident / 列分块 + 静态尾块）见 layout.md `PL-1.25-row-reduce-indicator-complement`；上游降级原因（ED-A）：探针为任务工作区 `history_version/design_probe_ub.py`，本形态最小化 repro 待同族任务回填（`repro-missing`）。
 
 
@@ -556,8 +559,8 @@ apis: [msprof, T.Kernel, T.copy]
 dtype: [fp16, bf16]
 device: 910B4
 status: verified
-origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）
-toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40 / ub_cap 196608 B）
+origin_task: TileOPs-GroupNormFwdOp-20261018T021206Z（GroupNormFwdOp Stage 4）/ all-_logical_reduce_kernel-20261018T070754Z（第二工具链栅格档补齐：8/16/32 块 1.455/1.845/2.511–2.675 µs）
+toolchain: tilelang 0.1.2+2afbf3b17f419e489a958fc9ee611e1d68ec8294 + CANN 9.0.0 + Ascend910B4（AIV=40 / ub_cap 196608 B）；栅格档补齐 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
 source: perf_opt/probe_floor.py + perf_opt/copy_floor_calibration.jsonl
 repro: repro/CONST-groupnorm-smallshape-memfloor-910B4.py
 ---
@@ -571,6 +574,7 @@ repro: repro/CONST-groupnorm-smallshape-memfloor-910B4.py
   - 1.81 MB / 32 blocks（bm=2）= **3.09 µs（598 GB/s）**
   - copy-floor（在其上 +2 个保活 v-op）= 4.55 / 3.97 / 3.27 µs ⇒ **2 个 pass 可被 DMA 吸收（+0.16–0.18 µs）**，但整行归约链不可（见 `CG-2026-0027`）。
 - **用法**：给「小形状 + 整行归约」类算子设 roofline/latency 目标时，先算 `目标线 vs max(空 kernel 地板, 纯 DMA 地板)`；目标线低于地板的下界即口径不可达（本例 4 档目标低于纯 DMA 地板 1.81–3.42x，3 档低于空 kernel 地板）。**不要**用大流量同族常数外推：同族 16.78 MB 档纯拷贝 1.06 TB/s（`CONST-copy-floor-dma-granularity`），本档只有 0.60–0.96 TB/s。
+- **第二工具链栅格档补齐（2026-10-18 追加；`4d2e413` / 910B4 / 40 AIV；同 persistent 形态 + 单元素保活写，`msprof op` `--launch-count=15 --warm-up=3`）**：**8 块 1.455 µs / 16 块 1.845 / 32 块 2.511–2.675**，补齐本条 1–2 块与 29–32 块之间的两档空档，并复现同一斜率——逐块代价 (1.845−1.455)/8 = **0.049 µs/块**（8→16 档）、(2.511…2.675−1.845)/16 = **0.042–0.052 µs/块**（16→32 档），与本条「≈0.045 µs/块」一致 ⇒ 该斜率跨工具链（`2afbf3b` → `4d2e413`）稳定。**应用正例**：同任务把 16 块的小 workload 改成 32 块（「填满核」候选）实测 **+0.55 µs（−18.5%）**，与地板预测 +0.67 µs（2.511−1.845）同量级 ⇒ 小 M 读主导形态下多开核的账面收益必须先扣该档差。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{copy_floor_calibration.jsonl（M32_N4096_bm{1,2,4} 的 `empty` 行）, probe_floor.py, logs/round1/}`；工具链 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106 + CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18。
 - **互链**：`CONST-msprof-task-floor-910B3`（3.37/4.25 µs，910B3 大 tile 形态；本条是 910B4 小形状多栅格扫描，两机常数不可互换）、`CONST-msprof-ratio-compute-roofline`（Ratio 目标口径）。
 - **证明**：`python repro/CONST-groupnorm-smallshape-memfloor-910B4.py --mode both --case image`（可运行部分 = 两个探针构建 + 数值精确性断言；时延按头部 msprof 命令读取）。溯源（任务工作区，允许失效）：`examples/TileOPs/tileops/kernels/norm/group_norm/group_norm_kernel/perf_opt/{probe_floor.py, copy_floor_calibration.jsonl, profiles/round0/, profiles/floor_v2/}`。
 
@@ -611,8 +615,8 @@ apis: [T.copy, T.reduce_sum, msprof]
 dtype: [fp16, bf16, fp32]
 device: 910B4
 status: verified
-origin_task: count_nonzero-_logical_reduce_kernel-20261018（Stage 4 optimize，scenario=optimize）
-toolchain: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（dev root build；tilelang/ 源树 commit 417dae9）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）/ 2026-10-18
+origin_task: count_nonzero-_logical_reduce_kernel-20261018（Stage 4 optimize，scenario=optimize）/ all-_logical_reduce_kernel-20261018T070754Z（读单价第二自变量：每 tile 行数 × 并行读者数，5 点 0.129–1.508 µs / 43–171 GB/s/核）
+toolchain: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（dev root build；tilelang/ 源树 commit 417dae9）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）/ 2026-10-18；第二自变量数据点 tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build）+ CANN 9.0.0 + Ascend910B4 / 2026-10-18
 source: perf_opt/{probe_floor.py, copy_floor_calibration.jsonl, op_cost_calibration.jsonl, roofline_from_profile.py}
 repro: repro-missing
 ---
@@ -627,6 +631,16 @@ repro: repro-missing
 - **AIV 读单价（per-core，`copyout - empty` 反解，hidden `(2048,4096)` fp16）**：
   8 KB tile → 26.0 GB/s/核；16 KB → 22.4；32 KB → 21.5（40 核聚合 0.86–1.04 TB/s）。
   **tile 越大单价越低效**——读侧是带宽受限，不是「每 op 固定开销」受限。
+- **读单价第二自变量：每 tile 行数 × 并行读者数（2026-10-18 追加，`4d2e413` / 910B4；同构合成 tile、`copyout − empty` 反解，`--launch-count=15`）**：同一 tile 字节数下读单价仍差 2–4×——
+  16 KB / 8 块（`bm=4, W=4096`）**0.129 µs（124 GB/s/核）**、32 KB / 16 块（`bm=2, W=4096`）
+  **0.244（131）**、32 KB / 32 块（`bm=1, W=8192`）**0.192（171）**、64 KB / 8 块（`bm=4, W=4096`）
+  **0.829（79）**、64 KB / 32 块（`bm=1, W=16384`）**1.508（43 GB/s/核，7.9× 最差档）**。
+  **口径警示**：这五点同时变了 tile 字节、每 tile 行数、block 数与总活跃足迹（8–32 块 × 16–64 KB
+  = 0.13–2 MB），**不能当纯「行宽 W」轴读**；最可能的主导项是 L2 驻留 / 并发读者压力（同一批 tile
+  被反复读 15 次），即「同 tile 字节、单行更宽」不等于「更慢」——引用时须在目标栅格上直接探针。
+  **对本族（小 M、读主导）的机械后果**：单 tile 超预算形态（R′）在 64 KB / W=16384 档每次读付
+  1.508 µs，是列分块 2×0.192 µs 的 3.9×——该差值直接解释了 R′ 在 bool→f32 W=16384 上 **+9.6%**
+  的回退（见 layout.md `PL-1.25` 第六数据点）。溯源（任务工作区，允许失效，ED-A）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{op_cost_calibration.jsonl（`mte2_read_tile` 5 行）, copy_floor_calibration.jsonl, probe_floor.py}`。
 - **逐任务输出小 DMA（8–32 B `(block_m,)` int64）**：**0.16–0.20 µs/op**
   （`empty` 探针斜率：52/26/13 任务 → 12.741/6.672/4.495 µs，基座 ≈2.4 µs）。
   **但它与 vec/mte2 部分重叠**：把它合成一次大 DMA 后 `mte3` 从 11.54 → 0.28 µs，

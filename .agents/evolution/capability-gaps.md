@@ -1376,6 +1376,42 @@ created_by: evolver 蒸馏登记，2026-10-18（**溯源**：task `count_nonzero
 last_seen: 2026-10-18 count_nonzero-_logical_reduce_kernel Stage 4（round-4 op3 `vbitcast` 位视图 blocked + op1 显式单次 lift 验证「隐式 lift = 两次」）
 ```
 
+### CG-2026-0038
+
+```yaml
+gap_id: CG-2026-0038
+layer: codegen / TileLangIR pass（窄宽度 f16 归约的结果错误）
+capability: >-
+  `vcmp("eq") → vcast(i1→f16) → reduce_max(dim=1)` 链（含由它派生的 `(bm,)` 微缓冲）在
+  **归约轴长度 ≤ 8 的窄尾块**上产生**错误行值**：`(32,8193)`（`num_full=1, tail=1`）**22/32 行错**
+  （`first at 2: got=True want=False`）、`(32,8200)`（tail=8）**3/32 行错**；`tail ∈ {64,128,808}`
+  与同形态 **f32** 链五档全 exact。即「f16 精确表示 0/1」的等价性论证在**窄宽度**档被 codegen
+  破坏（不是 NaN/±0 语义、不是补式方向）。期望形态：f16 归约在任意 input width（含 1/8）
+  与 f32 同结果；或至少在 `T.reduce_max` 文档标注最小安全宽度。
+blocked_algo: >-
+  「等价 0/1 指示平面降 f16 省 2 B/元素」的候选只能**按 path 分片**：resident（宽 tile）可用 f16，
+  含窄尾块的路径必须保留 f32 ⇒ 交付形态被迫三路分派（resident=f16 / column-tiled=f32 /
+  tail=f32），并放弃尾块的 UB 收益。若缺口补齐，尾块路径可与 resident 统一 f16（少 1 套
+  变体 + 尾块 UB 减 2 B/元素）；未量化的时延收益未计入（尾块仅 1 个 tile）。
+evidence:
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/reduction/all/all_kernel/perf_opt/{check_tails.py（尾宽 1/8/64/128/808 五档扫描：22/32、3/32、exact、exact、exact）, logs/final_L0L1L2_boundary.log, opt_log.md#§4.5/§4.6}`
+  - 门禁指纹：**L0 27 例 + L1 25 例全绿**，唯一暴露点是 L2 的 `N = E_cap + 1`（自然造出 tail=1）
+  - docs/Tilelang.language/规约操作/ 与 数学操作/T.vcmp.md 均未记载 f16 归约的最小安全宽度（**未文档化假设**：按「f16 可精确表示 0/1 + reduce_max 是选择」推演应正确，实测证伪于 tail≤8）
+  - 交叉引用：`pattern-library/layout.md PL-1.25` 第六数据点（形态侧同一边界：f16 指示平面按 path 分派）；queue `VP-2026-0326`（可检索的陷阱条目 `TRAP-f16-narrow-reduce-misreduce`，待 repro/第二证）
+workaround: >-
+  尾块路径保留 **f32** 指示链（f16 只用于 resident）：`check_tails.py` 五档全 exact +
+  `--level all` L2 全 PASS；代价 = 三路分派（多一套 prim_func 变体）与尾块放弃 2 B/元素 UB 余量，
+  精度零残留风险。注意：`mx_tail` 以 `f32→f16` cast 并入 f16 累加器的写法在该工具链
+  **不被接受**（fragment 上的 cast），最终沿用 Stage 3 的整段尾块实现。
+occurrences: 1
+tasks: [all-_logical_reduce_kernel-20261018T070754Z]
+toolchain_stamp: tilelang 0.1.2+4d2e41313438e8b79c25d3fe8020f26078400106（dev root build，.so 构建于 2026-10-13）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
+status: open
+proposal: none（未达 recurring；建议方向 = ① 修 f16 归约在窄宽度的 lowering，使 width ∈ {1,8} 与 f32 同结果；② 至少在 `T.reduce_max` / `T.vcmp` 文档标注「f16 归约窄宽度未定义/不安全」——issue 须用户批准）
+created_by: evolver 蒸馏登记，2026-10-18（**溯源**：task `all-_logical_reduce_kernel-20261018T070754Z` 的 `perf_opt/opt_log.md#§4.5` 记录 f16 窄尾块 mis-reduce 与修复；该任务未产出 `perf_feedback.md`（`[DESIGN_LIMIT]` 未触发）⇒ 由 evolver 按 AGENTS.md 缺口规则登记）
+last_seen: 2026-10-18 all-_logical_reduce_kernel Stage 4（f16 指示平面 tail=1 22/32 行错、tail=8 3/32，f32 对照五档 exact）
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
 > **条目位置说明（2026-10-18 追加）**：`CG-2026-0031` 与 `CG-2026-0032` 本次由 `open` 升级为
