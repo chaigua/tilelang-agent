@@ -658,8 +658,8 @@ family: [reduction]
 mode: [developer, optimize]
 dtype: [fp16, bf16, fp32]
 status: verified
-origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（函数级）/ count_nonzero-count_nonzero-20261016T004109Z（op 级，Stage 5 集成）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（Stage 4 optimize 续档）
-toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16；Stage 4 续档 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
+origin_task: count_nonzero-_logical_reduce_kernel-20261016T005019Z（函数级）/ count_nonzero-count_nonzero-20261016T004109Z（op 级，Stage 5 集成）/ count_nonzero-_logical_reduce_kernel-20261018T043104Z（Stage 4 optimize 续档 + post-DONE round-4 定向补测）
+toolchain: tilelang 0.1.2+b39cc30679662a13dd911768a51c7eede45d2892 + CANN 9.0.0 + Ascend910B3（AIC=20 / AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-16；Stage 4 续档 + round-4 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
 repro: none
 ---
 
@@ -683,6 +683,15 @@ reduction 家族**首个 logical_reduce / 计数类** TileOPs 迁移（`CountNon
 - **口径与天花板（`[DESIGN_LIMIT]` 依据）**：本机 msprof 自报 GM 屋顶 **0.8 TB/s**（验收 report `Bandwidth` 列逐例 0.8000）⇒ 4 例 Ratio **34.68–73.43%**（hidden fp16 73.43% / bf16 68.94% / seq 34.68% / 3d 57.36%）；`/1.75` 口径的 70% 线 = 1.225 TB/s **超本机屋顶 1.53×**，4/4 结构性不可达（seq 目标 0.86 µs < 空 kernel 地板 2.44 µs；3d 3.42 µs < copy 地板 7.42 µs；hidden 13.71 µs < read-only 地板 23.83 µs）。常数值落 constants.md `CONST-device-peak-910B3` 第四数据点 / `CONST-reduce-ub-per-element` 第五数据点 / `CONST-aiv-read-roof-and-tiny-dma-910B4`。
 - **集成 / 回归**：端到端 report `examples/TileOPs/reports/tileops/20261018_053642_635995_CountNonzeroFwdOp/`——correctness 100%（37/37）、`avg max abs error 0.00e+00`、4 例 msprof 有效（invalid 0）、latency 28.56/30.42/3.78/9.14 µs；函数级 `perf_opt/_logical_reduce_kernel.py --level all` 的 L0 21 + L1 24 + L2 + Boundary 全过（`torch.equal`，含 NaN 语义三 dtype）。
 - **适用触发条件**：同族 logical-reduce / 行归约的 Stage 4 调优（尤其「带宽口径目标明显超平台屋顶」的立项）；R′ 判据可直接复用。**读前须知**：本续档的 UB 单价（12.03 B/元素 @ `W=8192/bm=2`）与 0.8 口径均绑定 910B4 + `c316b0e`，与前作迁移段（910B3 + `b39cc306`）的 Ratio / 带宽列不可直接对比。
+
+### CASE-reduction-countnonzero-migration — Stage 4 续档 **round 4（post-DONE 定向补测，2026-10-18）**
+
+- **重开形态（可复用为模板）**：`phase=DONE` 之后由用户裁定「验收口径变更 + bf16 定向复测」，以**第三种重开形态**执行——候选上限 3、只跑被点名的 workload、其余用例以 `get_kernel_source()` 逐 shape sha 证明 codegen 等同性收束、被取代的 final 用 sidecar 保全。工具侧限制：`statectl start 4 --extend` 对 optimize 场景 `phase=DONE` 返回 `E-TERMINAL`（reopen 分支只覆盖 new_op / migration）⇒ 流程/工具缺口见 queue `VP-2026-0319`。
+- **验收口径（用户裁定，双轨）**：台账记账线 fabric **1.75 TB/s 不变**；**族验收线 = `0.7 × 设备自报 roof`**，本机自报 0.8 TB/s ⇒ **560 GB/s**，换算 hidden **29.99 µs** / seq 1.873 µs / 3d 7.49 µs。0.8 的**三处独立证据**（`visualize_data.bin` 自报 / report `Bandwidth=0.8000` / 探针反解 0.70–1.04 TB/s）与 2.19× 量纲解释（单 AIV MTE2 流 20–26 GB/s/核 vs fabric 聚合）见 constants.md `CONST-device-peak-910B3` **第五数据点**。
+- **本轮三候选（同起点派生，只改一个主要优化点）**：**op2（bf16 驻留 3 行档，元素上限 12288）采纳**——A 中位 31.235 / B 中位 27.940 µs、**−10.55%**，3/3 同向（A/B 极差 0.149/0.366 µs）；机制 = 任务数 26→18/核、`mte2` −18.9%、`vec` −11.1%（形态已并入 layout.md `PL-1.25` 第五数据点）。**op1（bf16 单次显式 f32 lift）** valid 但 −5.42% 且 mte2 无改善（vec −9.2% ≈ 1 pass，验证「隐式 lift 对两操作数各做一次」），同 workload 取 Task 最优故未采纳。**op3（bf16 按 fp16 位视图比较）blocked**——`T.vbitcast` 返回 `tir.Call`，`T.vcmp` 拒绝该操作数；语句形态是 in-place 重解释（bf16 数值比较读到 fp16 位模式，`IMPL_CHECK FAIL 1024/2048 rows`）⇒ 能力缺口 `CG-2026-0037`。
+- **最终验收**：report `examples/TileOPs/reports/tileops/20261018_064405_334073_CountNonzeroFwdOp/`——correctness **37/37**（`avg max abs error 0.00e+00`）、4 例 msprof 有效：hidden fp16 **27.68 µs / 75.76%**、hidden bf16 **28.02 µs / 74.85%**、seq 3.86 µs / 33.96%、3d 9.78 µs / 53.61%（Ratio 分母 = report 自报 0.8000）⇒ **两 dtype 均越过 0.7× 自报 roof 族验收线**；seq/3d 按空 kernel 地板 2.44 µs / copy 地板 7.42 µs 以 `[DESIGN_LIMIT]` 收束（1.75 口径下 4 例不可达的结论不撤回）。
+- **supersede 处置（本轮 §7.1 即模板）**：round-3 的 4 条 final **一字不改**保存在 `perf_records_full_history.jsonl`（24 行 append-only sidecar）；主 `perf_records.jsonl` 保留全部 baseline/candidate 行 + 每 workload **唯一**权威 final（round-4，sha `faae175e…` 与 `.stage_state.json.artifact_hashes[perf_opt/_logical_reduce_kernel.py]` 一致）。fp16 三例 final 数值上浮（28.104 / 4.111 / 9.648 vs round-3 27.594 / 3.908 / 8.925）经 `get_kernel_source()` 逐 shape sha 比对证明生成代码**逐字节相同**（`1fbac554…` / `5eab5ac8…` / `2465d293…`）⇒ 归 run-state（5–8% 漂移），不记回退。
+- **读前须知**：bf16 结果与 12288 元素档位绑定 910B4 + `c316b0e`；「bf16 = 12 / fp16 = 8 B/元素」**只在 `(W=23552,bm=1)` 成立、不可跨 `(W,bm)` 引用**（constants.md `CONST-reduce-ub-per-element` 第六数据点）；bf16 的时延差机制是 `vcmp` f32 lift 的 2 个额外 pass（queue `VP-2026-0318`），不是 UB 单价。
 
 ---
 id: CASE-reduction-all-migration

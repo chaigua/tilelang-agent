@@ -1049,23 +1049,28 @@ evidence:
   - 任务工作区标定（溯源，允许失效）：examples/TileOPs/.../perf_opt/copy_floor_calibration.jsonl（同栅格纯拷贝地板 6.85/5.09 µs；mte2 2.13/1.21 µs）
   - 第二任务探针/标定（溯源，允许失效）：examples/TileOPs/tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/perf_opt/{profiles/probe/round3/dma_gm4d_ch32_r13, probe_r3_gf.py} + `perf_opt/opt_log.md` §13.4 P6 / §13.5 G17（`npuir.enable_auto_multi_buffer=True` config_no_gain）
   - pattern-library elementwise.md `PL-1.6-copy-floor`（轮数主导地板）+ constants.md `CONST-aiv-time-decomposition`（`Task ≈ max(mte2,vec)+scalar` 分解口径）
+  - 第三任务（溯源，允许失效）：examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel/perf_opt/{copy_floor_calibration.jsonl（hidden `(2048,4096)` fp16：empty/copyout/read/copy × bm=1/2/4）、profiles/candidate/round1/r2_op5_pipe2_*/（Pipelined 三项指标与 baseline 逐项相同）}
   - docs/Tilelang.language/同步管道操作/ 与 线性代数操作/ 未记载归约与搬运的自动流水重叠条件（未文档化，估量依据 = 上述本机实测）
 workaround: >-
   无有效重叠手段（`T.Pipelined(2/3)` 于单元循环实测无增益；`npuir.enable_auto_multi_buffer=True` 同）。
   当前只能靠**减少每核串行轮数**（更宽 CH，受 CG-2026-0026 的 UB 记账约束）压低地板逼近缺口。
-occurrences: 2
-tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z, adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z]
-toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第二任务重验 tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15
+  第三任务补充：同一 workaround 在 2-D 行归约上同样有效——`N ∈ (E_CAP, UB]` 时改单 tile 驻留
+  R′（去 tile 循环 + 放弃 auto-multi-buffer）反而比列分块快 12–13%。
+occurrences: 3
+tasks: [adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z, adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z, count_nonzero-_logical_reduce_kernel-20261018]
+toolchain_stamp: tilelang 0.1.2+489385e9b98806365b585b6e1f984a5dae337154（commit 489385e / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第二任务重验 tilelang 0.1.2+31738b08cb8f44e9596aba32ffeda82040d2152c（commit 31738b0 / dev root build）+ CANN 9.0.0 + Ascend910B3 / 2026-10-15；第三任务重验 tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 commit 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18
 status: recurring
 proposal: >-
   **目标层**：BishengIR（归约 kernel 的流水调度）。
   **建议改动**：在「GM→UB `T.copy` → reduce consumer」链上实现自动双缓冲重叠，或提供显式 overlap 原语（如按 pipelined stage 声明 reduce 依赖）；至少在 docs 记载归约与搬运的自动流水重叠条件（含 `auto_multi_buffer` 是否覆盖该链）。
-  **收益量化（两任务实测）**：max pool mte2 211 GB/s vs 同栅格纯拷贝 690 GB/s（3.3x 带宽缺口，2.8–3.7x 时延缺口）；avg pool round 3 mte2 跨度 = 整条串行链 11.62 µs vs 同栅格 DMA-only 8.75 µs（含 4.81 µs 固定开销）。
-  **受影响算子清单**：adaptive avg/max pool 2d、argreduce/row-reduction、任何「搬运 + 核内归约」串行链算子。
-  **issue 草稿（[npuir]，须用户批准后提交）**：`[npuir] T.reduce_* does not overlap with GM->UB T.copy in the same kernel (serialized chain; auto multi-buffer default / Pipelined have no effect)`。
+  **收益量化（三任务实测，2026-10-18 补齐第三数据点）**：① max pool 整平面：mte2 211 GB/s vs 同栅格纯拷贝 690 GB/s（**3.3x 带宽缺口，2.8–3.7x 时延缺口**）；② avg pool round-3：mte2 跨度 = 整条串行链 11.62 µs vs 同栅格 DMA-only 8.75 µs（含 4.81 µs 固定开销 ⇒ 真实搬运 ≈3.9 µs）；③ **2-D 行归约（count_nonzero，910B4）**：hidden `(2048,4096)` fp16 `aiv_time 22.56 µs` ≈ `vec 12.33` + `mte2 11.61` ⇒ **重叠仅 ~7%**（`Task ≈ vec + mte2 + scalar` 的串行化签名），`T.Pipelined(num_stages=2)` 的 `vec/mte2/aiv` 三项与 baseline **逐项相同**（`config_no_gain`）；改用「减少每核轮数 + 单 tile 驻留 R′」把 seq/3d 各降 **12–13%**（`4.61→3.89` / `10.26→8.96 µs`）⇒ 与既有 workaround 结论同向，但**重叠收益始终为 0**。三任务的共同形态：`Task ≈ max(mte2,vec)+scalar` 的 max 退化为近似 sum，且两个方向的显式手段（`T.Pipelined` / `npuir.enable_auto_multi_buffer=True`）均无增益。
+  **受影响算子清单**：adaptive avg/max pool 2d（整平面/退化网格）、adaptive_max_pool2d_with_indices、**2-D 行归约族（count_nonzero / all / any 及一切 `(bm,tn)+dim=1` 归约）**、argreduce/row-reduction、任何「搬运 + 核内归约」串行链算子。
+  **issue 草稿（[npuir]，须用户批准后提交）**：`[npuir] T.reduce_* does not overlap with GM->UB T.copy in the same kernel (serialized chain; auto multi-buffer default / Pipelined have no effect; also reproduced on 2-D row-reduce where task duration ≈ vec + mte2)`。
 created_by: task adaptive_max_pool2d-_adaptive_max_pool2d_kernel-20261015T081354Z Stage 4（2026-10-15，opt_log.md §10 按 AGENTS.md「Compiler Capability Gap Rule」登记）
-last_seen: 2026-10-15 adaptive_avg_pool2d-_adaptive_avg_pool2d_kernel-20261015T124025Z Stage 4（round 3：DMA-only 8.75 µs vs 真实链 11.62 µs；auto_multi_buffer config_no_gain）
+last_seen: 2026-10-18 count_nonzero-_logical_reduce_kernel Stage 4（2-D 行归约形态第三证：hidden fp16 `aiv_time 22.56` ≈ `vec 12.33` + `mte2 11.61` ⇒ 重叠仅 ~7%；`T.Pipelined(num_stages=2)` 的 vec/mte2/aiv 三项逐项不变，config_no_gain；改用「减少每核轮数 + 单 tile 驻留 R′」把 seq/3d 各降 12–13%，与既有 workaround 结论同向）
 ```
+
+> **2026-10-18 蒸馏补齐（recurring ⇒ 必须产出补齐提案并面呈用户，AGENTS.md 能力缺口规则 4）**：本轮把第三任务的量化（`aiv_time 22.56 ≈ vec 12.33 + mte2 11.61`、重叠 ~7%、`T.Pipelined(2)` 三项逐项相同、R′ 侧 −12~13%）写入 `proposal` 的收益量化与受影响清单，并把 2-D 行归约族补进 issue 草稿。**尚待用户在 Primary 上下文批准后提交上游 issue**（外部 issue 属用户授权域，evolver 不代提交）。
 
 ### CG-2026-0029
 
@@ -1132,13 +1137,30 @@ workaround: >-
   上的 padding lane 浪费并把 `num_logical` 3392→2080（sincnet −37.7% / ecg −26.9%）；② 把 `LSPAN`
   当 DMA 粒度（行长）看（`CONST-dma-burst-rowstride-floor`：行长 128–156 B ⇒ ≈0.38 TB/s）；
   ③ 2 相抽取可用（argmax 案例 130.3×，`CASE-argmax-argreduce-stage4`）。
-occurrences: 1
-tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z]
-toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16
-status: open
-proposal: none（未达 recurring；建议方向 = ① 提供硬件级宽 gather（带 stride 的向量抽取）或把 `T.deinterleave` 扩展到任意相位数；② 至少在 docs 记载 `channel_nums` 上界与 decimation 原语的能力边界）
+  - **第二次独立识别（2026-10-18，`MaxPool1dIndicesFwdOp` Stage 4，同 stamp 无关）**：三条子事实全部
+    在本机重验成功——`T.deinterleave(channel_nums=3)` → `bishengir-compile` `core dumped`（rc=-6，NPU IR
+    已生成）；`T.transpose(permutation=[2,0,1])` → `error: 'hivm.hir.vtranspose' op Vtranspose only
+    support two axes transpose`；`T.reshape` 到 `(ch,bl,3)` 本身合法（故唯一缺口是 3 轴置换）。另有第四
+    条同族事实：`T.arange(dst,[1,0],0)` 生成的静态行 ramp 在 vmax/vselect 链内**运行期 core dump**
+    （`perf_opt/probe_phase3.py`），即「arange 补位」也不可用。
+  - 第二次识别的任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/perf_opt/{probe_deint.py, probe_phase3.py, _round3_opcount.py, logs/l0_round3_opcount.log, opt_log.md#§8.3}`
+occurrences: 2
+tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z, max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z]
+toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0 + Ascend910B3（aicore 20 → 纯 Vector 40 / UB 196608 B）/ 2026-10-16；复验 tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51 / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-18
+status: recurring
+proposal: >-
+  **目标层 = Frontend API + BishengIR**：① 提供带 stride 的宽向量抽取原语（decimation），或把
+  `T.deinterleave` 的 `channel_nums` 放开到任意相位；② 让 `hivm.hir.vtranspose` 支持 3 轴置换。
+  **收益量化（本任务实测）**：plane op 单价曲线 = `(1,64)` 12.3 ns / `(8,64)` 21.1 ns / `(8,128)` 23.1 ns
+  （16× lanes 只贵 1.9×，`perf_opt/op_cost_calibration.jsonl`）⇒ 行批处理可把窗口类算子的 op 条数从
+  `N·C·L_out·k/CH` 降到 `/(CH·BL)`。`MaxPool1dIndicesFwdOp` sincnet 现 538.63 µs，估计可到 **70–90 µs
+  （6–7×）**；同族 `max_pool1d` 亦因同一缺口止步 188.45 µs（其 `probe_pm` 998.92 µs 的结构族失败根因同源）。
+  **受影响算子清单**：max_pool1d/2d/3d 的 indices 变体、adaptive_max_pool* 的 indices 变体（`L_out > 1`）、
+  所有 `stride > 1` 的滑窗/重叠窗类纯 Vector 算子。
+  **issue 草稿（`[npuir]` 前缀，须用户批准后提交）**：`[npuir] window-pooling phase extraction unavailable:
+  vdeinterleave limited to 2 channels and vtranspose to 2 axes (blocks O(k) row-batched pooling)`。
 created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md#§7.3`，evolver 终态蒸馏核验归档）2026-10-16
-last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
+last_seen: 2026-10-18 max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z Stage 4（第二次独立识别 → recurring）
 ```
 
 ### CG-2026-0032
@@ -1161,13 +1183,23 @@ evidence:
 workaround: >-
   仅使用 2 相形态（`channel_nums=2`，含 region 目标）；多相需求改走逐相切片/`T.copy` 或 reshape 后
   的多路 2 相分解。正向参照：argmax Stage 4 的「窄行宽视图 + 2 相 deinterleave」130.3×。
-occurrences: 1
-tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z]
-toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0（bishengir-compile）+ Ascend910B3 / 2026-10-16
-status: open
-proposal: none（未达 recurring；建议方向 = 修复 `vdeinterleave` 相位数 >2 的后端崩溃，或在前端对 `channel_nums > 2` 给出显式诊断而非静默进入后端崩溃）
+  - **第二次独立识别（2026-10-18，`MaxPool1dIndicesFwdOp` Stage 4，910B4 + `e8b5d51e`）**：`phase=3`、
+    `(ch=80, bl=12)` 形态复现同一后端段错误（`probe_deint.py`：`bishengir-compile` 栈回溯 +
+    `ERR99999 UNKNOWN applicaiton exception`，NPU IR 已生成）⇒ 跨工具链/设备 **非偶发**。
+occurrences: 2
+tasks: [max_pool1d-_max_pool1d_kernel-20261016T090104Z, max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z]
+toolchain_stamp: tilelang 0.1.2+c3c39ba6929f77c131a29c7cde8126ac245e104d（commit c3c39ba / dev root build）+ CANN 9.0.0（bishengir-compile）+ Ascend910B3 / 2026-10-16；复验 tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51 / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-18
+status: recurring
+proposal: >-
+  **目标层 = BishengIR**：修复 `hivm.hir.vdeinterleave` 相位数 > 2 的后端崩溃（`bishengir-compile`
+  进入后端即 SIGABRT、无 MLIR 诊断）；至少由 Frontend 对 `channel_nums > 2` 给出显式诊断而非静默崩溃。
+  **收益量化**：3 相抽取是 `stride = 3` 滑窗（sincnet k3s3p0）行批处理的唯一可行入口，解锁收益见
+  CG-2026-0031 的 proposal（sincnet 538.63 → 70–90 µs，6–7×）。**受影响算子**：所有 `stride > 2` 的
+  滑窗类与「按残差类分相」的抽取需求（含池化、卷积式 tap 折叠、decimation 预处理）。
+  **issue 草稿（`[npuir]` 前缀，须用户批准后提交）**：`[npuir] bishengir-compile segfaults on
+  hivm.hir.vdeinterleave with channel_nums=3 (reproduced on 910B3/c3c39ba and 910B4/e8b5d51e)`。
 created_by: max_pool1d-_max_pool1d_kernel-20261016T090104Z（Stage 4 `opt_log.md#§7.3`，evolver 终态蒸馏核验归档）2026-10-16
-last_seen: 2026-10-16 max_pool1d-_max_pool1d_kernel-20261016T090104Z Stage 4（首次识别）
+last_seen: 2026-10-18 max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z Stage 4（第二次独立识别 → recurring）
 ```
 
 ### CG-2026-0033
@@ -1236,8 +1268,120 @@ created_by: max_pool2d-_max_pool2d_kernel-20261017T043853Z（Stage 4 round-3 fal
 last_seen: 2026-10-17 max_pool2d-_max_pool2d_kernel-20261017T043853Z Stage 4（首次识别）
 ```
 
+### CG-2026-0035
+
+```yaml
+gap_id: CG-2026-0035
+layer: BishengIR / vectorize pass（`hivm.hir.vcmp` 的 int32 形态被逐 lane 标量化）
+capability: >-
+  `T.vcmp` 在 **int32 操作数**上被 lowered 为**逐 lane 标量循环**（编译期仅一条
+  `Op 'hivm.hir.vcmp' will execute by scalar instruction with low effiency` 告警，无量级提示）：
+  实测量 **16 ns/lane**（64 lane = 1039 ns/op），是 fp32 `vcmp`（30.5 ns/op = 0.48 ns/lane）的 **34×**、
+  同形 f32 `vmax`（0.19 ns/lane）的 **≈85×**。fp16/fp32 形态正常向量化。
+blocked_algo: >-
+  「在 int32 域做索引判决」的自然写法（`nan_idx >= 0` 选 NaN、`idx == BIG` 判空窗口）在双输出池化里
+  每单元 2 条即吃掉 Task 的 **69%**：sincnet baseline 3480.77 µs 中约 2387 µs（`scalar` 2796 / 40 核），
+  使算子性能上限被纯粹的语言域选择封住（与算法/流量无关）。绕法（`vcast(int32→f32)` + fp32 `vcmp`，
+  `|idx| < 2**24` 时精确）实测 sincnet −67.6%、ecg −57.0%。
+evidence:
+  - 实测单价表：`examples/TileOPs/tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/perf_opt/op_cost_calibration.jsonl`（`vcmp_int32_m1_ch64` 1039 ns/op vs `vcmp_fp32_m1_ch64` 30.5 ns/op）与 `op_cost2` 组（`p2_vcmp_int_m1_ch64_r512` scalar=525.70 µs）
+  - 真实 kernel 的分解证据：同目录 `_probe_decomp_nointcmp.py`（3481.69 → **1094.60 µs**，`scalar` 2796.42 → 426.23 µs）+ `perf_opt/opt_log.md#§3.2`
+  - 复现：`perf_opt/probe_ops2.py --op vcmp_int --m 1 --ch 64 --reps 512`（`msprof op` 口径）
+  - 告警文本：`AscendNPU IR compile success: ... warning: Op 'hivm.hir.vcmp' will execute by scalar instruction with low effiency`（无 dtype 维度说明）
+workaround: >-
+  int 域判决改到 fp32 域：`T.vcast(idx_i32, idx_f32, "rint")` + fp32 `T.vcmp`（索引绝对值 < 2^24 时
+  int32→fp32 精确），成本 2 条 f32 平面 op/单元（≈0.1 µs）换回 2387 µs。代价：多 2 个 (BL,CH) f32 平面
+  （UB +8 B/输出元素，已计入本任务的精确足迹公式）。
+occurrences: 1
+tasks: [max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z]
+toolchain_stamp: tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51 / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-18
+status: open
+proposal: none（未达 recurring；建议方向 = ① 让 `vcmp` 的 int16/int32/int64 形态走向量通道，或至少在标量化时按 lane 数给出量级告警；② docs 的 `T.vcmp` §2.2.1 dtype 表补充「int 域标量化」性能注记）
+created_by: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z（Stage 4 `opt_log.md#§3.1/§8.3`）2026-10-18
+last_seen: 2026-10-18 max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z Stage 4（首次识别）
+```
+
+### CG-2026-0036
+
+```yaml
+gap_id: CG-2026-0036
+layer: Frontend / TileLangIR（`T.vbrc` 目标为「运行期偏移的 UB 区域」时被静默丢弃）
+capability: >-
+  `T.vbrc(scalar, dst_region)` 的 `dst_region` 若以**运行期偏移**切片（如循环变量 `jj` 的
+  `buf[jj:jj+1, 0:ch]`），该 broadcast 被**静默丢弃**：编译通过、无告警，目标缓冲保持未初始化；
+  下游 int32 读取未初始化 UB 直接触发 **vector-core fault / 段错误**（本任务 L0 首个用例即
+  `Segmentation fault`，rc=139）。静态偏移（编译期常量）形态合法。
+blocked_algo: >-
+  「用 per-row broadcast 预构建索引/位置平面（static ramp）」的写法不可用 ⇒ 本任务的
+  「per-visit 运行期 `T.vbrc(iw)` → 静态行 ramp」op 数削减支路在第一步即崩溃（`_round1_jramp.py`），
+  被迫保留 per-visit 广播（每 visit 约 +10 ns）。同族 `T.arange` 形态亦在运行期 core dump
+  （见 CG-2026-0031 的第二形态），故该 op 数削减方向当前无可用实现路径。
+evidence:
+  - 复现（允许失效）：`examples/TileOPs/tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/perf_opt/_round1_jramp.py`（`--level L0` 首例即段错误）+ `opt_log.md#§5 R1c`
+  - 同族陷阱条目：`pattern-library/traps-compiler.md` TRAP-npuir-vbrc-region-dropped（DESIGN §9.2 亦已记载该约束）
+  - docs/Tilelang.language/ 的 `T.vbrc` 条目未记载「运行期偏移区域被丢弃」（未文档化假设）
+workaround: >-
+  `T.vbrc` 只对**整 buffer** 或**静态偏移区域**使用（本任务 baseline 的 `T.vbrc(x, whole_buf)` 形态即
+  合法且被保留）；per-row 值改用 `T.copy` 从已有 buffer 复制（代价 = 1 条向量 op），或保留 per-visit
+  广播（本任务采纳后者：`vbrc` 单价 23.8 ns vs `vmax` 12.3 ns，非主导项）。
+occurrences: 1
+tasks: [max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z]
+toolchain_stamp: tilelang 0.1.2+e8b5d51e3d098422c3970f4e714fb5dba1493609（commit e8b5d51 / dev root build）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 + CANN 9.0.0 + Ascend910B4（aicore 20 → AIV 40 / UB 196608 B）/ 2026-10-18
+status: open
+proposal: none（未达 recurring；建议方向 = 在 frontend 对「运行期偏移 dst」的 `vbrc` 给出编译期错误，而非静默丢弃；docs 补该限制条款）
+created_by: max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z（Stage 4 `opt_log.md#§8.3`）2026-10-18
+last_seen: 2026-10-18 max_pool1d_with_indices-_max_pool1d_with_indices_kernel-20261017T2354Z Stage 4（首次识别）
+```
+
+### CG-2026-0037
+
+```yaml
+gap_id: CG-2026-0037
+layer: Frontend API（16-bit dtype 的「零判定」比较原语 / 位视图操作数形态）
+capability: >-
+  16-bit（bf16/fp16）与常数比较缺「**无 f32 上抛**」的向量原语，两个可观测面：
+  (a) `T.vcmp` 在 bf16 操作数上隐式上抛 f32，且对**两个**操作数各做一次（IR 可见两次
+  `vcast bf16→f32`）⇒ 每元素比较多付 **2 个向量 pass**（`(2048,4096)` bf16 实测
+  `vec_time 19.58 µs ≈ 5 pass` vs fp16 `12.34 µs = 3 pass`，差 **+7.24 µs / +59%**；
+  按 0.158 µs/pass 吞吐口径反解 2×0.158×26 任务 = 8.2 µs，与实测吻合）；
+  (b) 位视图绕法不可用——`T.vbitcast(x_ub, "float16")` 返回 `tir.Call` 句柄，`T.vcmp`
+  直接拒绝该操作数（`<class 'tvm.tir.expr.Call'> has no attribute 'buffer'`）；改成语句形态
+  虽可编译，但该 op 是 **in-place 重解释**：后续同 buffer 的 bf16 数值比较读到 fp16 解释后的
+  位模式（`IMPL_CHECK: FAIL 1024/2048 rows differ`）。
+  期望形态：① `vcmp` 支持**标量常数操作数**（16-bit 零判定免去 zero buffer 与一次 lift）；
+  ② 或 `vbitcast` 返回**可作 v 算子操作数的 buffer view**（非 in-place 重解释）。
+blocked_algo: >-
+  所有 bf16「与常数比较」类逐元素/归约算子（`count_nonzero` / `all` / `any` / mask 类）多付
+  1–2 个向量 pass：本任务 hidden bf16 31.14 vs fp16 26.01 µs（+19.7%，同 shape/同任务数/GM 流量
+  相同），其中 `vec` 增量 +7.24 µs 即该缺口；显式单次 lift（op1：`vcast(x→f32)` 一次 +
+  `vcmp(f32,f32)`、`z32` 提出循环）只能省 **1** 个 pass（`vec −9.2%` ≈ 1 pass、Task −5.42%），
+  第 2 个 pass 无法免除；若原语可用，预期再省 ~1 pass ≈ **−3.5~4 µs / −13%**（未实施路线）。
+evidence:
+  - 任务工作区（允许失效）：`examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel/perf_opt/{_logical_reduce_kernel_round4_op3_bf16_f16view.py（blocked 形态）, _logical_reduce_kernel_round4_op1_bf16_lift.py（显式单次 lift，valid −5.42%）}` + `opt_log.md#§9.5.1（vec/mte2 逐项：12.34/19.58 µs、vec 单价 0.0579/0.0919 ns/元素）、#§9.5.2（op3 报错全文）、#§9.5.4（交错 A/B 3 对）`
+  - 交叉引用（**部分重叠、不同层，occurrences 各自独立**）：`CG-2026-0022(c)`（buffer 级 `T.vbitcast(ub_buf,"float32")` → `InternalError`）——同属「位视图不可用」，但 0022 的阻塞面是位精确编码配方（frexp/掩码）的位操作路径，本条阻塞面是**比较原语缺无 lift 形态**（`vbitcast` 的失败形态也不同：Call 句柄 / in-place 语义，而非 InternalError）
+  - 知识域条目：`pattern-library/constants.md CONST-reduce-ub-per-element`（同一 f32 lift 的**体积**面：bf16 多 2 个 f32 平面 ⇒ 单价 ×1.5，但该 ×1.5 只在部分 `(W,bm)` 档显现——第六数据点）；`pattern-library/layout.md PL-1.25`（受影响形态：指示平面补式链）
+  - docs/Tilelang.language/比较操作/ 未记载 bf16 操作数的 f32 上抛与 pass 代价；数据类型转换操作/T.vbitcast.md §2.2.1 仅 fp16/fp32 互转（未文档化假设，估量依据 = 本任务 IR 形态与运行期实测）
+workaround: >-
+  ① **摊薄而非消除**：bf16 驻留档按实测 B/元素上调（`E_CAP/N` 2→3 行、元素上限 12288）⇒
+  任务数 26→18/核，`vec 19.58→17.41`、`mte2 10.58→8.58`、Task 31.235→**27.940 µs（−10.55%）**，
+  同 run 交错 A/B 3/3；形态见 `layout.md PL-1.25` 第五数据点）；② 次优单点 = 显式单次 lift
+  （−5.42%，未采纳，与 ① 未组合测试）。两者都**不能**消除 f32 上抛本身（bf16 向量链仍比 fp16
+  长约 2 pass）。精度不受影响（只改行分块 / 只改 lift 次数，逐位 `torch.equal`）。
+occurrences: 1
+tasks: [count_nonzero-_logical_reduce_kernel-20261018T043104Z]
+toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 commit 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B4（npu-smi 26.1.1；AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
+status: open
+proposal: none（未达 recurring；建议方向 = ① `T.vcmp` 支持标量常数操作数（16-bit 零判定免 zero buffer 与其 lift）；② `T.vbitcast` 返回可作 v 算子操作数的 buffer view 且非 in-place；③ 至少在 docs 记载 bf16 操作数的 f32 上抛与实际 pass 代价——issue 须用户批准）
+created_by: evolver 蒸馏登记，2026-10-18（**溯源**：task `count_nonzero-_logical_reduce_kernel-20261018T043104Z` 的 `perf_opt/opt_log.md#§10.4` 给出 CG 候选文本；该任务 optimize Phase 4 起对 capability-gaps 只读，未落盘 ⇒ 由 evolver 按 AGENTS.md 缺口规则登记）
+last_seen: 2026-10-18 count_nonzero-_logical_reduce_kernel Stage 4（round-4 op3 `vbitcast` 位视图 blocked + op1 显式单次 lift 验证「隐式 lift = 两次」）
+```
+
 ## Recurring（达升级阈值，待推动补齐）
 
+> **条目位置说明（2026-10-18 追加）**：`CG-2026-0031` 与 `CG-2026-0032` 本次由 `open` 升级为
+> `recurring`（第二次独立识别 = `MaxPool1dIndicesFwdOp` Stage 4；两处正文保留在 `## Open` 区原位更新，
+> proposal 字段已产出）。
+>
 > **条目位置说明（2026-10-16）**：`CG-2026-0003` 本次由 `open` 升级为 `recurring`（第二形态 = Expert 显式 `T.sync_block_set` 的 `syn_instr_mode` 属性与 CANN 9.0.0 bishengir-compile 的版本错配），为便于回溯两形态的完整证据链，其**正文保留在下方 `## Open` 区原位更新**（标题已标注 recurring），proposal 字段已产出，与本节其余 recurring 条目同等待推动状态。
 
 ### CG-2026-0023

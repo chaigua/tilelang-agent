@@ -6400,6 +6400,139 @@ decided_by: evolver / human / -   # 裁决者
 - decided_by: -
 - decided_note: 与 VP-2026-0232（采数名契约）分工：那条管「多 prim_func 时如何声明」，本条管「模板默认值不可信时如何核对」；与 VP-2026-0240（final 冻结/重采通道）不重叠（本条管 baseline 行数）。
 
+## VP-2026-0318
+
+- type: D
+- title: bf16 `vcmp` 隐式 f32 lift 对**两个**操作数各做一次 ⇒ 向量链 5 pass vs fp16 3 pass（`(2048,4096)` 实测 +7.24 µs / +59% vec）；显式单次 lift 只省 1 pass（−5.42%）
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：`perf_opt/opt_log.md#§9.5.1` 逐项 profile（同 shape、同任务数 26、GM 流量相同）——`vec_time` fp16 **12.34 µs（ratio 0.545）** vs bf16 **19.58 µs（0.685）**，差 **+7.24 µs**；`vec` 单价 0.0579 → **0.0919 ns/元素（1.59×）**；按 §3 标定的 `0.158 µs/pass`（8192 元素/任务的**吞吐**口径）反解 pass 数 3.0 → 4.77≈5，`2×0.158×26 = 8.2 µs` 与实测吻合；`mte2`/`mte3` 反向更小（10.42/7.22 vs 11.55/10.27）⇒ 差值独占于向量链
+  - 验证性修复（同任务 `_logical_reduce_kernel_round4_op1_bf16_lift.py`）：`vcast(x→f32)` 一次 + `vcmp(f32,f32)`（`z32` 提出循环）⇒ `vec 19.58→17.79`（**−9.2% ≈ 1 pass**，证明「隐式 lift = 2 次」但只能消掉 1 次）；交错 A/B 4 对中位 31.220→29.527（−5.42%），mte2 未改善故未采纳
+  - 反例（不可用路线，同任务 op3）：`T.vbitcast` 位视图——buffer 形式返回 `tir.Call`、`T.vcmp` 拒绝（`Call` 无 `buffer` 属性）；语句形态 in-place 重解释使 bf16 数值比较读到 fp16 位模式（`IMPL_CHECK: FAIL 1024/2048 rows`）；缺口本体见 `CG-2026-0037`
+  - 体/价两面分列（不重复）：`CONST-reduce-ub-per-element` 第六数据点记**体积**面（bf16 多 2 个 f32 平面 ⇒ 单价 ×1.5，但只在部分 `(W,bm)` 档显现）；本条记**时间**面（pass 数）
+- repro: repro-missing（ED-B：delta 骨架 = `x32 = vcast(x_ub→f32)` 一次 + `vcmp(x32, z32)`，before = 每 call 两次隐式 lift；效应在完整 kernel 规模显现——任务内 A/B 文件 `_round4_op1_bf16_lift.py` 42 KB 超 repro 预算，待同族任务最小化回填）
+- toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9 / dev root build）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）+ torch 2.9.0+cpu / torch_npu 2.9.0.post8 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/constants.md
+- delta: |
+    动作: add（constants.md 末尾追加新条目；与 `CONST-reduce-ub-per-element` 互链、不合并——同一 lift 的「时间面」与「体积面」两个量纲）
+    条目 id: CONST-bf16-vcmp-f32-lift
+    正文要点（合入时按 front-matter schema 登记 origin_task/toolchain/repro）:
+      ① bf16（16-bit）`vcmp` 的两个操作数各被 lowering 上抛一次 f32 ⇒ 每元素比较 **+2 个向量 pass**；fp16 同链 3 pass、bf16 ≈5 pass。
+      ② 量纲（带 workload 上下文）：`(2048,4096)`、bm=2、26 任务/核、GM 409.6 KB 读/核 ⇒ vec 12.34→19.58 µs（+7.24 / +59%），vec 单价 0.0579→0.0919 ns/元素；换算 `2×0.158 µs/pass×26 = 8.2 µs` 与实测吻合（差值被 mte2/mte3 部分重叠吸收，Task 净 +4.76 µs）。
+      ③ 只补 1 pass 的合法修复 = 显式单次 lift（`vcast(x→f32)` + `vcmp(f32,f32)`，常数向量提出循环）⇒ vec −9.2%；第 2 个 pass 与 zero-buffer 的 lift 无法免除（原语缺口见 CG-2026-0037）。
+      ④ 判据：dtype 间 vec 单价差 ≈1.6× 且 `vec_ratio > mte2_ratio` ⇒ 先按 pass 数归因，再考虑摊薄（驻留行档上调，PL-1.25 第五数据点）或原语替代；**不要**用 UB 单价解释 dtype 时延差（第六数据点证明 `W=4096` 档两 dtype 同价）。
+      ⑤ 边界：`vec_time ÷ pass 数` 是吞吐口径（0.019 ns/元素），不可与 `CONST-vector-launch-overhead` 的 12–23 ns/op 发射单价互推。
+- status: pending
+- confirmations: 1/2
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（round-4 post-DONE 补测，opt_log §10.2 提案文本）
+- decided_by: -
+- decided_note: 按 ED-A 降级入队（`repro-missing`）——数据本体已自包含；同族任务（bf16 掩码/mask 类）或本 op 下一轮提供最小 repro 后可按「有 repro 的 D 类」直接 Tier 0 合入（E-3 快速通道：另一上下文复现成功即计 2/2）。
+
+## VP-2026-0319
+
+- type: R
+- title: optimize Phase 3 的「final 单向门」补**第三种重开形态**「post-DONE 定向补测」（候选上限、只跑被点名 workload、其余以 codegen 等同性收束、被取代 final 用 sidecar 保全）；并记 `statectl start 4 --extend` 对 optimize `phase=DONE` 返回 `E-TERMINAL`
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：终态 `DONE` 后用户裁定「验收口径变更 + bf16 定向复测」，实际以该形态重开并取得 **−10.55%**（`opt_log.md#§9.5`）；产出形态完整可复用——3 候选（每候选只改一个主要优化点）、只跑 1 个被点名 workload、其余 3 个 workload 用 `get_kernel_source()` 逐 shape sha 证明生成代码**逐字节相同**（`1fbac554…`/`5eab5ac8…`/`2465d293…`）、被取代的 round-3 final 四行一字不改保存在 `perf_records_full_history.jsonl`（24 行 sidecar）、主 `perf_records.jsonl` 每 workload 恰一条权威 final（sha 与 `.stage_state.json` 一致）、`opt_log.md#§7.1` 写明 supersede 原因与范围
+  - 现行 SKILL.md Phase 3 ① ② 只列两种通道：`precision_fix` / 续跑调度（「对该文件**重采全部** tune workload 的 phase=final」）——**与本轮实测形态冲突**：定向补测只重采被点名 workload，其余以 codegen 等同性收束（否则改一个 dtype 的分派也会强制重采 4 个 workload，纯属 run-state 噪声）
+  - 工具侧限制（同任务实测）：`statectl start 4 --extend` 的 reopen 分支只覆盖 `new_op` / `migration`，optimize 场景 `phase=DONE` 直接返回 `E-TERMINAL` ⇒ 本轮重开在**编排层外**执行（conductor 以显式指令 + 状态文件只读的方式放行），无可审计事件（`perf_iteration.count` 由 conductor 事后置 4 / `last_improvement=10.55`）。与 queue `VP-2026-0296`（受控终态重置接口 `reopen --reason`）同族——本条是它的 **optimize-only 子形态**，两案合入时互链
+  - 交叉引用（不重复）：`VP-2026-0240`（已 merged：final 采集前清理 + final 后冻结 + append-only 重采）——本条只补「**部分重采**的合法条件与留档形态」，不改其冻结纪律
+- repro: repro-missing（流程规则；复现条件 = 任一对 optimize 任务终态后调用 `statectl start 4 --extend` 观察 `E-TERMINAL`，并按「3 候选 / 只跑点名 workload / sidecar 保全」执行一次定向补测）
+- toolchain_stamp: 流程规则（statectl 行为依赖 `statectl` 版本；本轮环境 `statectl` 不可用〔`No module named statectl`〕，行为由 conductor 报告与 `.task_timeline.jsonl` 佐证）+ tilelang 0.1.2+c316b0e / CANN 9.0.0 / Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 3 第 1 条 ②「合法的 post-final 修改通道」句内追加第三种形态）
+    定位锚: "② **合法的 post-final 修改通道**：确需在 final 之后再改产物时，由 conductor 以 `precision_fix` / 续跑调度重开 Stage 4，对该文件**重采全部 tune workload 的 `phase=final` 记录**"
+    old 文本: （即上述定位锚原文；新文本在其后插入 ④，不改 ② 的原有语义）
+    new 文本（追加 ④）: |
+      ④ **第三种重开形态 = post-DONE 定向补测**（用户裁定「验收口径变更」或点名某 workload 时）：候选上限 3（每个候选只改一个主要优化点、均从同一 current best 派生）、**只重采被点名 workload 的 `phase=final`**，其余 workload 以 `get_kernel_source()` 逐 shape sha 证明**生成代码逐字节相同**（同则其 final 数值差异归 run-state，不记回退、不重采）；被取代的旧 final 行**一字不改**保存在 `perf_records_full_history.jsonl` sidecar（append-only），主 `perf_records.jsonl` 保持「每 tune workload 恰一条权威 final」且 sha 与 `.stage_state.json` 的 `artifact_hashes` 一致；`opt_log.md` 的 Final Summary 写 supersede 说明（改了什么、为什么只影响被点名 workload、旧值在哪）。**工具侧现状**：`statectl start 4 --extend` 对 optimize 场景 `phase=DONE` 返回 `E-TERMINAL`（reopen 分支只覆盖 `new_op`/`migration`）⇒ 定向补测须由 conductor 显式放行并事后对齐 `perf_iteration`；受控重开接口见 queue `VP-2026-0296`。
+    动机: 本轮实测该形态是**必要且有效**的（bf16 −10.55%、验收由 68.94% → 74.85% 越过族验收线）；按现行「重采全部 tune workload」的字面要求会让 fp16 三个未改动 workload 被强制重采，把 5–8% 的 run-state 漂移写进 final 记录（本轮 §7.1 已显示该风险），并使「唯一权威 final」与「不改动代码却改了数字」同时成立，破坏审计链。
+- status: pending
+- confirmations: -/-
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（opt_log §10.5 + 用户裁定②）
+- decided_by: -
+- decided_note: 与 VP-2026-0240（merged，冻结/清理/重采）分工：0240 管「final 是单向门」，本条管「门的合法开启形态之一（部分重采）」；与 VP-2026-0296（statectl reopen 接口）互为流程/工具两半。
+
+## VP-2026-0320
+
+- type: R
+- title: optimizer 对 `pattern-library/` 与 `.agents/evolution/capability-gaps.md` 改为**只读**——沉淀一律以「提案文本」随任务返回，由 evolver 按 Tier 治理合入（Tier 0 数据/案例、Tier 1 两次证据、Tier 2 人工审批）
+- evidence:
+  - 用户裁定（2026-10-18，task `count_nonzero-_logical_reduce_kernel-20261018T043104Z` post-DONE 轮）：optimizer 自本轮起对上述两处只读；本任务 round-4 的执行形态即实证——3 条 D 提案 + 1 条 P 提案 + 1 条 CG 候选 + 1 条 R 提案全部写在 `perf_opt/opt_log.md#§10`（「只给文本，不写回知识库」），由 evolver 按 Tier 分级合入/入队
+  - 问题本体（绕过 Tier 分级的实证，非本任务）：optimize SKILL.md Phase 4 第 6 条把 pattern-library 回写列为「不自动修改 skill 文档禁令的唯一例外」，第 8 条据此豁免——**任务内写作者 = 未过任何证据门**，其中 `repro-missing` 条目、跨任务口径更正（如 `0.158 µs/pass` 的量纲混淆）都曾直接落盘，后续由 evolver 以「复核 + 证伪更正」补链（stats 中连续多周期的「复核 optimizer 任务内回写 ×N」即该结构性成本）
+  - 交叉引用：`capability-gaps.md` 头部「写入者 = 任务各阶段 Agent 直接追加」亦属同一类；本轮 `CG-2026-0037` 由 optimizer 在 §10.4 给出文本、evolver 登记（`created_by` 可追溯），验证「提案文本 + evolver 落盘」链路可行且不损失内容
+  - 影响面：仅改**写权限归属**，不改「复盘必须产出 D/P/R/C 提案 + 三件套」的要求；round-4 实证表明提案文本形态不降低信息密度（D 类两条均含数字与边界、P 类含判据与代价）
+- repro: repro-missing（流程规则；复现条件 = 检查任一 optimize 任务的 pattern-library diff 是否全部来自 evolver 快照、opt_log Phase 4 是否含完整提案文本）
+- toolchain_stamp: 流程规则（无运行时依赖）；本轮环境 tilelang 0.1.2+c316b0e / CANN 9.0.0 / Ascend910B4 / 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/SKILL.md
+- delta: |
+    动作: update（Phase 4 第 6 条改写首句的授权语义 + 第 8 条扩写；保留 repro 责任与三件套要求）
+    定位锚 1: "6. **回写 pattern-library（例外授权 + repro 沉淀，ED-C）**：本次调优产出的新模式（含代码形态与实测代价）、新代价数据、编译器陷阱新实证/证伪更正，**必须**追加到 `references/pattern-library/` 对应主题文件（含任务溯源与工具链版本戳；条目按 INDEX.md §5 front-matter schema 登记）——该目录是数据积累文件而非流程文档，本条是\"不自动修改 skill 文档\"禁令的唯一例外。"
+    定位锚 1 new: |
+      6. **沉淀提案（pattern-library 与 capability-gaps 只读，2026-10-18 用户裁定）**：本次调优产出的新模式（含代码形态与实测代价）、新代价数据、编译器陷阱新实证/证伪更正、能力缺口——**一律以「提案文本」写入 `opt_log.md` 的复盘章节并按 vp_type（D/P/R/C）+ 证据三件套（evidence / repro / toolchain_stamp）标注**，由任务终态 `tilelang-skill-evolver` 按分级治理合入（D/C → Tier 0、P → Tier 1 两次独立证据、R → Tier 2 人工审批）。**optimizer 对 `references/pattern-library/` 与 `.agents/evolution/capability-gaps.md` 只读**（不再任务内追加条目或计数）：这两处是分级治理的写域，任务内直写会绕过证据门（`repro-missing` 条目、量纲/口径更正曾因此直接落盘后由 evolver 补链）。**repro 责任不变**：D 类/P 类提案仍须给出最小可复现代码或显式 `repro-missing` + 最小化路径（ED-B：陷阱/常数按分级断言、优化点 = 慢→快最小 diff + 见解摘要），写在该任务 `perf_opt/` 下随提案引用——evolver 做机械转正（逐字节拷贝 + 头部规范 + `py_compile`），不重写代码。流程/结构层面的改进仍只提 proposal。
+    定位锚 2: "8. 不自动修改 skill 流程文档（SKILL.md 及 references 除 pattern-library/ 目录外）；只在最终报告里列出建议和 BP proposal。"
+    定位锚 2 new: |
+      8. 不自动修改任何 skill 流程文档与知识库（SKILL.md、references 全目录含 pattern-library/、`.agents/evolution/capability-gaps.md`）；只在最终报告里列出建议与 D/P/R/C 提案文本（见第 6 条）。
+    动机: 让「写入 = 已验证」成为结构事实，而不是靠 evolver 逐轮复核兜底；同时保留复盘必须产出提案（不降低知识产出量）。
+- status: pending
+- confirmations: -/-
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（用户裁定①的流程侧落地）
+- decided_by: -
+- decided_note: 本条与 `VP-2026-0319` 同批（同一用户裁定会话）；apply 时须同时更新 `_shared/standards/hardware-cost-model.md §3` 中「Phase 4 回写 pattern-library/constants.md」的措辞，否则标准文件与新 SKILL 冲突（见 VP-2026-0321 的联动说明）。
+
+## VP-2026-0321
+
+- type: R
+- title: `_shared/standards/hardware-cost-model.md` 增「验收分母口径」节——纯 Vector 类算子的验收线 = `0.7 × 设备自报 roof`（台账 Ratio 仍按 fabric 聚合口径），并规定「跨设备 Ratio 不可比」
+- evidence:
+  - 用户裁定（2026-10-18）：台账 `/workspace/全量13算子台账.md` 的数字（fabric **1.75 TB/s** 口径）**不变**；本算子族验收线改为 `0.7 × 设备自报 roof`，本机（910B4）自报 **0.8 TB/s** ⇒ **560 GB/s**（hidden `(2048,4096)` 29.99 µs / seq 1.873 / 3d 7.49）；三处独立证据（`visualize_data.bin` GM/L2 = 0.8、report `Bandwidth=0.8000`、AIV 读单价 22.4 GB/s/核×40 ≈0.90 与纯读地板 0.70）落在 0.70–1.04 TB/s 带内，与 fabric 差 **2.19×**（`opt_log.md#§9.1–§9.3`、`DESIGN.md#§A.5`、constants.md `CONST-device-peak-910B3` 第五数据点）
+  - 量纲本体：纯 Vector 算子的唯一通路是每核单 AIV 的 MTE2 单向 GM→UB 流（20–26 GB/s/核）——用 fabric 聚合带宽作分母等于要求单 AIV 流跑出 **2.19× 物理上限**，属口径错误；`CONST-device-peak-910B3` 第四数据点已用「目标线 vs 本机地板」给出 4/4 不可达的机械判据（seq 目标 0.86 < 空 kernel 2.44 µs 等）
+  - 现行标准缺口：`hardware-cost-model.md` §2 的「流量项 = 总字节 ÷ 有效带宽」只说「按 MTE2 曲线取值、混合读写禁用峰值」，**未规定验收分母该取本机自报值还是 fabric 规格**；§3 第 3 条又把「Phase 4 回写 pattern-library/constants.md」写成 optimizer 义务（与 VP-2026-0320 冲突）。两项都在本轮任务上实际造成了往返（任务书给 1.75 口径 70% → 4 轮后才由用户裁定口径）
+  - 跨设备证据：同 kernel 在 910B3 报 `Bandwidth 1.7500`、910B4 报 `0.8000`（Ratio 42.16% vs 73.43%）⇒ **Ratio 与绝对时延都不可跨机比较**（queue `VP-2026-0312` 已从「分母绑定设备」侧收口，本条从**标准文件的使用协议**侧收口）
+- repro: repro-missing（流程规则；复现条件 = 在任一新设备上读 `visualize_data.bin` 的 `GM/L2 : GM Read + Write` 与 report `Bandwidth` 列，按 `0.7 × 自报` 重算验收线，与该设备空 kernel / copy 地板比较）
+- toolchain_stamp: 流程规则（数值证据的戳见 constants.md `CONST-device-peak-910B3` 第四/第五数据点：tilelang 0.1.2+c316b0e / CANN 9.0.0 / Ascend910B4 / 2026-10-18）
+- target_doc: .agents/skills/_shared/standards/hardware-cost-model.md
+- delta: |
+    动作: add（§5 之后新增 §6；同时 update §3 第 3 条的一处措辞）
+    新增 §6「验收分母口径（双轨）」要点:
+      ① **两个分母、两个用途**：台账/横向记账用 fabric 规格（910B4 档 report `Bandwidth` 写 0.8、910B3 档 1.75；台账数字不动）；**验收判定用「本机自报 roof」**——`验收线(µs) = 总流量 B ÷ (0.7 × 自报 roof)`。
+      ② **取值来源**（三选一并列、同 run 必须一致）：`visualize_data.bin` 的 `GM/L2 : GM Read + Write` 条目 / 单算子 report 的 `Bandwidth (TB/s)` 列 / AIV 读单价×核数反解；三者不一致时取同 run 的 report 值并记差异。
+      ③ **适用域**：纯 Vector（无 matmul、不走 L1/L0C）且以 GM→UB 单向读为主的算子（reduction / pooling / norm 的大 N 读主导 shape）；Cube/矩阵乘仍按 L1 端口与 fabric 口径（`CONST-L1-port-bw`）。
+      ④ **判定顺序**：先比「目标线 vs 本机地板」（空 kernel / 纯读 / copy 地板），再谈剩余优化空间；目标线低于地板 ⇒ 口径/结构不可达，进 `[DESIGN_LIMIT]` 流程。
+      ⑤ **跨设备不可比**：Ratio 与绝对时延只在同设备同 run 内可比；换设备必须重取自报 roof 并重算全部目标线。
+    §3 第 3 条措辞 update: 「调优中发现**新的硬件常数** → Phase 4 回写 pattern-library/constants.md 新条目（Tier 0，含三件套 + repro，ED-C 责任前移）」→ 「…→ **在 `opt_log.md` 复盘章节给出 D 类提案文本（含三件套与 repro/repro-missing），由 evolver 按 Tier 0 合入**（optimizer 对 pattern-library 只读，见 optimize SKILL.md Phase 4 第 6 条）」（与 VP-2026-0320 联动）。
+    动机: 把「用哪个分母」从任务书/用户口头裁定升级为标准条款，避免每个设备档都要重走一次 4 轮调优才发现口径不可达；同时消除标准文件与 optimize SKILL 的写权限冲突。
+- status: pending
+- confirmations: -/-
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（用户裁定③：口径变更交 evolver 蒸馏，影响后续全部 Vector 类派发）
+- decided_by: -
+- decided_note: `_shared/standards/` 为 hash-locked 标准文件（`standards.lock.json`），apply 时须同步更新该文件 SHA（E-4 预验证流程见 VP-2026-0238 先例）；本条只补「怎么用分母」，数值本体留在 constants.md（单一事实源原则）。
+
+## VP-2026-0322
+
+- type: P
+- title: 2-D 行归约在 **vec-bound** 时按「实测 B/元素」把驻留行档上调一档（`floor(元素上限/N)`）——任务数下降摊薄 vcmp/上抛固定段，bf16 `(2048,4096)` 2→3 行实测 −10.55%
+- evidence:
+  - task `count_nonzero-_logical_reduce_kernel-20261018T043104Z`：`opt_log.md#§9.5.2–§9.5.4`——op2（bf16 驻留 3 行、元素上限按实测 12.01 B/元素取 12288）vs current best（2 行、`E_CAP=8192`）：`mte2 10.58→8.58`（−18.9%，等效读带宽 13.6→16.0 GB/s/核）、`vec 19.58→17.41`（−11.1%）、`mte3 7.75→4.42`、`scalar 5.38→4.29`、Task 31.235→**27.940**（同 run 交错 A/B 3/3 同向、极差 0.366 µs）；L0 21/21 + L1 24/24 + L2/Boundary 逐位（`torch.equal`），Op 层 `default_config → _select_config` 自动取到新档
+  - 判据来源：bf16 上 `vec_ratio 0.685` > `mte2_ratio 0.364`（vec-bound；差值全部来自 `vcmp` f32 lift，见 queue `VP-2026-0318`）；fp16 同点 `0.545/0.510` 均衡 ⇒ 收益预期低（未测，本轮按用户裁定收束不动 fp16）
+  - 编译边界：`W=4096` 三 dtype 通过点同为 `bm=3`（12288 元素），`bm=4`（16384）在 bf16 溢出 192 B / fp16 溢出 544 B（`CONST-reduce-ub-per-element` 第六数据点；**不可**按 8 B/元素外推）
+  - 数据侧落点（合入目标条目已在库）：`pattern-library/layout.md PL-1.25` 第五数据点（本轮 Tier 0 已写入数字与机制）
+- repro: repro-missing（效应只在完整 kernel 规模显现；delta 骨架 = `_select_config` 的 bf16 独立行阶梯 `(1,2,3,4,8)` + `_BF16_RESIDENT_ELEMS=12288`；ED-B 待同族任务最小化）
+- toolchain_stamp: tilelang 0.1.2+c316b0e6b8a1ddd13a6927b70f38a614e8b0474d（源树 417dae9）+ CANN 9.0.0 + Ascend910B4（AIV=40 / UB 196608 B）/ 2026-10-18
+- target_doc: .agents/skills/tilelang-op-optimize/references/pattern-library/layout.md
+- delta: |
+    动作: update（PL-1.25 的「元素预算三路径」段追加判据行；数字已在第五数据点，条目正文只补可复用判据与边界，不重复数字）
+    追加要点:
+      ① **触发信号**：行归约 profile 上 `vec_ratio > mte2_ratio`（vec-bound，bf16 的 `vcmp` 上抛链典型）且 `E_CAP < N ≤ _ub_elems`——此时不要只调 `tn`/列分块，先试把驻留行数提到 `floor(实测元素上限 / N)`。
+      ② **元素上限取法**：在目标 `(dtype, W)` 上跑 compile-only 探针取通过点（`bm` 阶梯 + 溢出报文反解），**不得**按另一 `(W,bm)` 档或另一 dtype 的 B/元素外推。
+      ③ **收益机制**：任务数↓ ⇒ 每任务固定段（DMA 建立、`vcmp`/lift 的固定部分、行级微元）被摊薄；等效读带宽随之上升（13.6→16.0 GB/s/核）。反之 fp16 均衡档收益小，先测一档再决定是否扩到全 dtype。
+      ④ **代价与约束**：零精度风险（只改行分块，逐位通过）；UB 预算须留双缓冲余量（12288×12.01 ≈ 147.6 KB < 196.6 KB）；M 尾块沿用 `real_m` 裁剪；**逐 dtype 独立阶梯**（bf16 `(1,2,3,4,8)`+12288 vs fp16/fp32 `E_CAP=8192`）。
+      ⑤ **第二证路径（E-3）**：任一 `all`/`any`（或同族池化/norm 行归约）任务在 bf16 上复现「vec-bound + 行档上调 ≥5% 且无回退」即计 2/2。
+- status: pending
+- confirmations: 1/2
+- created_by: task count_nonzero-_logical_reduce_kernel-20261018T043104Z 2026-10-18（opt_log §10.3 提案文本）
+- decided_by: -
+- decided_note: 与「同主题已有条目」的关系：判据落在既有 PL-1.25（update 而非新开条目）；数字已作为第五数据点入条目正文（ED-A 自包含），本条负责把「何时/怎么用」显性化——两层不重复。
+
 ## Decided（merged / rejected / expired / conflict 归档）
 
 ## VP-2026-0227
