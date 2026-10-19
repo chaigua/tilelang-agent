@@ -1,0 +1,97 @@
+{
+  "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+  "expanded_cases": 7,
+  "workloads": [
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "image-g32",
+      "workload_id": "fp16",
+      "label": "image-g32",
+      "marks": ["tune"],
+      "shape": {"x": [8, 128, 32, 32], "weight": [128], "bias": [128]},
+      "dtype": "float16",
+      "params": {"num_groups": 32, "eps": 1e-05, "M": 256, "D": 4096},
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_group_norm_bench; perf target Ratio >= 70% (C = 147.31 %*us -> 2.104 us)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "image-g32",
+      "workload_id": "bf16",
+      "label": "image-g32",
+      "marks": ["tune"],
+      "shape": {"x": [8, 128, 32, 32], "weight": [128], "bias": [128]},
+      "dtype": "bfloat16",
+      "params": {"num_groups": 32, "eps": 1e-05, "M": 256, "D": 4096},
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_group_norm_bench; perf target Ratio >= 70% (C = 170.08 %*us -> 2.430 us)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "wider-channel-g32",
+      "workload_id": "fp16",
+      "label": "wider-channel-g32",
+      "marks": ["tune"],
+      "shape": {"x": [4, 256, 28, 28], "weight": [256], "bias": [256]},
+      "dtype": "float16",
+      "params": {"num_groups": 32, "eps": 1e-05, "M": 128, "D": 6272},
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_group_norm_bench; perf target Ratio >= 70% (C = 109.98 %*us -> 1.571 us)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "tail-spatial-g16",
+      "workload_id": "fp16",
+      "label": "tail-spatial-g16",
+      "marks": ["tune"],
+      "shape": {"x": [4, 128, 30, 30], "weight": [128], "bias": [128]},
+      "dtype": "float16",
+      "params": {"num_groups": 16, "eps": 1e-05, "M": 64, "D": 7200},
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_group_norm_bench; perf target Ratio >= 70% (C = 63.30 %*us -> 0.904 us)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "smoke-g8",
+      "workload_id": "fp32",
+      "label": "smoke-g8",
+      "marks": ["smoke"],
+      "shape": {"x": [2, 32, 8, 8], "weight": [32], "bias": [32]},
+      "dtype": "float32",
+      "params": {"num_groups": 8, "eps": 1e-05, "M": 16, "D": 256},
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label carries the smoke token); no perf target, final precision regression only",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "smoke-g8",
+      "workload_id": "fp16",
+      "label": "smoke-g8",
+      "marks": ["smoke"],
+      "shape": {"x": [2, 32, 8, 8], "weight": [32], "bias": [32]},
+      "dtype": "float16",
+      "params": {"num_groups": 8, "eps": 1e-05, "M": 16, "D": 256},
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label carries the smoke token); no perf target, final precision regression only",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_group_norm.py::test_group_norm_bench",
+      "kernel_id": "smoke-g8",
+      "workload_id": "bf16",
+      "label": "smoke-g8",
+      "marks": ["smoke"],
+      "shape": {"x": [2, 32, 8, 8], "weight": [32], "bias": [32]},
+      "dtype": "bfloat16",
+      "params": {"num_groups": 8, "eps": 1e-05, "M": 16, "D": 256},
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label carries the smoke token); no perf target, final precision regression only",
+      "precision_pass": true
+    }
+  ]
+}

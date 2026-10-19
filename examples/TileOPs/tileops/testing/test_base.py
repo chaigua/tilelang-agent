@@ -31,6 +31,34 @@ def _to_tuple(outputs):
     raise ValueError(f"Unsupported output type: {type(outputs)}")
 
 
+# NPU adaptation: float8 dtype upcasts are CPU-routed (see _to_comparison_dtype).
+_FP8_DTYPES = frozenset(
+    t
+    for t in (
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e5m2", None),
+    )
+    if t is not None
+)
+
+
+def _to_comparison_dtype(tensor: torch.Tensor) -> torch.Tensor:
+    """Cast *tensor* to the comparison width (fp32, or complex64 if complex).
+
+    NPU adaptation: this toolchain cannot cast a ``float8`` tensor on device in
+    either direction -- ``tensor.to(<wide>)`` raises
+    ``RuntimeError: copy_d2d_baseformat_opapi ... aclnnInplaceCopy failed, error
+    code is 561103`` for every shape (verified on this toolchain, 2026-10-14).
+    fp8 tensors are therefore moved to CPU before the upcast; a dtype
+    conversion is a device-independent elementwise map, so the compared values
+    are unchanged.  All other dtypes keep the original on-device cast.
+    """
+    wide = torch.complex64 if tensor.is_complex() else torch.float32
+    if tensor.dtype in _FP8_DTYPES:
+        return tensor.cpu().to(wide)
+    return tensor.to(wide)
+
+
 def allclose_compare(
     output: torch.Tensor,
     output_ref: torch.Tensor,
@@ -77,8 +105,9 @@ def record_check_result(op, outputs: Any, outputs_ref: Any) -> float:
     max_abs_err = 0.0
     for output, output_ref in zip(outputs, outputs_ref, strict=True):
         if output_ref is not None:
-            wide = torch.complex64 if output.is_complex() else torch.float32
-            err = (output.to(wide) - output_ref.to(wide)).abs().max().item()
+            # fp8 tensors are upcast via CPU (NPU on-device fp8 cast is
+            # unsupported on this toolchain; see _to_comparison_dtype).
+            err = (_to_comparison_dtype(output) - _to_comparison_dtype(output_ref)).abs().max().item()
             max_abs_err = max(max_abs_err, err)
 
     _check_result.op_name = op.__class__.__name__

@@ -1,3 +1,6 @@
-from tileops.ops.attention.multi_head_attention import MultiHeadAttentionFwdOp
+from tileops.ops.attention.multi_head_attention import (
+    MultiHeadAttentionBwdOp,
+    MultiHeadAttentionFwdOp,
+)
 
-__all__ = ["MultiHeadAttentionFwdOp"]
+__all__ = ["MultiHeadAttentionBwdOp", "MultiHeadAttentionFwdOp"]

@@ -1,0 +1,198 @@
+{
+  "kernel_dir": "examples/TileOPs/tileops/kernels/reduction/argmin/argmin_kernel",
+  "benchmark_entry": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench",
+  "manifest": "examples/TileOPs/tileops/manifest/reduction.yaml (ArgminFwdOp.workloads)",
+  "expanded_by": "tileops.benchmark.benchmark_base.workloads_to_params('ArgminFwdOp', include_extra=True)",
+  "op_kind": "argmin",
+  "workloads": [
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[smoke-argmin-float16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "smoke-argmin-float16",
+      "label": "smoke-argmin",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "smoke",
+      "reason": "manifest smoke case (label contains 'smoke'); precision regression only, no performance tuning",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[smoke-argmin-bfloat16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "smoke-argmin-bfloat16",
+      "label": "smoke-argmin",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "smoke",
+      "reason": "manifest smoke case (label contains 'smoke'); precision regression only, no performance tuning",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[smoke-argmin-float32]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "smoke-argmin-float32",
+      "label": "smoke-argmin",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float32",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "smoke",
+      "reason": "manifest smoke case (label contains 'smoke'); precision regression only, no performance tuning",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[lm-head-argmin-float16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "lm-head-argmin-float16",
+      "label": "lm-head-argmin",
+      "marks": [],
+      "shape": [
+        4,
+        102400
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "C6 N-split partial+merge adopted (26.247 -> 11.898us, 2.21x)",
+      "tuning_status": "winner_merged",
+      "baseline_us": 26.247,
+      "final_us": 11.898
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[lm-head-argmin-bfloat16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "lm-head-argmin-bfloat16",
+      "label": "lm-head-argmin",
+      "marks": [],
+      "shape": [
+        4,
+        102400
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "C6 N-split partial+merge adopted (31.370 -> 11.914us, 2.63x)",
+      "tuning_status": "winner_merged",
+      "baseline_us": 31.37,
+      "final_us": 11.914
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[hidden-state-argmin-float16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "hidden-state-argmin-float16",
+      "label": "hidden-state-argmin",
+      "marks": [],
+      "shape": [
+        2048,
+        4096
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "no valid structural gain found: measured pure-copy floor for this shape is 15.8us (16KB DMAs) / 13.6us (64KB flat DMAs) and the correct 5-pass chain adds 15.5us; explicit-chain variants (fused per-row, fp16 candidate) were measured and rejected (see opt_log Iterations 1-2)",
+      "tuning_status": "no_gain",
+      "baseline_us": 31.346,
+      "final_us": 31.229
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[hidden-state-argmin-bfloat16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "hidden-state-argmin-bfloat16",
+      "label": "hidden-state-argmin",
+      "marks": [],
+      "shape": [
+        2048,
+        4096
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "retuned block_m ladder moves bf16 from bm=1 to bm=2 (54.010 -> 36.865us, 1.47x)",
+      "tuning_status": "winner_merged",
+      "baseline_us": 54.01,
+      "final_us": 36.865
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[non-aligned-argmin-float16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "non-aligned-argmin-float16",
+      "label": "non-aligned-argmin",
+      "marks": [],
+      "shape": [
+        256,
+        300
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "already launch-overhead bound at 3.2us; retuned ladder keeps bm=8 and measures within noise",
+      "tuning_status": "no_gain",
+      "baseline_us": 3.226,
+      "final_us": 3.192
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_argmin.py::test_argmin_bench[non-aligned-argmin-bfloat16]",
+      "kernel_id": "_argreduce_kernel::main",
+      "workload_id": "non-aligned-argmin-bfloat16",
+      "label": "non-aligned-argmin",
+      "marks": [],
+      "shape": [
+        256,
+        300
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "kind": "tune",
+      "reason": "already launch-overhead bound at 3.35us; retuned ladder keeps bm=8 and measures within noise",
+      "tuning_status": "no_gain",
+      "baseline_us": 3.354,
+      "final_us": 3.317
+    }
+  ]
+}

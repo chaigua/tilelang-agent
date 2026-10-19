@@ -36,6 +36,12 @@ Adaptation summary (GPU -> NPU):
   ``gqa_prefill_square_fwd_kernel`` -> ``GQAFwdWsPersistentCausalKernel``)
   is GPU arch specialization; NPU collapses to the architecture-generic
   dense prefill kernel.
+
+The same file also hosts the **MultiHeadAttentionBwdOp** kernels (Part B
+below the forward wrapper): ``FlashAttnBwdPreprocessKernel``,
+``GQABwdKernel`` and ``FlashAttnBwdPostprocessKernel``.  The GPU backward
+factory has no ``custom_op`` wrapper (``GQABwdKernel.forward`` calls the
+``@tilelang.jit`` builder directly), so K7 is a no-op here; K5/K8/K9 apply.
 """
 
 from typing import Optional, Tuple
@@ -43,6 +49,36 @@ from typing import Optional, Tuple
 import torch
 
 from tileops.kernels.kernel_base import Kernel
+
+# Part A (MultiHeadAttentionBwdOp): the NPU TileLang kernel factories for the
+# GQA/MHA backward pass, integrated by Stage 5 into this op's kernel package.
+# This is the manual Stage 5 replacement of the Stage 0 GPU-extracted import
+# with the baseline/perf_opt source-selection block (the Stage 0 comment
+# anticipated exactly this substitution).
+# ---------------------------------------------------------------------------
+# Kernel source selection: baseline vs perf_opt (Stage 4 tuned)
+#
+# Exactly one source block below is active; toggle by swapping the comment.
+# Default policy: the perf_opt source becomes active once tuned drop-in
+# kernels (same factory signatures) land at
+# .multi_head_attention_kernel/perf_opt/{func}.py and pass their L0/L1 regression;
+# the baseline (Stage 3) source is active otherwise.  ``pytest tests/ops/``
+# and ``pytest benchmarks/ops/`` dispatch through whichever source is
+# active here.
+# ---------------------------------------------------------------------------
+# --- baseline (Stage 3) ------------------------------------------------------
+from .multi_head_attention_kernel import (
+    _flashattn_bwd_postprocess_kernel,
+    _flashattn_bwd_preprocess_kernel,
+    _gqa_bwd_kernel,
+)
+# --- perf_opt (Stage 4 tuned) ------------------------------------------------
+# from .multi_head_attention_kernel.perf_opt._flashattn_bwd_preprocess_kernel import _flashattn_bwd_preprocess_kernel
+# from .multi_head_attention_kernel.perf_opt._gqa_bwd_kernel import _gqa_bwd_kernel
+# from .multi_head_attention_kernel.perf_opt._flashattn_bwd_postprocess_kernel import _flashattn_bwd_postprocess_kernel
+# Legacy contract name (CUDA-only helper discarded on NPU; re-exported by the
+# kernel package).  Kept importable for the persisted wrapper contract.
+from .multi_head_attention_kernel import make_dq_layout  # noqa: F401
 
 # Part A: the GPU TileLang kernel factory extracted by extract_tl_kernel.py
 # (single output file ``_multi_head_attention_fwd_kernels.py``, shared by all
@@ -66,7 +102,12 @@ from tileops.kernels.kernel_base import Kernel
 # --- perf_opt (Stage 4 tuned) ------------------------------------------------
 from .multi_head_attention_kernel.perf_opt._gqa_prefill_fwd_kernel import _gqa_prefill_fwd_kernel
 
-__all__ = ["GQAPrefillFwdKernel"]
+__all__ = [
+    "FlashAttnBwdPostprocessKernel",
+    "FlashAttnBwdPreprocessKernel",
+    "GQABwdKernel",
+    "GQAPrefillFwdKernel",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -282,3 +323,213 @@ class GQAPrefillFwdKernel(Kernel):
             k,
             v,
         )
+
+
+# ===========================================================================
+# MultiHeadAttentionBwdOp kernels (GQA/MHA backward : preprocess / main / post)
+#
+# Part B (K5-K9 adaptations).  The GPU ``gqa_bwd.py`` defines the three
+# factories without a ``@torch.library.custom_op`` wrapper (each Kernel
+# ``forward`` calls the ``@tilelang.jit`` builder directly), so K7 does not
+# apply; the GPU's ``tile_stage_thread_configs`` autotune space and ``tune``
+# parameter are dropped (K8) and ``threads`` is removed from the config and the
+# builder invocation (K9).  The builders themselves are the Part A extracted
+# GPU implementations, which the NPU kernel component rewrites for
+# ``target="npuir"``.
+# ===========================================================================
+
+
+class FlashAttnBwdPreprocessKernel(Kernel):
+    """Row-wise ``delta = rowsum(o * do)`` preprocessing for the GQA/MHA backward pass.
+
+    The launch geometry is fixed (``blk = 256``), so ``default_config`` is empty
+    (the imported builder exposes no tunable knobs).
+
+    NPU adaptations:
+
+    - K5: ``supported_archs = None`` (all architectures; was ``[80, 89, 90]``).
+    - K8: autotune removed; ``init_config(config)`` takes no ``tune`` argument.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        seq_len: Sequence length.
+        dim: Head dimension.
+        dtype: Torch dtype of ``o`` / ``do``.
+        config: Optional config dict. This kernel exposes no tunable knobs.
+    """
+
+    # npuir Developer-form kernel (v-prefix vector API + alloc_shared): its
+    # source declares ``ASCEND_MODE = "Developer"``.  Declared explicitly so
+    # every invocation is scoped to Developer regardless of the ambient
+    # TILELANG_ASCEND_MODE (CG-2026-0010), matching GQABwdKernel.
+    ascend_mode = "Developer"
+
+    # K5: [80, 89, 90] (CUDA SM) -> None (all architectures).
+    supported_archs: Optional[list] = None
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _flashattn_bwd_preprocess_kernel(
+            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
+        )
+        self.init_config(config)
+
+    def forward(self, o: torch.Tensor, do: torch.Tensor) -> torch.Tensor:
+        return self.kernel(o, do)
+
+
+class FlashAttnBwdPostprocessKernel(Kernel):
+    """Cast the fp32 ``dq`` accumulator back to the storage dtype.
+
+    The launch geometry is fixed (``blk = 64``), so ``default_config`` is empty
+    (the imported builder exposes no tunable knobs).
+
+    NPU adaptations:
+
+    - K5: ``supported_archs = None`` (all architectures; was ``[80, 89, 90]``).
+    - K8: autotune removed; ``init_config(config)`` takes no ``tune`` argument.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        seq_len: Sequence length.
+        dim: Head dimension.
+        dtype: Torch dtype of the output ``dq``.
+        config: Optional config dict. This kernel exposes no tunable knobs.
+    """
+
+    # npuir Developer-form kernel (v-prefix vector API + alloc_shared): its
+    # source declares ``ASCEND_MODE = "Developer"``.  Declared explicitly so
+    # every invocation is scoped to Developer regardless of the ambient
+    # TILELANG_ASCEND_MODE (CG-2026-0010), matching GQABwdKernel.
+    ascend_mode = "Developer"
+
+    # K5: [80, 89, 90] (CUDA SM) -> None (all architectures).
+    supported_archs: Optional[list] = None
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        seq_len: int,
+        dim: int,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.seq_len = seq_len
+        self.dim = dim
+        self.dtype = dtype
+
+        self.kernel = _flashattn_bwd_postprocess_kernel(
+            self.batch, self.heads, self.seq_len, self.dim, self.dtype_str
+        )
+        self.init_config(config)
+
+    def forward(self, dq: torch.Tensor) -> torch.Tensor:
+        return self.kernel(dq)
+
+
+class GQABwdKernel(Kernel):
+    """Dense GQA/MHA backward main kernel (BSHD layout, flash-attention style).
+
+    Recomputes the forward scores ``P = exp2(scale * q @ k^T - lse)`` and
+    accumulates ``dv`` / ``dk`` / ``dq`` over the KV blocks, treating the
+    precomputed row-wise ``delta`` (preprocess) and the per-row ``lse`` as
+    inputs.  MHA uses this with ``heads_kv == heads``.
+
+    NPU adaptations:
+
+    - K5: ``supported_archs = None`` (all architectures; was ``[80, 89, 90]``).
+    - K8: autotune removed (``tile_stage_thread_configs`` space dropped);
+      heuristic ``default_config`` only, ``init_config(config)`` without ``tune``.
+    - K9: ``threads`` removed from ``default_config`` and the builder call.
+
+    Args:
+        batch: Batch size.
+        heads: Number of query heads.
+        heads_kv: Number of key/value heads (``heads % heads_kv == 0``).
+        seq_len: Sequence length.
+        dim: Head dimension.
+        is_causal: Whether to apply a causal mask.
+        dtype: Data type (float16 or bfloat16).
+        config: Optional dict with "block_m", "block_n", "num_stages".
+
+    Raises:
+        ValueError: If ``heads % heads_kv != 0`` (raised by the imported
+            factory).
+    """
+
+    ascend_mode = "Developer"
+
+    # K5: [80, 89, 90] (CUDA SM) -> None (all architectures).
+    supported_archs: Optional[list] = None
+
+    def __init__(
+        self,
+        batch: int,
+        heads: int,
+        heads_kv: int,
+        seq_len: int,
+        dim: int,
+        is_causal: bool,
+        dtype: torch.dtype,
+        config: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.batch = batch
+        self.heads = heads
+        self.heads_kv = heads_kv
+        self.seq_len = seq_len
+        self.dim = dim
+        self.is_causal = is_causal
+        self.dtype = dtype
+
+        self.kernel = _gqa_bwd_kernel(
+            self.batch,
+            self.heads,
+            self.heads_kv,
+            self.seq_len,
+            self.dim,
+            self.is_causal,
+            self.dtype_str,
+        )
+
+        self.init_config(config)
+
+    @property
+    def default_config(self) -> dict:
+        """Default tiling config (GPU defaults minus the CUDA ``threads``).
+
+        K8: the GPU ``autotune_configs`` (``tile_stage_thread_configs``) space
+        is dropped.  K9: ``threads`` (CUDA execution detail) is removed from
+        the config dict; ``block_m`` / ``block_n`` / ``num_stages`` are
+        preserved from the GPU defaults.
+        """
+        return {
+            "block_m": 64,
+            "block_n": 64 if self.dim <= 64 else 32,
+            "num_stages": 1,
+        }
+
+    def forward(self, *inputs: Tuple[torch.Tensor, ...]) -> Tuple[torch.Tensor, ...]:
+        # K9: no ``threads`` in the builder invocation (``self.config`` holds
+        # only block_m / block_n / num_stages).
+        return self.kernel(**self.config)(*inputs)

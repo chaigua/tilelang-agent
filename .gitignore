@@ -103,3 +103,33 @@ unittest/npuir/output/
 # claude
 .claude/
 CLAUDE.md
+
+# TileOPs run artifacts & records (keep source only)
+examples/TileOPs/reports/tileops/
+examples/TileOPs/reports/verification/
+**/perf_opt/profiles/
+**/perf_opt/logs/
+**/perf_opt/extra-info/
+**/perf_opt/ab_*/
+**/OPPROF_*/
+**/history_version/
+**/kernel_meta/
+**/*.jsonl
+**/perf_records.jsonl
+**/perf_opt/opt_log.md
+**/RETROSPECTIVE.md
+**/SESSION_TIMING_ANALYSIS.md
+**/REVIEW.md
+**/PROGRESS.md
+**/FINAL_REPORT.md
+**/perf_feedback.md
+**/smoke_check.json
+**/freeze_sha.txt
+**/*.failed_env_*
+**/full.json
+**/.migration_meta.json
+**/.migration_state.json
+**/.stage_state.json
+**/integration_report.json
+**/integration_log.md
+**/*.bak

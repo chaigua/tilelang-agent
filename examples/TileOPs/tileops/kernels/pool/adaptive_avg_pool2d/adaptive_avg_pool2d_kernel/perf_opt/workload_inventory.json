@@ -1,0 +1,59 @@
+{
+  "kernel_id": "tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/_adaptive_avg_pool2d_kernel.py::_adaptive_avg_pool2d_kernel::main",
+  "target_kernel_name": "main",
+  "note": "Workload set expanded from the migrated benchmark entry examples/TileOPs/benchmarks/ops/bench_pool.py::test_adaptive_avg_pool2d_bench (manifest-driven, op AdaptiveAvgPool2dFwdOp, tileops/manifest/pool.yaml workloads). pytest param ids are '<label>-<dtype>'. Round 3 status: resnet-global and spp-6x6 adopted new ab-confirmed winners (C4 fp16 cheap reduce chain + single-wave CH heuristic); nondiv-7x7 re-measured on the merged kernel with no regression.",
+  "workloads": [
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_adaptive_avg_pool2d_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/_adaptive_avg_pool2d_kernel.py::_adaptive_avg_pool2d_kernel::main",
+      "workload_id": "smoke-1x8x4x4-2x2-float16",
+      "label": "smoke-1x8x4x4-2x2",
+      "marks": [],
+      "shape": [1, 8, 4, 4],
+      "dtype": "float16",
+      "params": {"output_size": [2, 2]},
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label token 'smoke', first entry of AdaptiveAvgPool2dFwdOp.workloads); final/per-merge precision regression only, no performance record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_adaptive_avg_pool2d_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/_adaptive_avg_pool2d_kernel.py::_adaptive_avg_pool2d_kernel::main",
+      "workload_id": "resnet-global-float16",
+      "label": "resnet-global",
+      "marks": [],
+      "shape": [8, 2048, 7, 7],
+      "dtype": "float16",
+      "params": {"output_size": [1, 1]},
+      "kind": "tune",
+      "reason": "manifest full workload; C4 global-pool path; priority workload (largest baseline latency, highest headroom). Round 1 winner = G1 flat-spatial-axis C4 path (CH_GLOBAL=32, 166.26->16.78us). Round 3 winner = G11 fp16 cheap reduce chain (reduce_sum f16->f16 + single vcast, dropping the fp32 full-plane intermediate) with plane-aware CH_GLOBAL=64 -> ab_test interleaved verdict B_better, merged median 15.98us vs 16.61us (-3.79%), direction consistent 3/3 pairs; final 16.13us. Ratio (compute-roofline, same formula as the Stage-5 report) 2.81% -> 47.99% (mechanism: removing the fp32 vector plane collapses the op-mix-weighted computility denominator; the substantive gain is latency). Precision: blocking L0/L1 max_diff <= 4.883e-04 (tolerance 1e-3; bf16 unaffected).",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_adaptive_avg_pool2d_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/_adaptive_avg_pool2d_kernel.py::_adaptive_avg_pool2d_kernel::main",
+      "workload_id": "spp-6x6-float16",
+      "label": "spp-6x6",
+      "marks": [],
+      "shape": [2, 128, 56, 56],
+      "dtype": "float16",
+      "params": {"output_size": [6, 6]},
+      "kind": "tune",
+      "reason": "manifest full workload; general-grid path. Round 1/2: full CH sweep (16/32/64/128) gave no valid gain so baseline CH=64 kept (16.13us). Round 3 winner = G14 `_pick_ch_general` v2 (maximise single-wave core occupancy, then minimise the last block's wasted channels) -> CH=48, BlockDim 24->36, ab_test interleaved verdict B_better, merged median 15.46us vs 16.32us (-5.27%), direction consistent 3/3 pairs; final 15.53us.",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_adaptive_avg_pool2d_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_avg_pool2d/adaptive_avg_pool2d_kernel/_adaptive_avg_pool2d_kernel.py::_adaptive_avg_pool2d_kernel::main",
+      "workload_id": "nondiv-7x7-bfloat16",
+      "label": "nondiv-7x7",
+      "marks": [],
+      "shape": [2, 64, 55, 57],
+      "dtype": "bfloat16",
+      "params": {"output_size": [7, 7]},
+      "kind": "tune",
+      "reason": "manifest full workload; general-grid path with non-divisible bins. Round 1 winner = G2 single-wave CH dispatch (CH_GENERAL=32). Round 3: the G14 heuristic keeps CH=32 here because step 2 (least wasted channels) breaks the tie against CH=48 (which regressed +4.8% in branch r3_gen48); merged 13.24us / final 13.17us vs round-2 13.20us -> no regression (within the 3% noise threshold).",
+      "tuning_status": "winner_merged"
+    }
+  ]
+}

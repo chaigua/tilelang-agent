@@ -1,0 +1,836 @@
+{
+  "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+  "expanded_cases": 10,
+  "workloads": [
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "mha-bwd-smoke-s512-h8-d64/fp16",
+      "label": "mha-bwd-smoke-s512-h8-d64",
+      "marks": [
+        "smoke"
+      ],
+      "shape": {
+        "q": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "k": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "v": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "do": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "lse": [
+          1,
+          8,
+          512
+        ],
+        "delta": [
+          1,
+          8,
+          512
+        ],
+        "dq": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "dk": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "dv": [
+          1,
+          512,
+          8,
+          64
+        ]
+      },
+      "dtype": "float16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 8,
+        "groups": 1,
+        "dtype_str": "float16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label carries the `smoke` token); precision-only, no perf target and no perf record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "mha-bwd-smoke-s512-h8-d64/bf16",
+      "label": "mha-bwd-smoke-s512-h8-d64",
+      "marks": [
+        "smoke"
+      ],
+      "shape": {
+        "q": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "k": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "v": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "do": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "lse": [
+          1,
+          8,
+          512
+        ],
+        "delta": [
+          1,
+          8,
+          512
+        ],
+        "dq": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "dk": [
+          1,
+          512,
+          8,
+          64
+        ],
+        "dv": [
+          1,
+          512,
+          8,
+          64
+        ]
+      },
+      "dtype": "bfloat16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 8,
+        "groups": 1,
+        "dtype_str": "bfloat16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "smoke",
+      "reason": "manifest smoke workload (label carries the `smoke` token); precision-only, no perf target and no perf record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-8b-short/fp16",
+      "label": "llama-3.1-8b-short",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "k": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "v": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "do": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "lse": [
+          4,
+          32,
+          512
+        ],
+        "delta": [
+          4,
+          32,
+          512
+        ],
+        "dq": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "dk": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "dv": [
+          4,
+          512,
+          32,
+          128
+        ]
+      },
+      "dtype": "float16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 32,
+        "groups": 1,
+        "dtype_str": "float16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-8b-short/bf16",
+      "label": "llama-3.1-8b-short",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "k": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "v": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "do": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "lse": [
+          4,
+          32,
+          512
+        ],
+        "delta": [
+          4,
+          32,
+          512
+        ],
+        "dq": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "dk": [
+          4,
+          512,
+          32,
+          128
+        ],
+        "dv": [
+          4,
+          512,
+          32,
+          128
+        ]
+      },
+      "dtype": "bfloat16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 32,
+        "groups": 1,
+        "dtype_str": "bfloat16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-8b-long/fp16",
+      "label": "llama-3.1-8b-long",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "k": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "v": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "do": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "lse": [
+          2,
+          32,
+          2048
+        ],
+        "delta": [
+          2,
+          32,
+          2048
+        ],
+        "dq": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "dk": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "dv": [
+          2,
+          2048,
+          32,
+          128
+        ]
+      },
+      "dtype": "float16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 32,
+        "groups": 1,
+        "dtype_str": "float16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-8b-long/bf16",
+      "label": "llama-3.1-8b-long",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "k": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "v": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "do": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "lse": [
+          2,
+          32,
+          2048
+        ],
+        "delta": [
+          2,
+          32,
+          2048
+        ],
+        "dq": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "dk": [
+          2,
+          2048,
+          32,
+          128
+        ],
+        "dv": [
+          2,
+          2048,
+          32,
+          128
+        ]
+      },
+      "dtype": "bfloat16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 32,
+        "groups": 1,
+        "dtype_str": "bfloat16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-70b-short/fp16",
+      "label": "llama-3.1-70b-short",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "k": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "v": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "do": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "lse": [
+          2,
+          64,
+          512
+        ],
+        "delta": [
+          2,
+          64,
+          512
+        ],
+        "dq": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "dk": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "dv": [
+          2,
+          512,
+          64,
+          128
+        ]
+      },
+      "dtype": "float16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 64,
+        "groups": 1,
+        "dtype_str": "float16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-70b-short/bf16",
+      "label": "llama-3.1-70b-short",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "k": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "v": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "do": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "lse": [
+          2,
+          64,
+          512
+        ],
+        "delta": [
+          2,
+          64,
+          512
+        ],
+        "dq": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "dk": [
+          2,
+          512,
+          64,
+          128
+        ],
+        "dv": [
+          2,
+          512,
+          64,
+          128
+        ]
+      },
+      "dtype": "bfloat16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 64,
+        "groups": 1,
+        "dtype_str": "bfloat16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-70b-long/fp16",
+      "label": "llama-3.1-70b-long",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "k": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "v": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "do": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "lse": [
+          1,
+          64,
+          2048
+        ],
+        "delta": [
+          1,
+          64,
+          2048
+        ],
+        "dq": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "dk": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "dv": [
+          1,
+          2048,
+          64,
+          128
+        ]
+      },
+      "dtype": "float16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 64,
+        "groups": 1,
+        "dtype_str": "float16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_multi_head_attention.py::test_mha_bwd_bench",
+      "kernel_id": "_gqa_bwd_main",
+      "workload_id": "llama-3.1-70b-long/bf16",
+      "label": "llama-3.1-70b-long",
+      "marks": [
+        "tune"
+      ],
+      "shape": {
+        "q": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "k": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "v": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "do": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "lse": [
+          1,
+          64,
+          2048
+        ],
+        "delta": [
+          1,
+          64,
+          2048
+        ],
+        "dq": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "dk": [
+          1,
+          2048,
+          64,
+          128
+        ],
+        "dv": [
+          1,
+          2048,
+          64,
+          128
+        ]
+      },
+      "dtype": "bfloat16",
+      "params": {
+        "is_causal": true,
+        "heads_kv": 64,
+        "groups": 1,
+        "dtype_str": "bfloat16",
+        "stage3_config": {
+          "block_m": 64,
+          "block_n": 32,
+          "num_stages": 1
+        },
+        "tuned_config": {
+          "block_m": 64,
+          "block_n": 64,
+          "num_stages": 1
+        }
+      },
+      "kind": "tune",
+      "reason": "manifest non-smoke workload expanded from test_mha_bwd_bench (5 workloads x 2 dtypes = 10 cases); best_effort target, primary metric = msprof op Task Duration(us) of _gqa_bwd_main",
+      "tuning_status": "winner_merged"
+    }
+  ]
+}

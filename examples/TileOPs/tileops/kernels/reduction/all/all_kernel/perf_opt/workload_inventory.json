@@ -1,0 +1,204 @@
+{
+  "operator": "AllFwdOp",
+  "op_kind": "all",
+  "family": "reduction",
+  "benchmark_entry": "examples/TileOPs/benchmarks/ops/bench_all.py::test_all_bench",
+  "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+  "collected_pytest_ids": [
+    "benchmarks/ops/bench_all.py::test_all_bench[smoke-all-bool]",
+    "benchmarks/ops/bench_all.py::test_all_bench[smoke-all-float16]",
+    "benchmarks/ops/bench_all.py::test_all_bench[smoke-all-float32]",
+    "benchmarks/ops/bench_all.py::test_all_bench[mask-validation-4k-bool]",
+    "benchmarks/ops/bench_all.py::test_all_bench[mask-validation-32k-bool]",
+    "benchmarks/ops/bench_all.py::test_all_bench[3d-multidim-reduce-bool]"
+  ],
+  "kernel_id": "_logical_reduce_kernel::main",
+  "accounting_note": "manifest dtype=bool, but the Op layer pre-converts to float32 (to_logical_float32) BEFORE the kernel, so the kernel reads/writes 4 bytes/element. msprof op meters only the kernel ('main'). All latency targets, byte figures and roofline ratios in this workspace use the actual kernel f32 bytes below. The manifest/report 'bytes' column (1 B/element for bool) is 4x optimistic and is recorded for the ledger only, never used as a criterion.",
+  "workloads": [
+    {
+      "workload_id": "smoke-all-bool",
+      "label": "smoke-all",
+      "kind": "smoke",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "bool",
+      "kernel_dtype": "float32",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "logical_2d": [
+        32,
+        256
+      ],
+      "kernel_bytes": 32896,
+      "reason": "label token 'smoke' -> precision-only regression; never a perf record",
+      "tuning_status": "not_applicable",
+      "precision_pass": true,
+      "precision_evidence": "bench_driver --check on the delivered file: IMPL_CHECK PASS (torch.equal); also covered by L0-1a/1b + L1-5 (bool->f32 pre-cast) + Boundary",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    },
+    {
+      "workload_id": "smoke-all-float16",
+      "label": "smoke-all",
+      "kind": "smoke",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float16",
+      "kernel_dtype": "float16",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "logical_2d": [
+        32,
+        256
+      ],
+      "kernel_bytes": 16416,
+      "reason": "label token 'smoke' -> precision-only regression; never a perf record",
+      "tuning_status": "not_applicable",
+      "precision_pass": true,
+      "precision_evidence": "bench_driver --check on the delivered file: IMPL_CHECK PASS (torch.equal); also covered by L0-1a/1b + L1-5 (bool->f32 pre-cast) + Boundary",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    },
+    {
+      "workload_id": "smoke-all-float32",
+      "label": "smoke-all",
+      "kind": "smoke",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float32",
+      "kernel_dtype": "float32",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "logical_2d": [
+        32,
+        256
+      ],
+      "kernel_bytes": 32896,
+      "reason": "label token 'smoke' -> precision-only regression; never a perf record",
+      "tuning_status": "not_applicable",
+      "precision_pass": true,
+      "precision_evidence": "bench_driver --check on the delivered file: IMPL_CHECK PASS (torch.equal); also covered by L0-1a/1b + L1-5 (bool->f32 pre-cast) + Boundary",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    },
+    {
+      "workload_id": "mask-validation-4k-bool",
+      "label": "mask-validation-4k",
+      "kind": "tune",
+      "marks": [],
+      "shape": [
+        32,
+        4096
+      ],
+      "dtype": "bool",
+      "kernel_dtype": "float32",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "logical_2d": [
+        32,
+        4096
+      ],
+      "kernel_bytes": 524320,
+      "acceptance_line_us_560GBs": 0.936,
+      "reason": "non-smoke manifest workload; benchmark expands it through AllWorkload(bool) -> to_logical_float32 -> kernel f32",
+      "tuning_status": "winner_merged",
+      "precision_pass": true,
+      "note": "f16 indicator on the resident path adopted (A/B -4.3% x3/3 in session 1, -6.4% vs adjacent baseline in session 2); final 2.8127 us",
+      "precision_evidence": "python perf_opt/_logical_reduce_kernel.py --level all -> exit 0 (L0 27 cases, L1 25 cases, L2 all PASS incl. tail=1, Boundary all PASS)",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    },
+    {
+      "workload_id": "mask-validation-32k-bool",
+      "label": "mask-validation-32k",
+      "kind": "tune",
+      "marks": [],
+      "shape": [
+        32,
+        32768
+      ],
+      "dtype": "bool",
+      "kernel_dtype": "float32",
+      "params": {
+        "dim": -1,
+        "keepdim": false
+      },
+      "logical_2d": [
+        32,
+        32768
+      ],
+      "kernel_bytes": 4194336,
+      "acceptance_line_us_560GBs": 7.49,
+      "reason": "non-smoke manifest workload; benchmark expands it through AllWorkload(bool) -> to_logical_float32 -> kernel f32",
+      "tuning_status": "no_gain",
+      "precision_pass": true,
+      "note": "R' out of band; UB-cap tile (-2.6%), grid-filling block_m (-5.1%), T.Pipelined (-0.9%) all rejected; f16 indicator -1.8% is below the 3% noise threshold and shares the column-tiled builder with 3d (conflicting there) -> Stage 3 code kept (codegen byte-identical)",
+      "precision_evidence": "python perf_opt/_logical_reduce_kernel.py --level all -> exit 0 (L0 27 cases, L1 25 cases, L2 all PASS incl. tail=1, Boundary all PASS)",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    },
+    {
+      "workload_id": "3d-multidim-reduce-bool",
+      "label": "3d-multidim-reduce",
+      "kind": "tune",
+      "marks": [],
+      "shape": [
+        4,
+        128,
+        4096
+      ],
+      "dtype": "bool",
+      "kernel_dtype": "float32",
+      "params": {
+        "dim": [
+          0,
+          2
+        ],
+        "keepdim": false
+      },
+      "logical_2d": [
+        128,
+        16384
+      ],
+      "kernel_bytes": 8388736,
+      "acceptance_line_us_560GBs": 14.98,
+      "reason": "non-smoke manifest workload; dim=[0,2] -> Op layer movedim(keep=[1]) + contiguous -> kernel view (128, 16384) f32",
+      "tuning_status": "no_gain",
+      "precision_pass": true,
+      "note": "R' = +9.6%..+11.6% (single 64 KB tile loses multi-buffer overlap: mte2 ratio 0.552->0.671); f16 indicator -10.0% (session 1) vs +1.2% (session 2) = conflicting -> not adopted; Stage 3 code kept (codegen byte-identical)",
+      "precision_evidence": "python perf_opt/_logical_reduce_kernel.py --level all -> exit 0 (L0 27 cases, L1 25 cases, L2 all PASS incl. tail=1, Boundary all PASS)",
+      "benchmark_source": "pytest benchmarks/ops/bench_all.py --collect-only -> workloads_to_params('AllFwdOp', include_extra=True) (manifest reduction.yaml AllFwdOp.workloads + bench_all.py extra.setdefault('dim', -1))",
+      "kernel_id": "_logical_reduce_kernel::main"
+    }
+  ],
+  "final_artifact": "perf_opt/_logical_reduce_kernel.py",
+  "final_artifact_sha256": "70ecea6df2cf0dc9ce75c77b043303c91e6e04e78357507009347302a356de5b",
+  "budget_used": {
+    "rounds": 5,
+    "candidate_files": 8,
+    "perf_records_rows": 27
+  }
+}

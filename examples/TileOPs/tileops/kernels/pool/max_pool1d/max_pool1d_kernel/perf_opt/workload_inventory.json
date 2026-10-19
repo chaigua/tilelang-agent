@@ -1,0 +1,82 @@
+{
+  "workloads": [
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-float16",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": ["tileops"],
+      "shape": [1, 8, 32],
+      "dtype": "float16",
+      "params": {"kernel_size": 3, "stride": 2, "padding": 1, "dilation": 1, "ceil_mode": false},
+      "kind": "smoke",
+      "reason": "manifest workload label independently contains 'smoke' (first/small manifest entry per the NPU manifest workload contract) -> precision-only per profile-collection.md; no performance baseline/winner and no perf_records line",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-bfloat16",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": ["tileops"],
+      "shape": [1, 8, 32],
+      "dtype": "bfloat16",
+      "params": {"kernel_size": 3, "stride": 2, "padding": 1, "dilation": 1, "ceil_mode": false},
+      "kind": "smoke",
+      "reason": "same manifest smoke entry, bfloat16 variant -> precision-only; no perf_records line",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-float32",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": ["tileops"],
+      "shape": [1, 8, 32],
+      "dtype": "float32",
+      "params": {"kernel_size": 3, "stride": 2, "padding": 1, "dilation": 1, "ceil_mode": false},
+      "kind": "smoke",
+      "reason": "same manifest smoke entry, float32 variant -> precision-only; no perf_records line",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "sincnet-speaker-local-float16",
+      "label": "sincnet-speaker-local",
+      "marks": ["tileops"],
+      "shape": [32, 80, 4096],
+      "dtype": "float16",
+      "params": {"kernel_size": 3, "stride": 3, "padding": 0, "dilation": 1, "ceil_mode": false},
+      "kind": "tune",
+      "reason": "manifest full workload (SincNet-style speaker CNN local pooling); general-grid path; largest traffic (27.96 MB) -> primary optimisation target; target Ratio >= 70% | R1a CH=64->80 removed the C=80 channel-tail padding waste (num_logical 3392->2080, lanes -37%); 301.94 -> 188.45 us (-37.6%), bit-exact; not at target (ratio 13.7% -> 14.8%)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "textcnn-global-float16",
+      "label": "textcnn-global",
+      "marks": ["tileops"],
+      "shape": [64, 256, 128],
+      "dtype": "float16",
+      "params": {"kernel_size": 128, "stride": 1, "padding": 0, "dilation": 1, "ceil_mode": false},
+      "kind": "tune",
+      "reason": "manifest full workload (TextCNN-style global temporal max pooling); L_out==1 -> C4 whole-line reduction path; target Ratio >= 70% | R1b equal-cost NaN tracking (isnan(reduce_sum(x*x)) in-place square, PL-1.22 (8)) replaced the eq-mask + reduce_min chain, and the reduced footprint allowed CH=128; 12.71 -> 11.62 us (-8.6%), bit-exact; not at target (ratio 18.3% -> 20.1%) -- 70% needs 3.33 us, below the 3.37 us empty-kernel floor, so unreachable (see perf_feedback.md)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_max_pool1d_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d/max_pool1d_kernel/_max_pool1d_kernel.py::_max_pool1d_kernel::main",
+      "workload_id": "ecg-cnn-dilated-bfloat16",
+      "label": "ecg-cnn-dilated",
+      "marks": ["tileops"],
+      "shape": [16, 128, 2048],
+      "dtype": "bfloat16",
+      "params": {"kernel_size": 5, "stride": 2, "padding": 2, "dilation": 2, "ceil_mode": true},
+      "kind": "tune",
+      "reason": "manifest full workload (ECG CNN repeated 1D max-pooling downsampling); general-grid path, dilated overlapping windows (halo); second-largest traffic (12.58 MB); target Ratio >= 70% | same R1a CH change (CH=128 == C, single channel block, num_logical 1056->1184 with BL 31->14); 154.65 -> 113.18 us (-26.8%), bit-exact; not at target (ratio 12.2% -> 15.3%)",
+      "tuning_status": "winner_merged"
+    }
+  ]
+}

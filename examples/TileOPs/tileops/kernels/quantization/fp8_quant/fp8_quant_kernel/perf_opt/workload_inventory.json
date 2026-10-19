@@ -1,0 +1,59 @@
+{
+  "kernel_id": "tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/_fp8_quant_kernel.py::_fp8_quant_kernel::_fp8_quant_fwd_main",
+  "target_kernel_name": "_fp8_quant_fwd_main",
+  "note": "Workload set expanded from the migrated benchmark entry examples/TileOPs/benchmarks/ops/bench_fp8_quant.py::test_fp8_quant_bench (manifest-driven, op FP8QuantOp, tileops/manifest/quantization.yaml workloads). pytest param ids are '<label>' (the _to_params helper uses the manifest label verbatim). The first manifest entry is marked pytest.mark.smoke, the rest pytest.mark.full.",
+  "workloads": [
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_fp8_quant.py::test_fp8_quant_bench",
+      "kernel_id": "tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/_fp8_quant_kernel.py::_fp8_quant_kernel::_fp8_quant_fwd_main",
+      "workload_id": "smoke-kv-index-256-d64-fp16",
+      "label": "smoke-kv-index-256-d64-fp16",
+      "marks": ["smoke"],
+      "shape": [1, 256, 1, 64],
+      "dtype": "float16",
+      "params": {"batch": 1, "seq_len_kv": 256, "kv_group": 1, "index_dim": 64},
+      "kind": "smoke",
+      "reason": "manifest smoke workload (fp8_quant _to_params marks param index 0 as pytest.mark.smoke; manifest label is the first FP8QuantOp workload); precision regression only -- no performance baseline, no winner, excluded from the performance gate",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_fp8_quant.py::test_fp8_quant_bench",
+      "kernel_id": "tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/_fp8_quant_kernel.py::_fp8_quant_kernel::_fp8_quant_fwd_main",
+      "workload_id": "kv-index-8k-d64-fp16",
+      "label": "kv-index-8k-d64-fp16",
+      "marks": ["full"],
+      "shape": [1, 8192, 1, 64],
+      "dtype": "float16",
+      "params": {"batch": 1, "seq_len_kv": 8192, "kv_group": 1, "index_dim": 64},
+      "kind": "tune",
+      "reason": "manifest full workload; baseline 238.42us (Stage 5 report) reproduced at 238.52us; winner = vexp2 encode + BLOCK_ELEMS=4096, merged in-kernel",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_fp8_quant.py::test_fp8_quant_bench",
+      "kernel_id": "tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/_fp8_quant_kernel.py::_fp8_quant_kernel::_fp8_quant_fwd_main",
+      "workload_id": "kv-index-8k-d64-bf16",
+      "label": "kv-index-8k-d64-bf16",
+      "marks": ["full"],
+      "shape": [1, 8192, 1, 64],
+      "dtype": "bfloat16",
+      "params": {"batch": 1, "seq_len_kv": 8192, "kv_group": 1, "index_dim": 64},
+      "kind": "tune",
+      "reason": "manifest full workload; baseline 238.62us; winner = vexp2 encode + BLOCK_ELEMS=4096, merged in-kernel",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_fp8_quant.py::test_fp8_quant_bench",
+      "kernel_id": "tileops/kernels/quantization/fp8_quant/fp8_quant_kernel/_fp8_quant_kernel.py::_fp8_quant_kernel::_fp8_quant_fwd_main",
+      "workload_id": "kv-index-4k-d128-fp32",
+      "label": "kv-index-4k-d128-fp32",
+      "marks": ["full"],
+      "shape": [1, 4096, 1, 128],
+      "dtype": "float32",
+      "params": {"batch": 1, "seq_len_kv": 4096, "kv_group": 1, "index_dim": 128},
+      "kind": "tune",
+      "reason": "manifest full workload; baseline 238.44us; winner = vexp2 encode + BLOCK_ELEMS=4096, merged in-kernel",
+      "tuning_status": "winner_merged"
+    }
+  ]
+}

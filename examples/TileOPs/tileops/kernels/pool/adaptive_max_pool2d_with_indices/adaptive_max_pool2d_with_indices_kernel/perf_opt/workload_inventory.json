@@ -1,0 +1,109 @@
+{
+  "benchmark_source": "benchmarks/ops/bench_pool.py::test_adaptive_max_pool2d_indices_bench",
+  "op_name": "AdaptiveMaxPool2dIndicesFwdOp",
+  "manifest": "tileops/manifest/pool.yaml",
+  "toolchain": "tilelang 0.1.2+67a04413fb61385611796f21803cabc68d316e23 (67a0441) + CANN 9.0.0 + Ascend910B3 (npu-smi 26.1.1, get_aicore_num=20 -> 40 Vector cores) + torch 2.9.0+cpu / torch_npu 2.9.0.post8",
+  "primary_metric": "msprof_task_duration",
+  "workloads": [
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_adaptive_max_pool2d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/_adaptive_max_pool2d_with_indices_kernel.py::_adaptive_max_pool2d_with_indices_kernel::main",
+      "workload_id": "smoke-1x8x4x4-2x2-float16",
+      "label": "smoke-1x8x4x4-2x2",
+      "marks": [
+        "tileops"
+      ],
+      "shape": [
+        1,
+        8,
+        4,
+        4
+      ],
+      "dtype": "float16",
+      "params": {
+        "output_size": [
+          2,
+          2
+        ]
+      },
+      "kind": "smoke",
+      "reason": "manifest workload label independently contains 'smoke' (first/small manifest entry, NPU manifest workload contract) -> precision-only per profile-collection.md; no performance baseline/winner and no perf_records line",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_adaptive_max_pool2d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/_adaptive_max_pool2d_with_indices_kernel.py::_adaptive_max_pool2d_with_indices_kernel::main",
+      "workload_id": "global-1x1-float16",
+      "label": "global-1x1",
+      "marks": [
+        "tileops"
+      ],
+      "shape": [
+        8,
+        2048,
+        7,
+        7
+      ],
+      "dtype": "float16",
+      "params": {
+        "output_size": [
+          1,
+          1
+        ]
+      },
+      "kind": "tune",
+      "reason": "manifest full workload (ResNet-50 global pool before FC); out=(1,1); primary optimisation target (largest baseline burden, 144.39 us self-measured msprof baseline) | flat-plane whole-plane record scan, CH_GLOBAL=104: 144.39 -> 91.92 us (-36.3%); residual gap is the toolchain-lowering round trip of the plane transpose (UB_to_GM 104 KB/block vs 4.5 KB real write)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_adaptive_max_pool2d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/_adaptive_max_pool2d_with_indices_kernel.py::_adaptive_max_pool2d_with_indices_kernel::main",
+      "workload_id": "spp-6x6-float16",
+      "label": "spp-6x6",
+      "marks": [
+        "tileops"
+      ],
+      "shape": [
+        2,
+        128,
+        56,
+        56
+      ],
+      "dtype": "float16",
+      "params": {
+        "output_size": [
+          6,
+          6
+        ]
+      },
+      "kind": "tune",
+      "reason": "manifest full workload (SPP-style detection head); general-grid path; second by baseline burden (85.57 us) | dead h_flag vmul removal + single-wave CH dispatch (CH 64 -> 48, BlockDim 24 -> 36): 85.57 -> 79.86 us (-6.7%)",
+      "tuning_status": "winner_merged"
+    },
+    {
+      "benchmark_source": "benchmarks/ops/bench_pool.py::test_adaptive_max_pool2d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/adaptive_max_pool2d_with_indices/adaptive_max_pool2d_with_indices_kernel/_adaptive_max_pool2d_with_indices_kernel.py::_adaptive_max_pool2d_with_indices_kernel::main",
+      "workload_id": "nondiv-7x7-bfloat16",
+      "label": "nondiv-7x7",
+      "marks": [
+        "tileops"
+      ],
+      "shape": [
+        2,
+        64,
+        55,
+        57
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "output_size": [
+          7,
+          7
+        ]
+      },
+      "kind": "tune",
+      "reason": "manifest full workload (non-divisible adaptive-bin boundary semantics, bf16); general-grid path; third by baseline burden (81.41 us) | dead h_flag vmul removal + single-wave CH dispatch (CH 64 -> 32, BlockDim 14 -> 28): 81.41 -> 72.60 us (-10.8%)",
+      "tuning_status": "winner_merged"
+    }
+  ]
+}

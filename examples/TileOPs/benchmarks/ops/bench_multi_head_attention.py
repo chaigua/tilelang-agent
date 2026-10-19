@@ -1,16 +1,15 @@
-"""Benchmarks for MultiHeadAttentionFwdOp (NPU).
+"""Benchmarks for MultiHeadAttentionFwdOp / MultiHeadAttentionBwdOp (NPU).
 
-Adapted from TileOPs ``benchmarks/ops/attention/bench_mha.py`` -- forward
-subset only.  The GPU bench file is shared with ``MultiHeadAttentionBwdOp``
-(not migrated yet), so the backward bench function and its imports are
-intentionally not ported.  Performance benchmarks profile only the TileOps
-kernel; PyTorch remains the correctness reference in ``tests/ops``.
+Adapted from TileOPs ``benchmarks/ops/attention/bench_mha.py``.  Performance
+benchmarks profile only the TileOps kernel; PyTorch remains the correctness
+reference in ``tests/ops``.  The GPU FA3 / FlashInfer / torch-SDPA baselines
+are CUDA-only and are not ported; only the TileOps measurement is recorded.
 
-MultiHeadAttentionFwdOp is a 3-input op (q, k, v), so the single-input
-``workloads_to_params`` contract does not apply; the GPU
+MultiHeadAttention{Fwd,Bwd}Op are multi-input ops (q, k, v[, o, do, lse]), so
+the single-input ``workloads_to_params`` contract does not apply; the GPU
 ``manifest_params`` / ``mha_qkv_args`` helpers (from
-``benchmarks/ops/attention/manifest_params.py``) are inlined instead --
-the same multi-input pattern as ``bench_ada_layer_norm.py`` /
+``benchmarks/ops/attention/manifest_params.py``) are inlined instead -- the
+same multi-input pattern as ``bench_ada_layer_norm.py`` /
 ``bench_fp8_lightning_indexer.py``.
 
 Adaptations (T3-T4):
@@ -24,10 +23,14 @@ import torch
 
 from tileops.benchmark.benchmark_base import BenchmarkReport, ManifestBenchmark
 from tileops.manifest import load_workloads
-from tileops.ops.attention.multi_head_attention import MultiHeadAttentionFwdOp
-from tileops.workloads.attention import MhaFwdWorkload
+from tileops.ops.attention.multi_head_attention import (
+    MultiHeadAttentionBwdOp,
+    MultiHeadAttentionFwdOp,
+)
+from tileops.workloads.attention import MhaBwdWorkload, MhaFwdWorkload
 
 _MHA_FWD_OP = "MultiHeadAttentionFwdOp"
+_MHA_BWD_OP = "MultiHeadAttentionBwdOp"
 
 
 def _mha_qkv_args(workload: dict) -> tuple[int, int, int, int, bool]:
@@ -69,6 +72,22 @@ def test_mha_fwd_bench(
 
     op = MultiHeadAttentionFwdOp(batch, heads, seq_len, dim, causal, dtype)
     bm = ManifestBenchmark(_MHA_FWD_OP, op, test)
+    result = bm.profile(op, *inputs)
+    BenchmarkReport.record(op, locals(), result, tag="tileops")
+
+
+_MHA_BWD_BENCH_PARAMS = _manifest_params(load_workloads(_MHA_BWD_OP))
+
+
+@pytest.mark.parametrize("batch, seq_len, heads, dim, causal, dtype", _MHA_BWD_BENCH_PARAMS)
+def test_mha_bwd_bench(
+    batch: int, seq_len: int, heads: int, dim: int, causal: bool, dtype: torch.dtype
+) -> None:
+    test = MhaBwdWorkload(batch, heads, seq_len, dim, causal, dtype)
+    inputs = test.gen_inputs()
+
+    op = MultiHeadAttentionBwdOp(batch, heads, seq_len, dim, causal, dtype)
+    bm = ManifestBenchmark(_MHA_BWD_OP, op, test)
     result = bm.profile(op, *inputs)
     BenchmarkReport.record(op, locals(), result, tag="tileops")
 

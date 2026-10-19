@@ -1,0 +1,149 @@
+{
+  "kernel_dir": "examples/TileOPs/tileops/kernels/reduction/count_nonzero/count_nonzero_kernel",
+  "benchmark_entry": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench",
+  "manifest": "examples/TileOPs/tileops/manifest/reduction.yaml (CountNonzeroFwdOp.workloads)",
+  "expanded_by": "tileops.benchmark.benchmark_base.workloads_to_params('CountNonzeroFwdOp', include_extra=True)",
+  "expanded_count": 7,
+  "shape_check": "sparsity-seq expands to [32, 16384] float16 (NOT the GPU manifest's [32, 32768]) - verified with the actual pytest --collect-only + workloads_to_params output on 2026-10-18",
+  "workloads": [
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[smoke-count-nonzero-float16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "smoke-count-nonzero-float16",
+      "label": "smoke-count-nonzero",
+      "marks": [],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1
+      },
+      "kind": "smoke",
+      "reason": "manifest label contains the standalone token 'smoke' (smoke-count-nonzero) -> precision regression only, no performance tuning; final precision regression PASS (perf_opt --level all)",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[smoke-count-nonzero-bfloat16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "smoke-count-nonzero-bfloat16",
+      "label": "smoke-count-nonzero",
+      "marks": [],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1
+      },
+      "kind": "smoke",
+      "reason": "manifest label contains the standalone token 'smoke' (smoke-count-nonzero) -> precision regression only, no performance tuning; final precision regression PASS (perf_opt --level all)",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[smoke-count-nonzero-float32]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "smoke-count-nonzero-float32",
+      "label": "smoke-count-nonzero",
+      "marks": [],
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "float32",
+      "params": {
+        "dim": -1
+      },
+      "kind": "smoke",
+      "reason": "manifest label contains the standalone token 'smoke' (smoke-count-nonzero) -> precision regression only, no performance tuning; final precision regression PASS (perf_opt --level all)",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[sparsity-hidden-float16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "sparsity-hidden-float16",
+      "label": "sparsity-hidden",
+      "marks": [],
+      "shape": [
+        2048,
+        4096
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1
+      },
+      "kind": "tune",
+      "reason": "read-bandwidth bound: measured read-only floor 25.3 us (bm=2) / 23.8 us (bm=4) vs 26.0-27.6 us actual; device msprof GM roofline 0.8 TB/s, kernel at 76.5% of it. Batched-output (-0.4%), E_CAP=16384 (UB overflow) and T.Pipelined (tie) all failed to improve; Stage 3 structure kept as the winner. | round-4: fp16 path untouched (generated kernel source byte-identical to the round-3 artifact, sha 1fbac554...), final re-measured at 28.104 us in a slower run-state (3 repeats 27.66/28.03/28.10).",
+      "tuning_status": "no_gain",
+      "final_candidate_id": "final_round4_bf16bm3"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[sparsity-hidden-bfloat16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "sparsity-hidden-bfloat16",
+      "label": "sparsity-hidden",
+      "marks": [],
+      "shape": [
+        2048,
+        4096
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "dim": -1
+      },
+      "kind": "tune",
+      "reason": "round-4 (accepted): bf16 resident tier raised from 2 to 3 rows (12288 elements, measured 12.01 B/element UB price; 683 logical blocks -> 18 tasks/core). Interleaved A/B/A/B (3 pairs, 30 launches each): A median 31.235 us vs B median 27.940 us = -10.55%, direction consistent, far outside the 0.5-0.7% same-run scatter. vec_time 19.58 -> 17.41 us, mte2 10.58 -> 8.58 us, effective read bandwidth 13.6 -> 16.0 GB/s/core. Meets the family acceptance line 29.99 us (0.7 x device-reported 0.8 TB/s = 560 GB/s).",
+      "tuning_status": "winner_merged",
+      "final_candidate_id": "final_round4_bf16bm3"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[sparsity-seq-float16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "sparsity-seq-float16",
+      "label": "sparsity-seq",
+      "marks": [],
+      "shape": [
+        32,
+        16384
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": -1
+      },
+      "kind": "tune",
+      "reason": "path R' (DESIGN 1.6.4 alternative: single-tile resident, block_m=1, no tile loop) adopted: 4.41 -> 3.91 us (-11.3%). Absolute latency is dominated by the 2.44 us empty-kernel floor. | round-4: fp16 path untouched (generated kernel source byte-identical to the round-3 artifact); final re-measured under the round-4 final record.",
+      "tuning_status": "winner_merged",
+      "final_candidate_id": "final_round4_bf16bm3"
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_count_nonzero.py::test_count_nonzero_bench[3d-multidim-reduce-float16]",
+      "kernel_id": "_logical_reduce_kernel::main",
+      "workload_id": "3d-multidim-reduce-float16",
+      "label": "3d-multidim-reduce",
+      "marks": [],
+      "shape": [
+        4,
+        128,
+        4096
+      ],
+      "dtype": "float16",
+      "params": {
+        "dim": [
+          0,
+          2
+        ],
+        "reduced_2d": [
+          128,
+          16384
+        ]
+      },
+      "kind": "tune",
+      "reason": "path R' adopted: 10.23 -> 8.93 us (-12.8%); 128 rows / 40 AIV = 4 tasks per core, so the 4-wave critical path and the 7.4 us copy floor bound the remaining headroom. | round-4: fp16 path untouched (generated kernel source byte-identical to the round-3 artifact); final re-measured under the round-4 final record.",
+      "tuning_status": "winner_merged",
+      "final_candidate_id": "final_round4_bf16bm3"
+    }
+  ],
+  "round4_note": "2026-10-18 post-DONE follow-up: bf16 hidden adopted the 3-row resident tier; phase=final re-collected on the new artifact sha faae175e... for all tune workloads; superseded round-3 finals preserved verbatim in perf_records_full_history.jsonl"
+}

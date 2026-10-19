@@ -1,0 +1,154 @@
+{
+  "workloads": [
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-float16",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        1,
+        8,
+        32
+      ],
+      "dtype": "float16",
+      "params": {
+        "kernel_size": 3,
+        "stride": 2,
+        "padding": 1,
+        "dilation": 1,
+        "ceil_mode": false
+      },
+      "kind": "smoke",
+      "reason": "manifest label carries the explicit `smoke-` prefix (first manifest workload, 3 dtypes) -> precision-only regression, no performance record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-bfloat16",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        1,
+        8,
+        32
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "kernel_size": 3,
+        "stride": 2,
+        "padding": 1,
+        "dilation": 1,
+        "ceil_mode": false
+      },
+      "kind": "smoke",
+      "reason": "manifest label carries the explicit `smoke-` prefix -> precision-only regression, no performance record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "smoke-1x8x32-k3s2p1-float32",
+      "label": "smoke-1x8x32-k3s2p1",
+      "marks": [
+        "smoke"
+      ],
+      "shape": [
+        1,
+        8,
+        32
+      ],
+      "dtype": "float32",
+      "params": {
+        "kernel_size": 3,
+        "stride": 2,
+        "padding": 1,
+        "dilation": 1,
+        "ceil_mode": false
+      },
+      "kind": "smoke",
+      "reason": "manifest label carries the explicit `smoke-` prefix -> precision-only regression, no performance record",
+      "precision_pass": true
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "sincnet-speaker-local-float16",
+      "label": "sincnet-speaker-local",
+      "marks": [],
+      "shape": [
+        32,
+        80,
+        4096
+      ],
+      "dtype": "float16",
+      "params": {
+        "kernel_size": 3,
+        "stride": 3,
+        "padding": 0,
+        "dilation": 1,
+        "ceil_mode": false
+      },
+      "kind": "tune",
+      "reason": "manifest full workload; largest flow (55.9 MB incl. int64 index write), general grid path, C=80 not a CH=64 multiple -> first tuning target | winner_merged: 2 x fewer logical units (CH=80 == C, one channel block) + fp32-domain epilogue decisions + dead NaN-flag chain removed; 3480.77 -> 538.63 us (-84.5%). Target 45.65 us (70% of 1.75 TB/s) not reached; see perf_feedback.md",
+      "tuning_status": "winner_merged",
+      "final_us": 538.63,
+      "baseline_us": 3480.77
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "textcnn-global-float16",
+      "label": "textcnn-global",
+      "marks": [],
+      "shape": [
+        64,
+        256,
+        128
+      ],
+      "dtype": "float16",
+      "params": {
+        "kernel_size": 128,
+        "stride": 1,
+        "padding": 0,
+        "dilation": 1,
+        "ceil_mode": false
+      },
+      "kind": "tune",
+      "reason": "manifest full workload; L_out=1 whole-line reduction (k=128, stride 1) -> structurally independent path, tuned after the two general-grid workloads | winner_merged (no effective gain): the only applied change is the fp32-domain epilogue decision (169.60 -> 160.26 us, -5.5%); CH stays 64 because a 128-wide span plane (lspan=128 rows) does not fit the 192 KB UB, and the kernel is bound by the transposed store path (mte3 79.7 us) -- see opt_log.md section 6",
+      "tuning_status": "winner_merged",
+      "final_us": 160.26,
+      "baseline_us": 169.6
+    },
+    {
+      "benchmark_source": "examples/TileOPs/benchmarks/ops/bench_pool.py::test_max_pool1d_indices_bench",
+      "kernel_id": "tileops/kernels/pool/max_pool1d_with_indices/max_pool1d_with_indices_kernel/_max_pool1d_with_indices_kernel.py::_max_pool1d_with_indices_kernel::main",
+      "workload_id": "ecg-cnn-dilated-bfloat16",
+      "label": "ecg-cnn-dilated",
+      "marks": [],
+      "shape": [
+        16,
+        128,
+        2048
+      ],
+      "dtype": "bfloat16",
+      "params": {
+        "kernel_size": 5,
+        "stride": 2,
+        "padding": 2,
+        "dilation": 2,
+        "ceil_mode": true
+      },
+      "kind": "tune",
+      "reason": "manifest full workload; dilated overlapping windows (eff. span 9, stride 2) + bf16 fp32 compare domain | winner_merged: CH=128 == C (one channel block) + fp32-domain epilogue decisions + dead NaN-flag chain removed; 1558.15 -> 368.48 us (-76.4%). Target 23.95 us not reached; see perf_feedback.md",
+      "tuning_status": "winner_merged",
+      "final_us": 368.48,
+      "baseline_us": 1558.15
+    }
+  ]
+}

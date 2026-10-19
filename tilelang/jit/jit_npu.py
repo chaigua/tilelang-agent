@@ -1857,6 +1857,16 @@ class compiler_npu:
 
     def _npuir_to_bin_enable_npu_compile(self):
         linalg = self.mlir_content
+        # Toolchain version-skew shim (temporary): AscendNPU-IR renamed the HIVM
+        # sync_block_set assembly-format keyword from the typo `syn_instr_mode`
+        # to `sync_instr_mode` (commit 3b9f83eec, 2025-12-11). Our 3rdparty pin
+        # (31f690369, 2026-01-14) sits on the line where that fix was reverted, so
+        # the emitted .npuir still carries the old spelling, while the installed
+        # CANN 9.0.0 bishengir-compile (428ab8f, 2026-04-30) only accepts the
+        # fixed name and fails at parse: "custom op 'syn_instr_mode' is unknown".
+        # Remove this shim once the 3rdparty AscendNPU-IR pin contains the fix
+        # (origin/master already does).
+        linalg = linalg.replace("syn_instr_mode", "sync_instr_mode")
         with tempfile.TemporaryDirectory() as tmpdir:
             ttadapter_path = os.path.join(tmpdir, "kernel.npuir")
             Path(ttadapter_path).write_text(linalg)

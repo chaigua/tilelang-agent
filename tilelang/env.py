@@ -437,6 +437,18 @@ def prepend_pythonpath(path):
 
 
 # Initialize TVM paths
+# NOTE(CANN 9.0 coexistence): CANN's tbe package aliases top-level `tvm` to
+# CANN's own TVM during `import tbe` (GE/TBE init). If that happened before
+# tilelang is imported, purge the cached foreign `tvm` modules so the import
+# below binds tilelang's TVM instead.
+if "tvm" in sys.modules:
+    _tvm_mod = sys.modules.get("tvm")
+    _tvm_file = getattr(_tvm_mod, "__file__", "") or ""
+    if "3rdparty" not in _tvm_file and "tbe" in _tvm_file:
+        for _name in [n for n in list(sys.modules) if n == "tvm" or n.startswith("tvm.")]:
+            del sys.modules[_name]
+        logger.warning("Detached CANN-aliased 'tvm' modules to load TileLang's TVM.")
+
 if env.TVM_IMPORT_PYTHON_PATH is not None:
     prepend_pythonpath(env.TVM_IMPORT_PYTHON_PATH)
 else:
